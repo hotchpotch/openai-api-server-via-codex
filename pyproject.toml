@@ -3,7 +3,7 @@ name = "openai-api-server-via-codex"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = []
 
 [dependency-groups]
@@ -21,7 +21,7 @@ legacy_tox_ini = """
 requires = tox-uv>=1.29.0
 parallel = auto
 parallel_show_output = true
-env_list = py312, lint, type
+env_list = py311, lint, type
 
 [testenv]
 commands = pytest {posargs}
