@@ -24,6 +24,47 @@ uv run openai-api-server-via-codex --auth-json ~/.codex/auth.json
 OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uv run openai-api-server-via-codex
 ```
 
+Generate a default config file:
+
+```bash
+uv run openai-api-server-via-codex config-generate
+uv run openai-api-server-via-codex config-generate --stdout
+uv run openai-api-server-via-codex --config ~/.config/openai-api-server-via-codex/config.toml
+```
+
+By default the config file path is
+`$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml`, or
+`~/.config/openai-api-server-via-codex/config.toml` when `XDG_CONFIG_HOME` is
+unset. You can also set `OPENAI_VIA_CODEX_CONFIG` or pass `--config` to
+`serve`, `start`, `stop`, and `status`.
+
+The TOML config mirrors the CLI options:
+
+```toml
+[server]
+backend = "codex-http"
+host = "127.0.0.1"
+port = 8000
+default_model = "gpt-5.4"
+timeout = 180.0
+verbose = false
+
+[codex]
+auth_json = "~/.codex/auth.json"
+backend_base_url = "https://chatgpt.com/backend-api/codex"
+client_version = "1.0.0"
+codex_bin = "codex"
+# app_server_cwd = "/path/to/codex/workspace"
+
+[daemon]
+state_dir = "~/.config/openai-api-server-via-codex/run"
+# pid_file = "/path/to/openai-api-server-via-codex.pid"
+# log_file = "/path/to/openai-api-server-via-codex.log"
+stop_timeout = 10.0
+```
+
+Resolution order is CLI flag, environment variable, config file, then default.
+
 Run as a background server:
 
 ```bash
@@ -32,14 +73,14 @@ uv run openai-api-server-via-codex status --host 127.0.0.1 --port 8000
 uv run openai-api-server-via-codex stop --host 127.0.0.1 --port 8000
 ```
 
-`start` prints the PID file and log file paths. By default they live under
-`$XDG_STATE_HOME/openai-api-server-via-codex`, or
-`~/.local/state/openai-api-server-via-codex` when `XDG_STATE_HOME` is unset.
+`start` prints the PID file and log file paths. By default they live under the
+config directory's `run/` subdirectory, for example
+`~/.config/openai-api-server-via-codex/run`.
 Override with `--state-dir`, `--pid-file`, `--log-file`, or the matching
 `OPENAI_VIA_CODEX_STATE_DIR`, `OPENAI_VIA_CODEX_PID_FILE`,
-`OPENAI_VIA_CODEX_LOG_FILE` environment variables. Foreground mode remains the
-default, so `uvx openai-api-server-via-codex` starts the server in the current
-terminal.
+`OPENAI_VIA_CODEX_LOG_FILE` environment variables, or with the `[daemon]`
+config table. Foreground mode remains the default, so
+`uvx openai-api-server-via-codex` starts the server in the current terminal.
 
 Backend selection:
 
@@ -49,6 +90,7 @@ uv run openai-api-server-via-codex --backend codex-http --port 8000
 
 # Experimental native Codex app-server backend
 uv run openai-api-server-via-codex --backend codex-app-server --port 8001
+uv run openai-api-server-via-codex --verbose
 ```
 
 The two backends intentionally map to the two Codex integration routes:

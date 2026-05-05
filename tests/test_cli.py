@@ -127,6 +127,7 @@ host = "127.0.0.9"
 port = 9009
 default_model = "gpt-5.4-mini"
 timeout = 12.5
+verbose = true
 
 [codex]
 auth_json = "{auth_json}"
@@ -147,6 +148,7 @@ app_server_cwd = "{app_cwd}"
     assert settings.port == 9009
     assert settings.default_model == "gpt-5.4-mini"
     assert settings.timeout == 12.5
+    assert settings.verbose is True
     assert settings.auth_json == auth_json.resolve()
     assert settings.backend_base_url == "https://example.test/codex"
     assert settings.client_version == "2.0.0"
@@ -267,3 +269,27 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
     assert "codex-app-server" in command
     assert "--codex-bin" in command
     assert "/tmp/codex-bin" in command
+
+
+def test_serve_command_includes_verbose_flag_when_enabled(monkeypatch) -> None:
+    monkeypatch.setattr(server.sys, "executable", "/tmp/python")
+    args = server.parse_args(["start", "--verbose"])
+    settings = server.server_settings_from_args(args)
+
+    command = server.serve_command(settings)
+
+    assert "--verbose" in command
+
+
+def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:
+    run_calls: list[dict[str, object]] = []
+
+    def fake_run(*args, **kwargs) -> None:
+        run_calls.append(kwargs)
+
+    monkeypatch.setattr(server.uvicorn, "run", fake_run)
+
+    result = server._main(["serve", "--verbose"])
+
+    assert result == 0
+    assert run_calls[0]["log_level"] == "debug"

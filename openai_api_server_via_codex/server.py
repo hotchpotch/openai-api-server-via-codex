@@ -75,6 +75,7 @@ class ServerSettings:
     client_version: str
     timeout: float
     default_model: str
+    verbose: bool = False
     codex_bin: str | None = None
     app_server_cwd: Path | None = None
     auth_json: Path | None = None
@@ -618,6 +619,15 @@ def server_settings_from_args(
             "default_model",
             DEFAULT_MODEL,
         ),
+        verbose=_arg_env_config_bool(
+            args,
+            "verbose",
+            "OPENAI_VIA_CODEX_VERBOSE",
+            config_data,
+            "server",
+            "verbose",
+            False,
+        ),
         codex_bin=_arg_env_config_optional_str(
             args, "codex_bin", CODEX_BIN_ENV, config_data, "codex", "codex_bin"
         ),
@@ -701,6 +711,8 @@ def serve_command(settings: ServerSettings) -> list[str]:
         command.extend(["--app-server-cwd", str(settings.app_server_cwd)])
     if settings.auth_json is not None:
         command.extend(["--auth-json", str(settings.auth_json)])
+    if settings.verbose:
+        command.append("--verbose")
     return command
 
 
@@ -746,6 +758,7 @@ def _main(argv: list[str] | None = None) -> int:
             ),
             host=settings.host,
             port=settings.port,
+            log_level="debug" if settings.verbose else "info",
             reload=False,
         )
         return 0
@@ -801,6 +814,12 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--client-version", help="Codex client_version parameter")
     parser.add_argument("--timeout", type=float, help="backend timeout in seconds")
     parser.add_argument("--default-model", help="default model when request omits model")
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=None,
+        help="enable verbose server logs",
+    )
     parser.add_argument("--codex-bin", help="codex binary used by app-server backend")
     parser.add_argument(
         "--app-server-cwd",
@@ -911,6 +930,26 @@ def _arg_env_config_float(
     return default
 
 
+def _arg_env_config_bool(
+    args: argparse.Namespace,
+    arg_name: str,
+    env_name: str,
+    config_data: ConfigData,
+    section: str,
+    key: str,
+    default: bool,
+) -> bool:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return bool(value)
+    if env_value := os.environ.get(env_name):
+        return _parse_bool(env_value)
+    config_value = _config_value(config_data, section, key)
+    if config_value is not None:
+        return _parse_bool(config_value)
+    return default
+
+
 def _arg_env_optional_str(
     args: argparse.Namespace, arg_name: str, env_name: str
 ) -> str | None:
@@ -944,6 +983,14 @@ def _config_value(config_data: ConfigData, section: str, key: str) -> Any:
     if not isinstance(section_data, dict):
         return None
     return section_data.get(key)
+
+
+def _parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _get_backend(request: Request) -> CodexBackend:

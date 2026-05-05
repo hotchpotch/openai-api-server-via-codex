@@ -56,6 +56,15 @@ Run the server locally:
 uv run openai-api-server-via-codex
 uv run openai-api-server-via-codex --backend codex-http --port 8000
 uv run openai-api-server-via-codex --backend codex-app-server --port 8001
+uv run openai-api-server-via-codex --verbose
+uv run openai-api-server-via-codex --config ~/.config/openai-api-server-via-codex/config.toml
+```
+
+Generate a config template:
+
+```bash
+uv run openai-api-server-via-codex config-generate
+uv run openai-api-server-via-codex config-generate --stdout
 ```
 
 ## Implementation Notes
@@ -77,6 +86,16 @@ uv run openai-api-server-via-codex --backend codex-app-server --port 8001
   `client.responses.cancel` call shapes.
 - The default backend is `codex-http`. Keep `codex-app-server` explicitly
   selectable because Codex app-server JSON-RPC is experimental.
+- Config is loaded from `--config`, `OPENAI_VIA_CODEX_CONFIG`, or the XDG path
+  `$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml`, falling back to
+  `~/.config/openai-api-server-via-codex/config.toml`. Setting precedence is
+  CLI flag, environment variable, config file, default.
+- Daemon PID and log files default under the config directory's `run/`
+  subdirectory. `start`, `stop`, and `status` should all resolve the same
+  config-backed daemon paths.
+- `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
+  debug-level uvicorn logs and be preserved when `start` launches the
+  foreground `serve` command in the background.
 - Treat `codex-http` and `codex-app-server` as separate adapter contracts:
   `codex-http` preserves normal Responses API function-calling semantics,
   while `codex-app-server` maps OpenAI function schemas to Codex
