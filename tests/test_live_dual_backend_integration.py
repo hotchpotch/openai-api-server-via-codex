@@ -1038,13 +1038,18 @@ async def _assert_chat_streaming_tool_call(
                 ),
             },
         ],
-        tools=[
-            {
-                "type": "function",
-                "function": _probe_function("emit_chat_probe"),
-            }
-        ],
-        tool_choice={"type": "function", "function": {"name": "emit_chat_probe"}},
+        tools=cast(
+            Any,
+            [
+                {
+                    "type": "function",
+                    "function": _probe_function("emit_chat_probe"),
+                }
+            ],
+        ),
+        tool_choice=cast(
+            Any, {"type": "function", "function": {"name": "emit_chat_probe"}}
+        ),
         stream=True,
         reasoning_effort="low",
     )

@@ -129,7 +129,7 @@ class ToolCallStreamingBackend(RecordingBackend):
             "created_at": created_at,
             "status": "completed",
             "model": payload["model"],
-            "output": [item],
+            "output": [],
             "parallel_tool_calls": True,
             "tool_choice": "auto",
             "tools": payload.get("tools") or [],
@@ -369,6 +369,71 @@ async def test_responses_previous_response_id_preserves_function_calls_for_tool_
         ]
     finally:
         await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_responses_create_sanitizes_output_items_used_as_manual_context(
+    openai_client_with_backend,
+):
+    client, backend = openai_client_with_backend
+
+    await client.responses.create(
+        model="gpt-5.4",
+        input=[
+            {"role": "user", "content": "Remember Ada."},
+            {
+                "id": "rs_previous",
+                "type": "reasoning",
+                "status": "completed",
+                "summary": [],
+            },
+            {
+                "id": "msg_previous",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "I will remember Ada.",
+                        "annotations": [],
+                    }
+                ],
+            },
+            {
+                "id": "fc_previous",
+                "type": "function_call",
+                "call_id": "call_previous",
+                "name": "lookup_name",
+                "arguments": '{"name":"Ada"}',
+                "status": "completed",
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_previous",
+                "output": "Ada is stored.",
+                "status": "completed",
+            },
+            {"role": "user", "content": "What did you remember?"},
+        ],
+    )
+
+    assert backend.requests[0]["input"] == [
+        {"role": "user", "content": "Remember Ada."},
+        {"role": "assistant", "content": "I will remember Ada."},
+        {
+            "type": "function_call",
+            "call_id": "call_previous",
+            "name": "lookup_name",
+            "arguments": '{"name":"Ada"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call_previous",
+            "output": "Ada is stored.",
+        },
+        {"role": "user", "content": "What did you remember?"},
+    ]
 
 
 @pytest.mark.asyncio

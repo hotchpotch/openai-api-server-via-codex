@@ -639,6 +639,7 @@ async def _chat_completion_event_stream(
         and chat_payload["stream_options"].get("include_usage")
     )
     emitted_tool_arguments: dict[int, str] = {}
+    output_items: list[dict[str, Any]] = []
 
     try:
         async for raw_event in backend.stream_response(response_payload):
@@ -719,6 +720,7 @@ async def _chat_completion_event_stream(
             if event_type == "response.output_item.done":
                 item = event.get("item")
                 if isinstance(item, dict):
+                    output_items.append(item)
                     async for chunk in _chat_output_item_done_chunks(
                         state,
                         item,
@@ -736,6 +738,8 @@ async def _chat_completion_event_stream(
             }:
                 response = event.get("response")
                 if isinstance(response, dict):
+                    if output_items and not response.get("output"):
+                        response["output"] = output_items
                     response = ensure_response_defaults(
                         response, request_payload=response_payload
                     )

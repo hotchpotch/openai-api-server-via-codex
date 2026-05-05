@@ -53,10 +53,45 @@ def normalize_response_input(input_value: Any) -> list[Any]:
     if isinstance(input_value, str):
         return [{"role": "user", "content": input_value}]
     if isinstance(input_value, list):
-        return copy.deepcopy(input_value)
+        return _normalize_response_input_list(input_value)
     if isinstance(input_value, dict):
-        return [copy.deepcopy(input_value)]
+        normalized = _normalize_response_input_item(input_value)
+        return [] if normalized is None else [normalized]
     return [{"role": "user", "content": str(input_value)}]
+
+
+def _normalize_response_input_list(input_value: list[Any]) -> list[Any]:
+    normalized_items: list[Any] = []
+    for item in input_value:
+        normalized = _normalize_response_input_item(item)
+        if normalized is not None:
+            normalized_items.append(normalized)
+    return normalized_items
+
+
+def _normalize_response_input_item(item: Any) -> Any | None:
+    if not isinstance(item, dict):
+        return copy.deepcopy(item)
+
+    item_type = item.get("type")
+    if item_type == "reasoning":
+        encrypted_content = item.get("encrypted_content")
+        if isinstance(encrypted_content, str) and encrypted_content:
+            return {"type": "reasoning", "encrypted_content": encrypted_content}
+        return None
+    if item_type == "message" and item.get("role") == "assistant":
+        return {"role": "assistant", "content": _output_message_text(item)}
+    if item_type == "function_call":
+        function_call = _function_call_as_input_item(item)
+        if function_call:
+            return function_call
+    if item_type == "function_call_output":
+        return {
+            "type": "function_call_output",
+            "call_id": item.get("call_id") or "unknown",
+            "output": item.get("output") or "",
+        }
+    return copy.deepcopy(item)
 
 
 def response_output_as_input_messages(response: dict[str, Any]) -> list[dict[str, Any]]:
