@@ -219,6 +219,51 @@ class ToolCallResponseBackend(RecordingBackend):
         }
 
 
+class MixedTextToolCallResponseBackend(RecordingBackend):
+    async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.requests.append(payload)
+        created_at = time.time()
+        return {
+            "id": "resp_mixed_1",
+            "object": "response",
+            "created_at": created_at,
+            "status": "completed",
+            "model": payload["model"],
+            "output": [
+                {
+                    "id": "msg_preamble_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "phase": "preamble",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "I will check the weather.",
+                            "annotations": [],
+                        }
+                    ],
+                },
+                {
+                    "id": "fc_fake_1",
+                    "type": "function_call",
+                    "call_id": "call_fake_1",
+                    "name": "lookup_weather",
+                    "arguments": '{"city":"Tokyo"}',
+                    "status": "completed",
+                },
+            ],
+            "parallel_tool_calls": True,
+            "tool_choice": payload.get("tool_choice") or "auto",
+            "tools": payload.get("tools") or [],
+            "usage": {
+                "input_tokens": 7,
+                "output_tokens": 6,
+                "total_tokens": 13,
+            },
+        }
+
+
 class NativeSessionRecordingBackend(RecordingBackend):
     supports_native_sessions = True
 
@@ -392,6 +437,7 @@ async def test_responses_create_sanitizes_output_items_used_as_manual_context(
                 "type": "message",
                 "role": "assistant",
                 "status": "completed",
+                "phase": "final_answer",
                 "content": [
                     {
                         "type": "output_text",
@@ -420,7 +466,11 @@ async def test_responses_create_sanitizes_output_items_used_as_manual_context(
 
     assert backend.requests[0]["input"] == [
         {"role": "user", "content": "Remember Ada."},
-        {"role": "assistant", "content": "I will remember Ada."},
+        {
+            "role": "assistant",
+            "content": "I will remember Ada.",
+            "phase": "final_answer",
+        },
         {
             "type": "function_call",
             "call_id": "call_previous",
@@ -434,6 +484,43 @@ async def test_responses_create_sanitizes_output_items_used_as_manual_context(
         },
         {"role": "user", "content": "What did you remember?"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_responses_retrieve_and_input_items_list_use_local_store(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    created = await client.responses.create(
+        model="gpt-5.4",
+        input="Remember retrieve-marker.",
+    )
+    retrieved = await client.responses.retrieve(created.id)
+    input_items_page = await client.responses.input_items.list(created.id)
+
+    assert retrieved.id == created.id
+    assert retrieved.output_text == created.output_text
+    assert input_items_page.object == "list"
+    assert input_items_page.data[0].model_dump(mode="json", exclude_none=True) == {
+        "id": "input_0",
+        "type": "message",
+        "role": "user",
+        "status": "completed",
+        "content": [{"type": "input_text", "text": "Remember retrieve-marker."}],
+    }
+
+
+@pytest.mark.asyncio
+async def test_responses_retrieve_unknown_id_returns_openai_error(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    with pytest.raises(Exception) as exc_info:
+        await client.responses.retrieve("resp_missing")
+
+    assert getattr(exc_info.value, "status_code", None) == 404
 
 
 @pytest.mark.asyncio
@@ -658,6 +745,70 @@ async def test_chat_completions_create_returns_tool_calls_without_streaming():
         assert backend.requests[0]["tools"][0]["name"] == "lookup_weather"
     finally:
         await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_preserves_tool_preamble_text_without_streaming():
+    backend = MixedTextToolCallResponseBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        completion = await client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {"role": "user", "content": "Call the weather tool for Tokyo."}
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_weather",
+                        "description": "Look up weather.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    },
+                }
+            ],
+        )
+
+        message = completion.choices[0].message
+        assert message.content == "I will check the weather."
+        assert message.tool_calls is not None
+        tool_call = message.tool_calls[0].model_dump(mode="json")
+        assert tool_call["function"]["name"] == "lookup_weather"
+        assert completion.choices[0].finish_reason == "tool_calls"
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_n_duplicates_choices_for_compatibility(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    completion = await client.chat.completions.create(
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Reply once."}],
+        n=3,
+    )
+
+    assert [choice.index for choice in completion.choices] == [0, 1, 2]
+    assert [
+        choice.message.content for choice in completion.choices
+    ] == ["fake: Reply once."] * 3
 
 
 @pytest.mark.asyncio

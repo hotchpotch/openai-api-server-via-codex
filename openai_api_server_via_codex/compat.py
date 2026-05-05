@@ -12,6 +12,7 @@ DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 
 @dataclass(slots=True)
 class StoredResponse:
+    effective_input: list[Any]
     context_items: list[Any]
     response: dict[str, Any]
 
@@ -31,8 +32,10 @@ class ResponseStore:
         response: dict[str, Any],
     ) -> None:
         self._responses[response_id] = StoredResponse(
-            context_items=effective_input + response_output_as_input_messages(response),
-            response=response,
+            effective_input=copy.deepcopy(effective_input),
+            context_items=copy.deepcopy(effective_input)
+            + response_output_as_input_messages(response),
+            response=copy.deepcopy(response),
         )
 
 
@@ -80,7 +83,13 @@ def _normalize_response_input_item(item: Any) -> Any | None:
             return {"type": "reasoning", "encrypted_content": encrypted_content}
         return None
     if item_type == "message" and item.get("role") == "assistant":
-        return {"role": "assistant", "content": _output_message_text(item)}
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": _output_message_text(item),
+        }
+        if item.get("phase"):
+            message["phase"] = item["phase"]
+        return message
     if item_type == "function_call":
         function_call = _function_call_as_input_item(item)
         if function_call:
@@ -89,7 +98,7 @@ def _normalize_response_input_item(item: Any) -> Any | None:
         return {
             "type": "function_call_output",
             "call_id": item.get("call_id") or "unknown",
-            "output": item.get("output") or "",
+            "output": _string_output(item.get("output")),
         }
     return copy.deepcopy(item)
 
@@ -134,6 +143,14 @@ def _function_call_as_input_item(item: dict[str, Any]) -> dict[str, Any] | None:
         "name": str(name),
         "arguments": arguments,
     }
+
+
+def _string_output(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
 
 
 def chat_request_to_response_payload(
@@ -205,6 +222,7 @@ def response_to_chat_completion(
     *,
     fallback_model: str = DEFAULT_MODEL,
     legacy_functions: bool = False,
+    n: int = 1,
 ) -> dict[str, Any]:
     usage = response.get("usage") or {}
     prompt_tokens = int(usage.get("input_tokens") or 0)
@@ -218,14 +236,26 @@ def response_to_chat_completion(
         if legacy_functions
         else None
     )
+    text = extract_response_text(response)
     message: dict[str, Any] = {
         "role": "assistant",
-        "content": None if tool_calls else extract_response_text(response),
+        "content": text or (None if tool_calls else ""),
     }
     if legacy_function_call is not None:
         message["function_call"] = legacy_function_call
     elif tool_calls:
         message["tool_calls"] = tool_calls
+
+    finish_reason = _chat_finish_reason(response, legacy_functions=legacy_functions)
+    choices = [
+        {
+            "index": index,
+            "message": copy.deepcopy(message),
+            "finish_reason": finish_reason,
+            "logprobs": None,
+        }
+        for index in range(max(1, n))
+    ]
 
     return {
         "id": response_id.replace("resp_", "chatcmpl_", 1)
@@ -234,16 +264,7 @@ def response_to_chat_completion(
         "object": "chat.completion",
         "created": created,
         "model": str(response.get("model") or fallback_model),
-        "choices": [
-            {
-                "index": 0,
-                "message": message,
-                "finish_reason": _chat_finish_reason(
-                    response, legacy_functions=legacy_functions
-                ),
-                "logprobs": None,
-            }
-        ],
+        "choices": choices,
         "usage": {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

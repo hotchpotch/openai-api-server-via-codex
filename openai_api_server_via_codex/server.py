@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import inspect
 import json
 import os
@@ -199,6 +200,47 @@ def create_app(
         )
         return JSONResponse(response)
 
+    @app.get("/v1/responses/{response_id}", response_model=None)
+    async def retrieve_response(request: Request, response_id: str) -> JSONResponse:
+        stored = _get_response_store(request).get(response_id)
+        if stored is None:
+            return _openai_error(
+                404,
+                f"Unknown response_id: {response_id}",
+                param="response_id",
+            )
+        return JSONResponse(copy.deepcopy(stored.response))
+
+    @app.get("/v1/responses/{response_id}/input_items", response_model=None)
+    async def list_response_input_items(
+        request: Request, response_id: str
+    ) -> JSONResponse:
+        stored = _get_response_store(request).get(response_id)
+        if stored is None:
+            return _openai_error(
+                404,
+                f"Unknown response_id: {response_id}",
+                param="response_id",
+            )
+
+        items = _response_input_page_items(stored.effective_input)
+        order = request.query_params.get("order")
+        if order == "desc":
+            items.reverse()
+        limit = _positive_int(request.query_params.get("limit"))
+        if limit is not None:
+            items = items[:limit]
+
+        return JSONResponse(
+            {
+                "object": "list",
+                "data": items,
+                "first_id": _input_item_id(items[0], 0) if items else None,
+                "last_id": _input_item_id(items[-1], len(items) - 1) if items else None,
+                "has_more": False,
+            }
+        )
+
     @app.post("/v1/chat/completions", response_model=None)
     async def create_chat_completion(
         request: Request, body: dict[str, Any] = Body(...)
@@ -228,6 +270,7 @@ def create_app(
             response,
             fallback_model=response_payload["model"],
             legacy_functions=legacy_functions,
+            n=_chat_choice_count(payload.get("n")),
         )
         return JSONResponse(chat_completion)
 
@@ -510,6 +553,117 @@ def _get_response_store(request: Request) -> ResponseStore:
 
 def _backend_supports_native_sessions(backend: CodexBackend) -> bool:
     return bool(getattr(backend, "supports_native_sessions", False))
+
+
+def _positive_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed < 1:
+        return None
+    return parsed
+
+
+def _chat_choice_count(value: Any) -> int:
+    return _positive_int(value) or 1
+
+
+def _input_item_id(item: Any, index: int) -> str:
+    if isinstance(item, dict):
+        item_id = item.get("id") or item.get("call_id")
+        if item_id:
+            return str(item_id)
+    return f"input_{index}"
+
+
+def _response_input_page_items(items: list[Any]) -> list[Any]:
+    return [
+        _response_input_page_item(item, index)
+        for index, item in enumerate(copy.deepcopy(items))
+    ]
+
+
+def _response_input_page_item(item: Any, index: int) -> Any:
+    if not isinstance(item, dict):
+        return {
+            "id": f"input_{index}",
+            "type": "message",
+            "role": "user",
+            "status": "completed",
+            "content": [{"type": "input_text", "text": str(item)}],
+        }
+
+    item_type = item.get("type")
+    role = item.get("role")
+    if role in {"user", "system", "developer"}:
+        return {
+            "id": _input_item_id(item, index),
+            "type": "message",
+            "role": role,
+            "status": item.get("status") or "completed",
+            "content": _response_input_content_list(item.get("content")),
+        }
+    if role == "assistant":
+        page_item = {
+            "id": _input_item_id(item, index),
+            "type": "message",
+            "role": "assistant",
+            "status": item.get("status") or "completed",
+            "content": [
+                {
+                    "type": "output_text",
+                    "text": _message_content_text(item.get("content")),
+                    "annotations": [],
+                }
+            ],
+        }
+        if item.get("phase"):
+            page_item["phase"] = item["phase"]
+        return page_item
+    if item_type == "function_call":
+        page_item = copy.deepcopy(item)
+        page_item.setdefault("id", _input_item_id(page_item, index))
+        page_item.setdefault("status", "completed")
+        return page_item
+    if item_type == "function_call_output":
+        page_item = copy.deepcopy(item)
+        page_item.setdefault("id", _input_item_id(page_item, index))
+        page_item.setdefault("status", "completed")
+        return page_item
+    return copy.deepcopy(item)
+
+
+def _response_input_content_list(content: Any) -> list[dict[str, Any]]:
+    if content is None:
+        return [{"type": "input_text", "text": ""}]
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}]
+    if not isinstance(content, list):
+        return [{"type": "input_text", "text": str(content)}]
+    return [
+        part
+        for part in (copy.deepcopy(part) for part in content)
+        if isinstance(part, dict)
+    ]
+
+
+def _message_content_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return str(content)
+    texts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") in {"text", "input_text", "output_text"}:
+            texts.append(str(part.get("text") or ""))
+    return "".join(texts)
 
 
 async def _close_backend(backend: Any) -> None:
