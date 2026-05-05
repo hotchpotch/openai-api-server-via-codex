@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
@@ -11,6 +12,7 @@ from openai import APIError, APIStatusError, AsyncOpenAI
 from .auth import BorrowKeyError, CodexAuthConfig, borrow_codex_key
 
 
+LOGGER = logging.getLogger("openai_api_server_via_codex.backend")
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_BACKEND_HTTP = "codex-http"
 DEFAULT_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]
@@ -54,6 +56,14 @@ class CodexHttpBackend:
     async def stream_response(
         self, payload: dict[str, Any]
     ) -> AsyncIterator[dict[str, Any]]:
+        LOGGER.info(
+            "codex-http.stream.start model=%s input_items=%d tools=%d base_url=%s timeout=%s",
+            payload.get("model"),
+            _list_len(payload.get("input")),
+            _list_len(payload.get("tools")),
+            self.base_url,
+            self.timeout,
+        )
         token, account_id = await self._borrow_key()
         headers = self._headers(account_id)
         client = AsyncOpenAI(
@@ -64,23 +74,43 @@ class CodexHttpBackend:
         )
         codex_payload = dict(payload)
         codex_payload["stream"] = True
+        event_count = 0
         try:
             stream = await client.responses.create(**codex_payload)
             async for event in stream:
-                yield _dump_openai_model(event)
+                dumped = _dump_openai_model(event)
+                event_count += 1
+                LOGGER.debug(
+                    "codex-http.stream.event type=%s sequence_number=%s",
+                    dumped.get("type"),
+                    dumped.get("sequence_number"),
+                )
+                yield dumped
         except APIStatusError as exc:
+            LOGGER.warning(
+                "codex-http.stream.status_error status=%s message=%s",
+                exc.status_code,
+                _status_error_message(exc),
+            )
             raise CodexBackendError(
                 _status_error_message(exc), status_code=exc.status_code
             ) from exc
         except APIError as exc:
+            LOGGER.warning("codex-http.stream.api_error message=%s", str(exc))
             raise CodexBackendError(str(exc)) from exc
         finally:
+            LOGGER.info(
+                "codex-http.stream.end model=%s events=%d",
+                payload.get("model"),
+                event_count,
+            )
             await client.close()
 
     async def list_models(self) -> list[str]:
         try:
             token, account_id = await self._borrow_key()
         except CodexBackendError:
+            LOGGER.info("codex-http.models.fallback reason=auth_unavailable")
             return DEFAULT_MODELS
 
         headers = self._headers(account_id)
@@ -94,7 +124,8 @@ class CodexHttpBackend:
                 )
                 response.raise_for_status()
                 data = response.json()
-        except Exception:
+        except Exception as exc:
+            LOGGER.info("codex-http.models.fallback reason=%s", exc)
             return DEFAULT_MODELS
 
         models = [
@@ -105,12 +136,25 @@ class CodexHttpBackend:
             and model.get("supported_in_api")
             and model.get("visibility") == "list"
         ]
-        return models or DEFAULT_MODELS
+        if not models:
+            LOGGER.info("codex-http.models.fallback reason=empty_model_list")
+            return DEFAULT_MODELS
+        LOGGER.info("codex-http.models.loaded count=%d", len(models))
+        return models
 
     async def _borrow_key(self) -> tuple[str, str | None]:
         try:
-            return await asyncio.to_thread(borrow_codex_key, self.auth_config.auth_json)
+            token, account_id = await asyncio.to_thread(
+                borrow_codex_key, self.auth_config.auth_json
+            )
+            LOGGER.debug(
+                "codex-http.auth.borrowed auth_json=%s account_id_present=%s",
+                self.auth_config.auth_json,
+                bool(account_id),
+            )
+            return token, account_id
         except BorrowKeyError as exc:
+            LOGGER.warning("codex-http.auth.error message=%s", str(exc))
             raise CodexBackendError(str(exc), status_code=401) from exc
 
     @staticmethod
@@ -134,6 +178,10 @@ def _event_value(event: Any, key: str) -> Any:
     if isinstance(event, dict):
         return event.get(key)
     return getattr(event, key, None)
+
+
+def _list_len(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
 
 
 async def _collect_streamed_response(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -282,7 +283,7 @@ def test_serve_command_includes_verbose_flag_when_enabled(monkeypatch) -> None:
 
 
 def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:
-    run_calls: list[dict[str, object]] = []
+    run_calls: list[dict[str, Any]] = []
 
     def fake_run(*args, **kwargs) -> None:
         run_calls.append(kwargs)
@@ -293,3 +294,4 @@ def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:
 
     assert result == 0
     assert run_calls[0]["log_level"] == "debug"
+    assert run_calls[0]["app"].state.verbose is True

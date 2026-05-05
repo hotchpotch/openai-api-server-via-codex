@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 import uuid
@@ -18,6 +19,7 @@ from .backend import DEFAULT_MODELS, CodexBackendError, _collect_streamed_respon
 CODEX_BACKEND_APP_SERVER = "codex-app-server"
 CODEX_BIN_ENV = "OPENAI_VIA_CODEX_CODEX_BIN"
 CODEX_APP_SERVER_CWD_ENV = "OPENAI_VIA_CODEX_APP_SERVER_CWD"
+LOGGER = logging.getLogger("openai_api_server_via_codex.app_server")
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,11 @@ class JsonRpcCodexAppServerClient:
         self._pending_notifications: deque[dict[str, Any]] = deque()
 
     async def initialize(self) -> None:
+        LOGGER.info(
+            "app-server.initialize.start codex_bin=%s cwd=%s",
+            self.codex_bin,
+            self.cwd,
+        )
         await self._start()
         await self.request(
             "initialize",
@@ -66,10 +73,12 @@ class JsonRpcCodexAppServerClient:
             },
         )
         await self.notify("initialized", None)
+        LOGGER.info("app-server.initialize.done")
 
     async def login_with_chatgpt_tokens(
         self, *, access_token: str, account_id: str
     ) -> None:
+        LOGGER.info("app-server.login.start account_id_present=%s", bool(account_id))
         await self.request(
             "account/login/start",
             {
@@ -79,6 +88,7 @@ class JsonRpcCodexAppServerClient:
                 "chatgptPlanType": None,
             },
         )
+        LOGGER.info("app-server.login.done account_id_present=%s", bool(account_id))
 
     async def thread_start(self, params: dict[str, Any]) -> dict[str, Any]:
         result = await self.request("thread/start", params)
@@ -98,41 +108,81 @@ class JsonRpcCodexAppServerClient:
     async def request(self, method: str, params: dict[str, Any] | None) -> Any:
         async with self._transport_lock:
             request_id = str(uuid.uuid4())
+            LOGGER.debug(
+                "app-server.jsonrpc.request method=%s request_id=%s",
+                method,
+                request_id,
+            )
             await self._write_message(
                 {"id": request_id, "method": method, "params": params or {}}
             )
             while True:
                 message = await self._read_message()
                 if "method" in message and "id" in message:
+                    LOGGER.debug(
+                        "app-server.jsonrpc.server_request method=%s request_id=%s",
+                        message.get("method"),
+                        message.get("id"),
+                    )
                     response = await self._handle_server_request(message)
                     await self._write_message({"id": message["id"], "result": response})
                     continue
                 if "method" in message and "id" not in message:
+                    LOGGER.debug(
+                        "app-server.jsonrpc.notification.queued method=%s",
+                        message.get("method"),
+                    )
                     self._pending_notifications.append(message)
                     continue
                 if message.get("id") != request_id:
                     continue
                 if "error" in message:
+                    LOGGER.warning(
+                        "app-server.jsonrpc.error method=%s request_id=%s message=%s",
+                        method,
+                        request_id,
+                        _jsonrpc_error_message(method, message["error"]),
+                    )
                     raise CodexBackendError(
                         _jsonrpc_error_message(method, message["error"])
                     )
+                LOGGER.debug(
+                    "app-server.jsonrpc.response method=%s request_id=%s",
+                    method,
+                    request_id,
+                )
                 return message.get("result")
 
     async def notify(self, method: str, params: dict[str, Any] | None) -> None:
         async with self._transport_lock:
+            LOGGER.debug("app-server.jsonrpc.notify method=%s", method)
             await self._write_message({"method": method, "params": params or {}})
 
     async def next_notification(self) -> dict[str, Any]:
         async with self._transport_lock:
             if self._pending_notifications:
-                return self._pending_notifications.popleft()
+                message = self._pending_notifications.popleft()
+                LOGGER.debug(
+                    "app-server.jsonrpc.notification.dequeued method=%s",
+                    message.get("method"),
+                )
+                return message
             while True:
                 message = await self._read_message()
                 if "method" in message and "id" in message:
+                    LOGGER.debug(
+                        "app-server.jsonrpc.server_request method=%s request_id=%s",
+                        message.get("method"),
+                        message.get("id"),
+                    )
                     response = await self._handle_server_request(message)
                     await self._write_message({"id": message["id"], "result": response})
                     continue
                 if "method" in message and "id" not in message:
+                    LOGGER.debug(
+                        "app-server.jsonrpc.notification.received method=%s",
+                        message.get("method"),
+                    )
                     return message
 
     async def close(self) -> None:
@@ -140,6 +190,7 @@ class JsonRpcCodexAppServerClient:
         self._process = None
         if process is None:
             return
+        LOGGER.info("app-server.process.stop")
         if process.stdin is not None:
             process.stdin.close()
             await process.stdin.wait_closed()
@@ -156,6 +207,11 @@ class JsonRpcCodexAppServerClient:
         if self._process is not None:
             return
         env = os.environ.copy()
+        LOGGER.info(
+            "app-server.process.start codex_bin=%s cwd=%s",
+            self.codex_bin,
+            self.cwd,
+        )
         self._process = await asyncio.create_subprocess_exec(
             self.codex_bin,
             "app-server",
@@ -174,7 +230,9 @@ class JsonRpcCodexAppServerClient:
         if process is None or process.stderr is None:
             return
         while line := await process.stderr.readline():
-            self._stderr_lines.append(line.decode(errors="replace").rstrip("\n"))
+            text = line.decode(errors="replace").rstrip("\n")
+            self._stderr_lines.append(text)
+            LOGGER.debug("app-server.stderr %s", text)
 
     async def _write_message(self, payload: dict[str, Any]) -> None:
         process = self._process
@@ -206,17 +264,21 @@ class JsonRpcCodexAppServerClient:
     async def _handle_server_request(self, message: dict[str, Any]) -> dict[str, Any]:
         method = message.get("method")
         if method == "account/chatgptAuthTokens/refresh":
+            LOGGER.info("app-server.auth.refresh.start")
             try:
                 access_token, account_id = await asyncio.to_thread(
                     borrow_codex_key, self.auth_config.auth_json
                 )
             except BorrowKeyError as exc:
+                LOGGER.warning("app-server.auth.refresh.error message=%s", str(exc))
                 raise CodexBackendError(str(exc), status_code=401) from exc
             if not account_id:
+                LOGGER.warning("app-server.auth.refresh.error missing_account_id=true")
                 raise CodexBackendError(
                     "Codex app-server requested token refresh but account id is missing.",
                     status_code=401,
                 )
+            LOGGER.info("app-server.auth.refresh.done account_id_present=true")
             return {
                 "accessToken": access_token,
                 "chatgptAccountId": account_id,
@@ -226,16 +288,23 @@ class JsonRpcCodexAppServerClient:
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
         }:
+            LOGGER.info("app-server.approval.declined method=%s", method)
             return {
                 "decision": "decline",
                 "reason": "OpenAI-compatible app-server adapter does not grant native approvals.",
             }
         if method == "item/permissions/requestApproval":
+            LOGGER.info("app-server.permissions.empty")
             return {"permissions": {}, "scope": "turn"}
         if method == "item/tool/call":
             params = _dict_value(message.get("params"))
             tool_name = str(params.get("tool") or "tool")
             call_id = str(params.get("callId") or params.get("call_id") or "unknown")
+            LOGGER.info(
+                "app-server.dynamic_tool.surfaced tool=%s call_id=%s",
+                tool_name,
+                call_id,
+            )
             return {
                 "contentItems": [
                     {
@@ -280,6 +349,15 @@ class CodexAppServerBackend:
     async def stream_response(
         self, payload: dict[str, Any]
     ) -> AsyncIterator[dict[str, Any]]:
+        LOGGER.info(
+            "app-server.stream.start model=%s input_items=%d tools=%d "
+            "previous_response_id=%s timeout=%s",
+            payload.get("model"),
+            _list_len(payload.get("input")),
+            _list_len(payload.get("tools")),
+            bool(payload.get("previous_response_id")),
+            self.config.timeout,
+        )
         async with self._turn_lock:
             client = await self._ensure_client()
             thread_id, new_thread = await self._resolve_thread(client, payload)
@@ -292,6 +370,13 @@ class CodexAppServerBackend:
             turn = _expect_dict(turn_response.get("turn"), "turn/start turn")
             turn_id = str(turn.get("id") or f"turn_{int(time.time() * 1000)}")
             response_id = f"resp_{_safe_id(turn_id)}"
+            LOGGER.info(
+                "app-server.turn.start thread_id=%s turn_id=%s new_thread=%s input_items=%d",
+                thread_id,
+                turn_id,
+                new_thread,
+                len(input_items),
+            )
             self._bindings[response_id] = _ThreadBinding(
                 thread_id=thread_id,
                 model=str(payload.get("model") or "") or None,
@@ -306,6 +391,7 @@ class CodexAppServerBackend:
             output_items: list[dict[str, Any] | None] = []
             function_call_indexes: dict[str, int] = {}
             emitted_function_call_done: set[str] = set()
+            event_count = 0
 
             yield {
                 "type": "response.created",
@@ -322,8 +408,15 @@ class CodexAppServerBackend:
 
             sequence_number = 1
             async for event in _turn_notifications(client, turn_id):
+                event_count += 1
                 method = event.get("method")
                 params = _event_params(event)
+                LOGGER.debug(
+                    "app-server.turn.event method=%s turn_id=%s sequence_number=%d",
+                    method,
+                    turn_id,
+                    sequence_number,
+                )
                 if method == "item/agentMessage/delta":
                     delta = str(params.get("delta") or "")
                     if not delta:
@@ -446,6 +539,12 @@ class CodexAppServerBackend:
                             if isinstance(error, dict)
                             else "Codex app-server turn failed."
                         )
+                        LOGGER.warning(
+                            "app-server.turn.failed thread_id=%s turn_id=%s message=%s",
+                            thread_id,
+                            turn_id,
+                            message,
+                        )
                         raise CodexBackendError(str(message))
                     break
 
@@ -479,6 +578,19 @@ class CodexAppServerBackend:
                     "item": completed_text_item,
                 }
                 sequence_number += 1
+            LOGGER.info(
+                "app-server.stream.end response_id=%s output_items=%d text_chars=%d "
+                "function_calls=%d events=%d",
+                response_id,
+                len(final_output),
+                sum(
+                    len(_response_item_text(item))
+                    for item in final_output
+                    if item.get("type") == "message"
+                ),
+                sum(1 for item in final_output if item.get("type") == "function_call"),
+                event_count,
+            )
             yield {
                 "type": "response.completed",
                 "sequence_number": sequence_number,
@@ -493,17 +605,24 @@ class CodexAppServerBackend:
             }
 
     async def list_models(self) -> list[str]:
+        LOGGER.info("app-server.models.list.start")
         try:
             client = await self._ensure_client(login=False)
             response = await client.model_list()
-        except Exception:
+        except Exception as exc:
+            LOGGER.info("app-server.models.fallback reason=%s", exc)
             return DEFAULT_MODELS
         models = [
             str(model.get("id") or model.get("model"))
             for model in response.get("data", [])
             if isinstance(model, dict) and not model.get("hidden")
         ]
-        return [model for model in models if model] or DEFAULT_MODELS
+        visible_models = [model for model in models if model]
+        if not visible_models:
+            LOGGER.info("app-server.models.fallback reason=empty_model_list")
+            return DEFAULT_MODELS
+        LOGGER.info("app-server.models.list.done count=%d", len(visible_models))
+        return visible_models
 
     async def close(self) -> None:
         client = self._client
@@ -518,21 +637,26 @@ class CodexAppServerBackend:
             if self._client is not None:
                 return self._client
             client = self._client_factory()
+            LOGGER.info("app-server.client.initialize timeout=%s", self.config.timeout)
             await asyncio.wait_for(client.initialize(), timeout=self.config.timeout)
             if login:
                 await self._login(client)
             self._client = client
+            LOGGER.info("app-server.client.ready login=%s", login)
             return client
 
     async def _login(self, client: Any) -> None:
         auth_config = self.config.auth_config or CodexAuthConfig()
+        LOGGER.info("app-server.auth.login.start auth_json=%s", auth_config.auth_json)
         try:
             access_token, account_id = await asyncio.to_thread(
                 borrow_codex_key, auth_config.auth_json
             )
         except BorrowKeyError as exc:
+            LOGGER.warning("app-server.auth.login.error message=%s", str(exc))
             raise CodexBackendError(str(exc), status_code=401) from exc
         if not account_id:
+            LOGGER.warning("app-server.auth.login.error missing_account_id=true")
             raise CodexBackendError(
                 "Codex auth did not include a ChatGPT account id.", status_code=401
             )
@@ -540,6 +664,7 @@ class CodexAppServerBackend:
             access_token=access_token,
             account_id=account_id,
         )
+        LOGGER.info("app-server.auth.login.done account_id_present=%s", bool(account_id))
 
     async def _resolve_thread(
         self, client: Any, payload: dict[str, Any]
@@ -548,18 +673,39 @@ class CodexAppServerBackend:
         if previous_response_id:
             binding = self._bindings.get(str(previous_response_id))
             if binding is None:
+                LOGGER.warning(
+                    "app-server.thread.resume.error previous_response_id=%s",
+                    previous_response_id,
+                )
                 raise CodexBackendError(
                     f"Unknown previous_response_id for Codex app-server session: {previous_response_id}",
                     status_code=404,
                 )
+            LOGGER.info(
+                "app-server.thread.resume thread_id=%s previous_response_id=%s",
+                binding.thread_id,
+                previous_response_id,
+            )
             return binding.thread_id, False
 
         thread_response = await client.thread_start(_thread_start_params(payload, self.config))
         thread = _expect_dict(thread_response.get("thread"), "thread/start thread")
         thread_id = thread.get("id")
         if not thread_id:
+            LOGGER.warning("app-server.thread.start.error missing_thread_id=true")
             raise CodexBackendError("Codex app-server thread/start did not return a thread id.")
+        LOGGER.info(
+            "app-server.thread.start thread_id=%s model=%s tools=%d cwd=%s",
+            thread_id,
+            payload.get("model"),
+            _list_len(payload.get("tools")),
+            self.config.cwd,
+        )
         return str(thread_id), True
+
+
+def _list_len(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
 
 
 def response_input_to_app_server_input(input_value: Any) -> list[dict[str, Any]]:

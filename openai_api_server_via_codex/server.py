@@ -5,6 +5,7 @@ import ast
 import copy
 import inspect
 import json
+import logging
 import os
 import sys
 import time
@@ -59,6 +60,9 @@ from .daemon import (
 )
 
 
+LOGGER = logging.getLogger("openai_api_server_via_codex")
+
+
 class OpenAICompatRequest(BaseModel):
     model: str | None = None
     stream: bool | None = False
@@ -101,6 +105,7 @@ def create_app(
     timeout: float | None = None,
     codex_bin: str | None = None,
     app_server_cwd: str | Path | None = None,
+    verbose: bool = False,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -110,6 +115,7 @@ def create_app(
             await _close_backend(getattr(app.state, "backend", None))
 
     app = FastAPI(title="OpenAI API Server via Codex", lifespan=lifespan)
+    app.state.verbose = verbose
     selected_backend = backend_name or os.environ.get(
         "OPENAI_VIA_CODEX_BACKEND", CODEX_BACKEND_HTTP
     )
@@ -137,6 +143,20 @@ def create_app(
     app.state.default_model = default_model or os.environ.get(
         "OPENAI_VIA_CODEX_DEFAULT_MODEL", DEFAULT_MODEL
     )
+    _install_verbose_request_logging(app)
+    if verbose:
+        LOGGER.info(
+            "server.create_app backend=%s default_model=%s timeout=%s auth_json=%s "
+            "backend_base_url=%s codex_bin=%s app_server_cwd=%s",
+            selected_backend,
+            app.state.default_model,
+            selected_timeout,
+            selected_auth_config.auth_json,
+            backend_base_url
+            or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
+            codex_bin or os.environ.get(CODEX_BIN_ENV),
+            app_server_cwd or os.environ.get(CODEX_APP_SERVER_CWD_ENV),
+        )
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
@@ -145,7 +165,9 @@ def create_app(
     @app.get("/v1/models")
     async def list_models(request: Request) -> dict[str, Any]:
         backend = _get_backend(request)
+        _log_verbose(request, "models.list backend=%s", _backend_name(backend))
         model_ids = await backend.list_models()
+        _log_verbose(request, "models.list.done count=%d", len(model_ids))
         return {
             "object": "list",
             "data": [
@@ -172,6 +194,18 @@ def create_app(
         backend = _get_backend(request)
         native_sessions = _backend_supports_native_sessions(backend)
         previous_response_id = prepared.get("previous_response_id")
+        _log_verbose(
+            request,
+            "responses.create model=%s stream=%s input_items=%d "
+            "previous_response_id=%s tools=%d backend=%s native_sessions=%s",
+            prepared.get("model"),
+            bool(payload.get("stream")),
+            len(prepared.get("input") or []),
+            bool(previous_response_id),
+            len(prepared.get("tools") or []),
+            _backend_name(backend),
+            native_sessions,
+        )
         if previous_response_id and not native_sessions:
             stored = store.get(str(previous_response_id))
             if stored is None:
@@ -206,6 +240,12 @@ def create_app(
         try:
             response = await backend.create_response(backend_payload)
         except CodexBackendError as exc:
+            _log_verbose(
+                request,
+                "responses.create.error status=%s message=%s",
+                exc.status_code,
+                str(exc),
+            )
             return _openai_error(exc.status_code, str(exc), error_type="api_error")
         response = ensure_response_defaults(response, request_payload=prepared)
         if previous_response_id:
@@ -216,6 +256,13 @@ def create_app(
             effective_input=prepared["input"],
             response=response,
         )
+        _log_verbose(
+            request,
+            "responses.create.done response_id=%s status=%s output_items=%d",
+            response.get("id"),
+            response.get("status"),
+            len(response.get("output") or []),
+        )
         return JSONResponse(response)
 
     @app.post("/v1/responses/input_tokens", response_model=None)
@@ -224,6 +271,13 @@ def create_app(
     ) -> JSONResponse:
         prepared = prepare_response_payload(
             body, default_model=request.app.state.default_model
+        )
+        _log_verbose(
+            request,
+            "responses.input_tokens model=%s input_items=%d tools=%d",
+            prepared.get("model"),
+            len(prepared.get("input") or []),
+            len(prepared.get("tools") or []),
         )
         previous_response_id = prepared.get("previous_response_id")
         if previous_response_id and not _backend_supports_native_sessions(
@@ -250,6 +304,13 @@ def create_app(
         request: Request, response_id: str
     ) -> JSONResponse | StreamingResponse:
         stored = _get_response_store(request).get(response_id)
+        _log_verbose(
+            request,
+            "responses.retrieve response_id=%s stream=%s found=%s",
+            response_id,
+            request.query_params.get("stream") == "true",
+            stored is not None,
+        )
         if stored is None:
             return _openai_error(
                 404,
@@ -263,6 +324,12 @@ def create_app(
     @app.delete("/v1/responses/{response_id}", response_model=None)
     async def delete_response(request: Request, response_id: str) -> Response | JSONResponse:
         deleted = _get_response_store(request).delete(response_id)
+        _log_verbose(
+            request,
+            "responses.delete response_id=%s deleted=%s",
+            response_id,
+            deleted,
+        )
         if not deleted:
             return _openai_error(
                 404,
@@ -274,6 +341,12 @@ def create_app(
     @app.post("/v1/responses/{response_id}/cancel", response_model=None)
     async def cancel_response(request: Request, response_id: str) -> JSONResponse:
         stored = _get_response_store(request).get(response_id)
+        _log_verbose(
+            request,
+            "responses.cancel response_id=%s found=%s",
+            response_id,
+            stored is not None,
+        )
         if stored is None:
             return _openai_error(
                 404,
@@ -295,6 +368,15 @@ def create_app(
         request: Request, response_id: str
     ) -> JSONResponse:
         stored = _get_response_store(request).get(response_id)
+        _log_verbose(
+            request,
+            "responses.input_items response_id=%s found=%s limit=%s order=%s after=%s",
+            response_id,
+            stored is not None,
+            request.query_params.get("limit"),
+            request.query_params.get("order"),
+            request.query_params.get("after"),
+        )
         if stored is None:
             return _openai_error(
                 404,
@@ -328,6 +410,15 @@ def create_app(
     @app.get("/v1/chat/completions", response_model=None)
     async def list_chat_completions(request: Request) -> JSONResponse:
         metadata = _metadata_query_params(request)
+        _log_verbose(
+            request,
+            "chat.completions.list model=%s metadata_keys=%s limit=%s order=%s after=%s",
+            request.query_params.get("model"),
+            sorted(metadata),
+            request.query_params.get("limit"),
+            request.query_params.get("order"),
+            request.query_params.get("after"),
+        )
         items, has_more = _get_chat_completion_store(request).list(
             model=request.query_params.get("model"),
             metadata=metadata,
@@ -347,6 +438,19 @@ def create_app(
             payload, default_model=request.app.state.default_model
         )
         legacy_functions = uses_legacy_chat_functions(payload)
+        _log_verbose(
+            request,
+            "chat.completions.create model=%s stream=%s messages=%d store=%s "
+            "tools=%d legacy_functions=%s n=%s backend=%s",
+            response_payload.get("model"),
+            bool(payload.get("stream")),
+            len(payload.get("messages") or []),
+            payload.get("store") is True,
+            len(payload.get("tools") or []) + len(payload.get("functions") or []),
+            legacy_functions,
+            payload.get("n") or 1,
+            _backend_name(_get_backend(request)),
+        )
         if payload.get("stream"):
             return _sse_response(
                 _chat_completion_event_stream(
@@ -361,6 +465,12 @@ def create_app(
         try:
             response = await _get_backend(request).create_response(response_payload)
         except CodexBackendError as exc:
+            _log_verbose(
+                request,
+                "chat.completions.create.error status=%s message=%s",
+                exc.status_code,
+                str(exc),
+            )
             return _openai_error(exc.status_code, str(exc), error_type="api_error")
         response = ensure_response_defaults(response, request_payload=response_payload)
         chat_completion = response_to_chat_completion(
@@ -377,6 +487,13 @@ def create_app(
                 completion=chat_completion,
                 metadata=payload.get("metadata") or {},
             )
+        _log_verbose(
+            request,
+            "chat.completions.create.done completion_id=%s choices=%d finish_reason=%s",
+            chat_completion.get("id"),
+            len(chat_completion.get("choices") or []),
+            (chat_completion.get("choices") or [{}])[0].get("finish_reason"),
+        )
         return JSONResponse(chat_completion)
 
     @app.get("/v1/chat/completions/{completion_id}", response_model=None)
@@ -384,6 +501,12 @@ def create_app(
         request: Request, completion_id: str
     ) -> JSONResponse:
         stored = _get_chat_completion_store(request).get(completion_id)
+        _log_verbose(
+            request,
+            "chat.completions.retrieve completion_id=%s found=%s",
+            completion_id,
+            stored is not None,
+        )
         if stored is None:
             return _openai_error(
                 404,
@@ -399,6 +522,12 @@ def create_app(
         body: dict[str, Any] = Body(default_factory=dict),
     ) -> JSONResponse:
         metadata = body.get("metadata")
+        _log_verbose(
+            request,
+            "chat.completions.update completion_id=%s metadata_keys=%s",
+            completion_id,
+            sorted(metadata) if isinstance(metadata, dict) else None,
+        )
         if metadata is not None and not isinstance(metadata, dict):
             return _openai_error(
                 400,
@@ -421,6 +550,12 @@ def create_app(
         request: Request, completion_id: str
     ) -> JSONResponse:
         deleted = _get_chat_completion_store(request).delete(completion_id)
+        _log_verbose(
+            request,
+            "chat.completions.delete completion_id=%s deleted=%s",
+            completion_id,
+            deleted,
+        )
         if not deleted:
             return _openai_error(
                 404,
@@ -440,6 +575,15 @@ def create_app(
         request: Request, completion_id: str
     ) -> JSONResponse:
         stored = _get_chat_completion_store(request).get(completion_id)
+        _log_verbose(
+            request,
+            "chat.completions.messages completion_id=%s found=%s limit=%s order=%s after=%s",
+            completion_id,
+            stored is not None,
+            request.query_params.get("limit"),
+            request.query_params.get("order"),
+            request.query_params.get("after"),
+        )
         if stored is None:
             return _openai_error(
                 404,
@@ -494,10 +638,6 @@ def _build_backend(
         timeout=timeout,
         auth_config=auth_config,
     )
-
-
-app = create_app()
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -745,8 +885,10 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         settings = server_settings_from_args(args, loaded_config)
+        _configure_logging(settings.verbose)
+        _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
         uvicorn.run(
-            create_app(
+            app=create_app(
                 default_model=settings.default_model,
                 backend_name=settings.backend,
                 auth_json=settings.auth_json,
@@ -755,6 +897,7 @@ def _main(argv: list[str] | None = None) -> int:
                 timeout=settings.timeout,
                 codex_bin=settings.codex_bin,
                 app_server_cwd=settings.app_server_cwd,
+                verbose=settings.verbose,
             ),
             host=settings.host,
             port=settings.port,
@@ -764,9 +907,19 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     settings = server_settings_from_args(args, loaded_config)
+    _configure_logging(settings.verbose)
+    _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
     paths = daemon_paths_from_args(args, settings, loaded_config)
 
     if args.command == "start":
+        LOGGER.info(
+            "daemon.start host=%s port=%s pid_file=%s log_file=%s command=%s",
+            settings.host,
+            settings.port,
+            paths.pid_file,
+            paths.log_file,
+            serve_command(settings),
+        )
         try:
             pid = start_background(serve_command(settings), paths)
         except DaemonError as exc:
@@ -779,6 +932,13 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "stop":
+        LOGGER.info(
+            "daemon.stop host=%s port=%s pid_file=%s timeout=%s",
+            settings.host,
+            settings.port,
+            paths.pid_file,
+            stop_timeout_from_args(args, loaded_config),
+        )
         result = stop_background(paths, timeout=stop_timeout_from_args(args, loaded_config))
         if result.state == "not_running":
             print(f"Not running. PID file: {paths.pid_file}")
@@ -789,6 +949,13 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "status":
+        LOGGER.info(
+            "daemon.status host=%s port=%s pid_file=%s log_file=%s",
+            settings.host,
+            settings.port,
+            paths.pid_file,
+            paths.log_file,
+        )
         status = daemon_status(paths)
         if status.pid is None:
             print(f"stopped. PID file: {status.pid_file}")
@@ -991,6 +1158,85 @@ def _parse_bool(value: Any) -> bool:
     if isinstance(value, int):
         return bool(value)
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _configure_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.WARNING
+    LOGGER.setLevel(level)
+    if verbose and not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+
+
+def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
+    if not settings.verbose:
+        return
+    LOGGER.info(
+        "config.loaded path=%s exists=%s",
+        config_path,
+        config_path.exists(),
+    )
+    LOGGER.info(
+        "settings.resolved backend=%s host=%s port=%s default_model=%s timeout=%s "
+        "auth_json=%s backend_base_url=%s client_version=%s codex_bin=%s "
+        "app_server_cwd=%s verbose=%s",
+        settings.backend,
+        settings.host,
+        settings.port,
+        settings.default_model,
+        settings.timeout,
+        settings.auth_json,
+        settings.backend_base_url,
+        settings.client_version,
+        settings.codex_bin,
+        settings.app_server_cwd,
+        settings.verbose,
+    )
+
+
+def _install_verbose_request_logging(app: FastAPI) -> None:
+    if not bool(getattr(app.state, "verbose", False)):
+        return
+
+    @app.middleware("http")
+    async def _verbose_request_logger(request: Request, call_next: Any) -> Response:
+        started = time.perf_counter()
+        LOGGER.info(
+            "request.start method=%s path=%s query=%s client=%s",
+            request.method,
+            request.url.path,
+            request.url.query,
+            request.client.host if request.client else None,
+        )
+        try:
+            response = await call_next(request)
+        except Exception:
+            LOGGER.exception(
+                "request.error method=%s path=%s duration_ms=%.1f",
+                request.method,
+                request.url.path,
+                (time.perf_counter() - started) * 1000,
+            )
+            raise
+        LOGGER.info(
+            "request.end method=%s path=%s status=%s duration_ms=%.1f",
+            request.method,
+            request.url.path,
+            response.status_code,
+            (time.perf_counter() - started) * 1000,
+        )
+        return response
+
+
+def _log_verbose(request: Request, message: str, *args: Any) -> None:
+    if bool(getattr(request.app.state, "verbose", False)):
+        LOGGER.info(message, *args)
+
+
+def _backend_name(backend: Any) -> str:
+    return backend.__class__.__name__
 
 
 def _get_backend(request: Request) -> CodexBackend:
@@ -1654,6 +1900,9 @@ def _normalize_stream_event(event: Any) -> dict[str, Any]:
 def _sse_data(data: dict[str, Any]) -> bytes:
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f"data: {payload}\n\n".encode()
+
+
+app = create_app()
 
 
 if __name__ == "__main__":

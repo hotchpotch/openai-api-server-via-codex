@@ -95,7 +95,11 @@ uv run openai-api-server-via-codex config-generate --stdout
   config-backed daemon paths.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
   debug-level uvicorn logs and be preserved when `start` launches the
-  foreground `serve` command in the background.
+  foreground `serve` command in the background. Verbose mode should also emit
+  application diagnostics for resolved config/settings, request lifecycle,
+  endpoint summaries, model-list fallbacks, Codex HTTP stream/auth behavior, and
+  Codex app-server process, JSON-RPC, thread, turn, auth refresh, and dynamic
+  tool activity. Never log raw auth tokens.
 - Treat `codex-http` and `codex-app-server` as separate adapter contracts:
   `codex-http` preserves normal Responses API function-calling semantics,
   while `codex-app-server` maps OpenAI function schemas to Codex

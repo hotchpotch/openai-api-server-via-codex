@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -246,6 +247,35 @@ async def test_app_server_backend_streams_responses_events(
     ]
     assert events[0]["response"]["id"] == "resp_turn_1"
     assert events[-1]["response"]["output"][0]["content"][0]["text"] == "reply 1"
+
+
+@pytest.mark.asyncio
+async def test_app_server_backend_logs_stream_summary(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    fake_client = FakeAppServerClient()
+    monkeypatch.setattr(
+        "openai_api_server_via_codex.app_server.borrow_codex_key",
+        lambda auth_json=None: ("access-token", "account-id"),
+    )
+    backend = CodexAppServerBackend(client_factory=lambda: fake_client)
+
+    with caplog.at_level(logging.DEBUG, logger="openai_api_server_via_codex"):
+        response = await backend.create_response(
+            {
+                "model": "gpt-5.4-mini",
+                "input": [{"role": "user", "content": "Log app-server."}],
+                "reasoning": {"effort": "low"},
+            }
+        )
+
+    assert response["id"] == "resp_turn_1"
+    log_text = caplog.text
+    assert "app-server.stream.start model=gpt-5.4-mini input_items=1" in log_text
+    assert "app-server.auth.login.done account_id_present=True" in log_text
+    assert "app-server.thread.start thread_id=thread_1" in log_text
+    assert "app-server.turn.start thread_id=thread_1 turn_id=turn_1" in log_text
+    assert "app-server.stream.end response_id=resp_turn_1 output_items=1" in log_text
 
 
 @pytest.mark.asyncio

@@ -93,6 +93,17 @@ uv run openai-api-server-via-codex --backend codex-app-server --port 8001
 uv run openai-api-server-via-codex --verbose
 ```
 
+`--verbose`, `OPENAI_VIA_CODEX_VERBOSE=1`, or `[server].verbose = true` enables
+debug-level uvicorn logging plus application diagnostics. The server logs the
+resolved config/settings, request start/end status and latency, endpoint-level
+summaries for Responses and Chat Completions, model listing fallback reasons,
+Codex HTTP stream events, and Codex app-server process, JSON-RPC, thread, turn,
+auth refresh, and dynamic-tool activity. Auth tokens are not logged; only auth
+file paths and whether a ChatGPT account id was present are reported.
+
+When using `start`, pass `--verbose` or set it in config/env to preserve the
+same diagnostics in the background server log file printed by `start`.
+
 The two backends intentionally map to the two Codex integration routes:
 
 - `codex-http` forwards OpenAI Responses-compatible payloads to the Codex HTTP

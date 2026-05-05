@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -336,6 +337,37 @@ async def test_responses_create_round_trips_with_openai_client(
     assert response.usage.input_tokens == 3
     assert backend.requests[0]["reasoning"] == {"effort": "low"}
     assert backend.requests[0]["store"] is False
+
+
+@pytest.mark.asyncio
+async def test_verbose_app_logs_request_and_response_summary(caplog):
+    backend = RecordingBackend()
+    app = create_app(backend=backend, verbose=True)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="openai_api_server_via_codex"):
+            await client.responses.create(
+                model="gpt-5.4",
+                input="Log this request.",
+                reasoning={"effort": "low"},
+            )
+    finally:
+        await http_client.aclose()
+
+    log_text = caplog.text
+    assert "request.start method=POST path=/v1/responses" in log_text
+    assert "responses.create model=gpt-5.4 stream=False input_items=1" in log_text
+    assert "backend=RecordingBackend" in log_text
+    assert "request.end method=POST path=/v1/responses status=200" in log_text
 
 
 @pytest.mark.asyncio
