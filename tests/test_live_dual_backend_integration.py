@@ -209,7 +209,17 @@ async def test_live_dual_backends_handle_openai_client_compatibility_matrix() ->
             )
 
             async for backend_name, client in _named_clients(http_client, app_client):
+                await _assert_responses_retrieve_and_input_items(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
                 await _assert_responses_manual_context_without_previous_response_id(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_responses_json_object_format(
                     client,
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
@@ -219,12 +229,32 @@ async def test_live_dual_backends_handle_openai_client_compatibility_matrix() ->
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
                 )
+                await _assert_chat_multiple_choices(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_chat_json_object_format(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
                 await _assert_chat_structured_outputs(
                     client,
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
                 )
+                await _assert_tool_choice_none_text_only(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
                 await _assert_chat_legacy_functions(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_chat_stream_include_usage(
                     client,
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
@@ -782,6 +812,62 @@ async def _assert_long_plain_text_responses_conversation(
     _assert_contains_markers(final_text, markers, backend_name)
 
 
+async def _assert_responses_retrieve_and_input_items(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-RETRIEVE-818"
+    response = await client.responses.create(
+        model=model,
+        instructions="Return exact marker strings without modification.",
+        input=[
+            {"role": "user", "content": f"Remember marker {marker}."},
+            {
+                "role": "user",
+                "content": f"Reply with one sentence containing {marker}.",
+            },
+        ],
+        reasoning={"effort": "low"},
+    )
+    retrieved = await client.responses.retrieve(response.id)
+    input_items = await client.responses.input_items.list(response.id, limit=1)
+    next_items = await client.responses.input_items.list(response.id, after="input_0")
+    desc_items = await client.responses.input_items.list(
+        response.id, limit=1, order="desc"
+    )
+
+    _assert_response_api_shape(response, backend_name)
+    _assert_response_api_shape(retrieved, backend_name)
+    assert retrieved.id == response.id, (backend_name, retrieved.id, response.id)
+    assert retrieved.output_text == response.output_text, (
+        backend_name,
+        retrieved.output_text,
+        response.output_text,
+    )
+    assert _contains_marker(retrieved.output_text, marker), (
+        backend_name,
+        retrieved.output_text,
+    )
+    input_items_dump = input_items.model_dump(mode="json")
+    assert input_items_dump.get("object") == "list", (backend_name, input_items_dump)
+    assert [item.id for item in input_items.data] == ["input_0"], (
+        backend_name,
+        input_items.model_dump(mode="json"),
+    )
+    assert input_items.has_more is True, (backend_name, input_items)
+    assert [item.id for item in next_items.data] == ["input_1"], (
+        backend_name,
+        next_items.model_dump(mode="json"),
+    )
+    assert [item.id for item in desc_items.data] == ["input_1"], (
+        backend_name,
+        desc_items.model_dump(mode="json"),
+    )
+    print(
+        f"{backend_name} responses retrieve/input_items: "
+        f"{_short_text(retrieved.output_text)}"
+    )
+
+
 async def _assert_responses_manual_context_without_previous_response_id(
     client: AsyncOpenAI, model: str, backend_name: str
 ) -> None:
@@ -817,6 +903,31 @@ async def _assert_responses_manual_context_without_previous_response_id(
     )
 
 
+async def _assert_responses_json_object_format(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    response = await client.responses.create(
+        model=model,
+        instructions=(
+            "Return only valid JSON. Do not include markdown fences or commentary."
+        ),
+        input=(
+            'Return exactly this JSON object: {"kind":"responses_json_object",'
+            '"ok":true,"count":3}'
+        ),
+        text={"format": {"type": "json_object"}},
+        reasoning={"effort": "low"},
+    )
+    _assert_response_api_shape(response, backend_name)
+    parsed = _parse_json_text(response.output_text)
+    print(f"{backend_name} responses json_object: {parsed}")
+    assert parsed == {
+        "kind": "responses_json_object",
+        "ok": True,
+        "count": 3,
+    }, (backend_name, response.output_text)
+
+
 async def _assert_responses_structured_outputs(
     client: AsyncOpenAI, model: str, backend_name: str
 ) -> None:
@@ -841,6 +952,72 @@ async def _assert_responses_structured_outputs(
     assert parsed == {"code": "RESP-STRUCT-204", "count": 7}, (
         backend_name,
         response.output_text,
+    )
+
+
+async def _assert_chat_multiple_choices(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-CHAT-N-202"
+    completion = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "Preserve exact marker strings.",
+            },
+            {
+                "role": "user",
+                "content": f"Reply with one sentence containing {marker}.",
+            },
+        ],
+        n=2,
+        reasoning_effort="low",
+    )
+    _assert_chat_api_shape(completion, backend_name)
+    assert [choice.index for choice in completion.choices] == [0, 1], (
+        backend_name,
+        completion.model_dump(mode="json"),
+    )
+    texts = [choice.message.content or "" for choice in completion.choices]
+    assert all(_contains_marker(text, marker) for text in texts), (
+        backend_name,
+        texts,
+    )
+    print(f"{backend_name} chat n=2 choices: {[_short_text(text) for text in texts]}")
+
+
+async def _assert_chat_json_object_format(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    completion = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Return only valid JSON. Do not include markdown fences or "
+                    "commentary."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    'Return exactly this JSON object: {"kind":"chat_json_object",'
+                    '"ok":true,"count":4}'
+                ),
+            },
+        ],
+        response_format={"type": "json_object"},
+        reasoning_effort="low",
+    )
+    _assert_chat_api_shape(completion, backend_name)
+    text = completion.choices[0].message.content or ""
+    parsed = _parse_json_text(text)
+    print(f"{backend_name} chat json_object: {parsed}")
+    assert parsed == {"kind": "chat_json_object", "ok": True, "count": 4}, (
+        backend_name,
+        text,
     )
 
 
@@ -877,6 +1054,67 @@ async def _assert_chat_structured_outputs(
     assert parsed == {"code": "CHAT-STRUCT-305", "count": 11}, (
         backend_name,
         text,
+    )
+
+
+async def _assert_tool_choice_none_text_only(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    response_marker = f"{backend_name}-RESP-NO-TOOL-909"
+    response = await client.responses.create(
+        model=model,
+        instructions=(
+            "Do not call tools for this request. Return the marker as plain text."
+        ),
+        input=f"Reply with exactly: {response_marker}",
+        tools=cast(Any, [_probe_tool("never_call_response_probe")]),
+        tool_choice="none",
+        reasoning={"effort": "low"},
+    )
+    _assert_response_api_shape(response, backend_name)
+    response_output = _dump_model(response).get("output") or []
+    assert not any(
+        isinstance(item, dict) and item.get("type") == "function_call"
+        for item in response_output
+    ), (backend_name, _dump_model(response))
+    assert _contains_marker(response.output_text, response_marker), (
+        backend_name,
+        response.output_text,
+    )
+
+    chat_marker = f"{backend_name}-CHAT-NO-TOOL-910"
+    completion = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Do not call tools for this request. Return the marker as "
+                    "plain text."
+                ),
+            },
+            {"role": "user", "content": f"Reply with exactly: {chat_marker}"},
+        ],
+        tools=cast(
+            Any,
+            [
+                {
+                    "type": "function",
+                    "function": _probe_function("never_call_chat_probe"),
+                }
+            ],
+        ),
+        tool_choice="none",
+        reasoning_effort="low",
+    )
+    _assert_chat_api_shape(completion, backend_name)
+    message = completion.choices[0].message
+    assert not message.tool_calls, (backend_name, completion.model_dump(mode="json"))
+    chat_text = message.content or ""
+    assert _contains_marker(chat_text, chat_marker), (backend_name, chat_text)
+    print(
+        f"{backend_name} tool_choice none: "
+        f"responses={_short_text(response.output_text)} chat={_short_text(chat_text)}"
     )
 
 
@@ -977,6 +1215,40 @@ async def _assert_chat_legacy_functions(
     print(f"{backend_name} chat legacy function result: {_short_text(second_text)}")
     assert _contains_marker(second_text, marker), (backend_name, second_text)
     assert "paid" in second_text.lower(), (backend_name, second_text)
+
+
+async def _assert_chat_stream_include_usage(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-STREAM-USAGE-616"
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": f"Reply with one short sentence containing {marker}.",
+            }
+        ],
+        stream=True,
+        stream_options={"include_usage": True},
+        reasoning_effort="low",
+    )
+
+    text_parts: list[str] = []
+    usage_seen = False
+    async for chunk in stream:
+        if chunk.usage is not None:
+            usage_seen = True
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta.content:
+            text_parts.append(delta.content)
+
+    text = "".join(text_parts)
+    assert usage_seen, backend_name
+    assert _contains_marker(text, marker), (backend_name, text)
+    print(f"{backend_name} chat stream include_usage: {_short_text(text)}")
 
 
 async def _assert_responses_streaming_tool_call(

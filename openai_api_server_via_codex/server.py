@@ -227,8 +227,13 @@ def create_app(
         order = request.query_params.get("order")
         if order == "desc":
             items.reverse()
+        after = request.query_params.get("after")
+        if after:
+            items = _items_after_cursor(items, after)
         limit = _positive_int(request.query_params.get("limit"))
+        has_more = False
         if limit is not None:
+            has_more = len(items) > limit
             items = items[:limit]
 
         return JSONResponse(
@@ -237,7 +242,7 @@ def create_app(
                 "data": items,
                 "first_id": _input_item_id(items[0], 0) if items else None,
                 "last_id": _input_item_id(items[-1], len(items) - 1) if items else None,
-                "has_more": False,
+                "has_more": has_more,
             }
         )
 
@@ -584,6 +589,13 @@ def _response_input_page_items(items: list[Any]) -> list[Any]:
         _response_input_page_item(item, index)
         for index, item in enumerate(copy.deepcopy(items))
     ]
+
+
+def _items_after_cursor(items: list[Any], after: str) -> list[Any]:
+    for index, item in enumerate(items):
+        if _input_item_id(item, index) == after:
+            return items[index + 1 :]
+    return items
 
 
 def _response_input_page_item(item: Any, index: int) -> Any:

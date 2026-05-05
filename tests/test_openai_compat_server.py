@@ -512,6 +512,31 @@ async def test_responses_retrieve_and_input_items_list_use_local_store(
 
 
 @pytest.mark.asyncio
+async def test_responses_input_items_list_supports_basic_cursor_params(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    created = await client.responses.create(
+        model="gpt-5.4",
+        input=[
+            {"role": "user", "content": "first input item"},
+            {"role": "user", "content": "second input item"},
+        ],
+    )
+    first_page = await client.responses.input_items.list(created.id, limit=1)
+    next_page = await client.responses.input_items.list(created.id, after="input_0")
+    desc_page = await client.responses.input_items.list(created.id, limit=1, order="desc")
+
+    assert [item.id for item in first_page.data] == ["input_0"]
+    assert first_page.has_more is True
+    assert [item.id for item in next_page.data] == ["input_1"]
+    assert next_page.has_more is False
+    assert [item.id for item in desc_page.data] == ["input_1"]
+    assert desc_page.has_more is True
+
+
+@pytest.mark.asyncio
 async def test_responses_retrieve_unknown_id_returns_openai_error(
     openai_client_with_backend,
 ):
