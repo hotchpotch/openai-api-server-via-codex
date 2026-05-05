@@ -149,6 +149,13 @@ def response_to_chat_completion(
     total_tokens = int(usage.get("total_tokens") or prompt_tokens + completion_tokens)
     created = int(response.get("created_at") or time.time())
     response_id = str(response.get("id") or f"resp_{created}")
+    tool_calls = _response_function_calls_to_chat_tool_calls(response)
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": None if tool_calls else extract_response_text(response),
+    }
+    if tool_calls:
+        message["tool_calls"] = tool_calls
 
     return {
         "id": response_id.replace("resp_", "chatcmpl_", 1)
@@ -160,10 +167,7 @@ def response_to_chat_completion(
         "choices": [
             {
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": extract_response_text(response),
-                },
+                "message": message,
                 "finish_reason": _chat_finish_reason(response),
                 "logprobs": None,
             }
@@ -218,6 +222,26 @@ def _output_message_text(item: dict[str, Any]) -> str:
         if part.get("type") == "output_text" and isinstance(part.get("text"), str):
             texts.append(part["text"])
     return "".join(texts)
+
+
+def _response_function_calls_to_chat_tool_calls(
+    response: dict[str, Any],
+) -> list[dict[str, Any]]:
+    tool_calls: list[dict[str, Any]] = []
+    for item in response.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        tool_calls.append(
+            {
+                "id": str(item.get("call_id") or item.get("id") or ""),
+                "type": "function",
+                "function": {
+                    "name": str(item.get("name") or ""),
+                    "arguments": str(item.get("arguments") or ""),
+                },
+            }
+        )
+    return tool_calls
 
 
 def _collect_instructions(messages: Any) -> str | None:

@@ -51,6 +51,11 @@ uv run openai-api-server-via-codex --backend codex-app-server --port 8001
   store when a response completes, including streaming responses.
 - The default backend is `chatgpt-http`. Keep `codex-app-server` explicitly
   selectable because Codex app-server JSON-RPC is experimental.
+- Treat `chatgpt-http` and `codex-app-server` as separate adapter contracts:
+  `chatgpt-http` preserves normal Responses API function-calling semantics,
+  while `codex-app-server` maps OpenAI function schemas to Codex
+  `dynamicTools` and projects app-server dynamic tool notifications back into
+  OpenAI-compatible `function_call` / `tool_calls` items.
 - The native app-server backend owns Codex thread bindings internally, so the
   FastAPI layer should forward `previous_response_id` to backends that declare
   native session support instead of replaying local context into the request.

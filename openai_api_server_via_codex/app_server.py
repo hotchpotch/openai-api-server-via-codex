@@ -32,6 +32,7 @@ class CodexAppServerConfig:
 class _ThreadBinding:
     thread_id: str
     model: str | None
+    dynamic_tools_fingerprint: str
 
 
 class JsonRpcCodexAppServerClient:
@@ -225,7 +226,29 @@ class JsonRpcCodexAppServerClient:
             "item/commandExecution/requestApproval",
             "item/fileChange/requestApproval",
         }:
-            return {"decision": "accept"}
+            return {
+                "decision": "decline",
+                "reason": "OpenAI-compatible app-server adapter does not grant native approvals.",
+            }
+        if method == "item/permissions/requestApproval":
+            return {"permissions": {}, "scope": "turn"}
+        if method == "item/tool/call":
+            params = _dict_value(message.get("params"))
+            tool_name = str(params.get("tool") or "tool")
+            call_id = str(params.get("callId") or params.get("call_id") or "unknown")
+            return {
+                "contentItems": [
+                    {
+                        "type": "inputText",
+                        "text": (
+                            f"Tool call {call_id} for {tool_name} was surfaced to "
+                            "the OpenAI-compatible client. Provide the result as "
+                            "function_call_output in a later request."
+                        ),
+                    }
+                ],
+                "success": False,
+            }
         return {}
 
 
@@ -272,11 +295,17 @@ class CodexAppServerBackend:
             self._bindings[response_id] = _ThreadBinding(
                 thread_id=thread_id,
                 model=str(payload.get("model") or "") or None,
+                dynamic_tools_fingerprint=_dynamic_tools_fingerprint(
+                    response_tools_to_app_server_dynamic_tools(payload.get("tools"))
+                ),
             )
             created_at = time.time()
             output_item_id = f"msg_{_safe_id(turn_id)}"
             text_parts: list[str] = []
-            completed_item: dict[str, Any] | None = None
+            completed_text_item: dict[str, Any] | None = None
+            output_items: list[dict[str, Any] | None] = []
+            function_call_indexes: dict[str, int] = {}
+            emitted_function_call_done: set[str] = set()
 
             yield {
                 "type": "response.created",
@@ -287,6 +316,7 @@ class CodexAppServerBackend:
                     model=payload.get("model"),
                     output=[],
                     status="in_progress",
+                    request_payload=payload,
                 ),
             }
 
@@ -310,11 +340,100 @@ class CodexAppServerBackend:
                         "logprobs": [],
                     }
                     sequence_number += 1
+                elif method == "item/started":
+                    item = params.get("item")
+                    if isinstance(item, dict) and item.get("type") == "dynamicToolCall":
+                        response_item = _dynamic_tool_call_item_to_response_item(
+                            item, status="in_progress"
+                        )
+                        call_id = response_item["call_id"]
+                        if call_id not in function_call_indexes:
+                            output_index = len(output_items)
+                            function_call_indexes[call_id] = output_index
+                            output_items.append(response_item)
+                            yield {
+                                "type": "response.output_item.added",
+                                "sequence_number": sequence_number,
+                                "output_index": output_index,
+                                "item": {**response_item, "arguments": ""},
+                            }
+                            sequence_number += 1
+                            arguments = str(response_item.get("arguments") or "")
+                            if arguments:
+                                yield {
+                                    "type": "response.function_call_arguments.delta",
+                                    "sequence_number": sequence_number,
+                                    "output_index": output_index,
+                                    "item_id": response_item["id"],
+                                    "delta": arguments,
+                                }
+                                sequence_number += 1
                 elif method == "item/completed":
                     item = params.get("item")
                     if isinstance(item, dict) and item.get("type") == "agentMessage":
-                        completed_item = _agent_message_item_to_response_item(item)
-                        output_item_id = str(completed_item["id"])
+                        completed_text_item = _agent_message_item_to_response_item(item)
+                        output_item_id = str(completed_text_item["id"])
+                    elif isinstance(item, dict) and item.get("type") == "dynamicToolCall":
+                        response_item = _dynamic_tool_call_item_to_response_item(
+                            item, status="completed"
+                        )
+                        call_id = response_item["call_id"]
+                        output_index = function_call_indexes.setdefault(
+                            call_id, len(output_items)
+                        )
+                        if output_index == len(output_items):
+                            output_items.append(response_item)
+                        else:
+                            output_items[output_index] = response_item
+                        if call_id not in emitted_function_call_done:
+                            yield {
+                                "type": "response.output_item.done",
+                                "sequence_number": sequence_number,
+                                "output_index": output_index,
+                                "item": response_item,
+                            }
+                            sequence_number += 1
+                            emitted_function_call_done.add(call_id)
+                    elif isinstance(item, dict):
+                        response_item = _raw_response_item_to_response_item(item)
+                        if response_item and response_item.get("type") == "function_call":
+                            call_id = response_item["call_id"]
+                            output_index = function_call_indexes.setdefault(
+                                call_id, len(output_items)
+                            )
+                            if output_index == len(output_items):
+                                output_items.append(response_item)
+                            else:
+                                output_items[output_index] = response_item
+                            if call_id not in emitted_function_call_done:
+                                yield {
+                                    "type": "response.output_item.done",
+                                    "sequence_number": sequence_number,
+                                    "output_index": output_index,
+                                    "item": response_item,
+                                }
+                                sequence_number += 1
+                                emitted_function_call_done.add(call_id)
+                elif method == "rawResponseItem/completed":
+                    response_item = _raw_response_item_to_response_item(params.get("item"))
+                    if response_item and response_item.get("type") == "function_call":
+                        call_id = response_item["call_id"]
+                        output_index = function_call_indexes.setdefault(
+                            call_id, len(output_items)
+                        )
+                        if output_index == len(output_items):
+                            output_items.append(response_item)
+                        else:
+                            output_items[output_index] = response_item
+                        if call_id not in emitted_function_call_done:
+                            yield {
+                                "type": "response.output_item.done",
+                                "sequence_number": sequence_number,
+                                "output_index": output_index,
+                                "item": response_item,
+                            }
+                            sequence_number += 1
+                            emitted_function_call_done.add(call_id)
                 elif method == "turn/completed":
                     turn_payload = params.get("turn")
                     if (
@@ -330,32 +449,36 @@ class CodexAppServerBackend:
                         raise CodexBackendError(str(message))
                     break
 
-            if completed_item is None:
-                completed_item = _text_response_item(
-                    item_id=output_item_id,
-                    text="".join(text_parts),
-                )
+            final_output = [item for item in output_items if item is not None]
+            if completed_text_item is None:
+                if not final_output:
+                    completed_text_item = _text_response_item(
+                        item_id=output_item_id,
+                        text="".join(text_parts),
+                    )
             elif not text_parts:
-                final_text = _response_item_text(completed_item)
+                final_text = _response_item_text(completed_text_item)
                 if final_text:
                     yield {
                         "type": "response.output_text.delta",
                         "sequence_number": sequence_number,
                         "output_index": 0,
                         "content_index": 0,
-                        "item_id": str(completed_item["id"]),
+                        "item_id": str(completed_text_item["id"]),
                         "delta": final_text,
                         "logprobs": [],
                     }
                     sequence_number += 1
 
-            yield {
-                "type": "response.output_item.done",
-                "sequence_number": sequence_number,
-                "output_index": 0,
-                "item": completed_item,
-            }
-            sequence_number += 1
+            if completed_text_item is not None:
+                final_output.append(completed_text_item)
+                yield {
+                    "type": "response.output_item.done",
+                    "sequence_number": sequence_number,
+                    "output_index": len(final_output) - 1,
+                    "item": completed_text_item,
+                }
+                sequence_number += 1
             yield {
                 "type": "response.completed",
                 "sequence_number": sequence_number,
@@ -363,8 +486,9 @@ class CodexAppServerBackend:
                     response_id=response_id,
                     created_at=created_at,
                     model=payload.get("model"),
-                    output=[completed_item],
+                    output=final_output,
                     previous_response_id=payload.get("previous_response_id"),
+                    request_payload=payload,
                 ),
             }
 
@@ -491,7 +615,13 @@ def _thread_start_params(
     params: dict[str, Any] = {
         "model": payload.get("model"),
         "baseInstructions": payload.get("instructions"),
+        "serviceName": "OpenAI API Server via Codex",
+        "experimentalRawEvents": True,
+        "persistExtendedHistory": True,
     }
+    dynamic_tools = response_tools_to_app_server_dynamic_tools(payload.get("tools"))
+    if dynamic_tools:
+        params["dynamicTools"] = dynamic_tools
     if config.cwd is not None:
         params["cwd"] = str(config.cwd)
     return {key: value for key, value in params.items() if value is not None}
@@ -537,7 +667,9 @@ def _response_payload(
     output: list[dict[str, Any]],
     status: str = "completed",
     previous_response_id: Any = None,
+    request_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    request_payload = request_payload or {}
     return {
         "id": response_id,
         "object": "response",
@@ -546,8 +678,8 @@ def _response_payload(
         "model": model,
         "output": output,
         "parallel_tool_calls": True,
-        "tool_choice": "auto",
-        "tools": [],
+        "tool_choice": request_payload.get("tool_choice") or "auto",
+        "tools": request_payload.get("tools") or [],
         "previous_response_id": previous_response_id,
         "usage": None,
     }
@@ -567,6 +699,78 @@ def _agent_message_item_to_response_item(item: dict[str, Any]) -> dict[str, Any]
         text=str(item.get("text") or ""),
         phase=str(item["phase"]) if item.get("phase") else "final_answer",
     )
+
+
+def response_tools_to_app_server_dynamic_tools(tools: Any) -> list[dict[str, Any]]:
+    if not isinstance(tools, list):
+        return []
+
+    dynamic_tools: list[dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function") if tool.get("type") == "function" else None
+        if isinstance(function, dict):
+            name = function.get("name")
+            description = function.get("description")
+            parameters = function.get("parameters")
+        else:
+            if tool.get("type") != "function":
+                continue
+            name = tool.get("name")
+            description = tool.get("description")
+            parameters = tool.get("parameters")
+        if not name:
+            continue
+        dynamic_tools.append(
+            {
+                "name": str(name),
+                "description": str(description or ""),
+                "inputSchema": parameters or {"type": "object", "properties": {}},
+                "deferLoading": False,
+            }
+        )
+    return dynamic_tools
+
+
+def _dynamic_tools_fingerprint(dynamic_tools: list[dict[str, Any]]) -> str:
+    return json.dumps(dynamic_tools, sort_keys=True, separators=(",", ":"))
+
+
+def _dynamic_tool_call_item_to_response_item(
+    item: dict[str, Any], *, status: str
+) -> dict[str, Any]:
+    call_id = str(item.get("id") or f"call_{int(time.time() * 1000)}")
+    return {
+        "id": call_id,
+        "type": "function_call",
+        "call_id": call_id,
+        "name": str(item.get("tool") or ""),
+        "arguments": _json_arguments(item.get("arguments")),
+        "status": status,
+    }
+
+
+def _raw_response_item_to_response_item(item: Any) -> dict[str, Any] | None:
+    if not isinstance(item, dict) or item.get("type") != "function_call":
+        return None
+    call_id = str(item.get("call_id") or item.get("id") or f"call_{int(time.time() * 1000)}")
+    return {
+        "id": str(item.get("id") or call_id),
+        "type": "function_call",
+        "call_id": call_id,
+        "name": str(item.get("name") or ""),
+        "arguments": _json_arguments(item.get("arguments")),
+        "status": str(item.get("status") or "completed"),
+    }
+
+
+def _json_arguments(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return "{}"
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
 
 
 def _text_response_item(

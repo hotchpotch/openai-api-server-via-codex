@@ -188,6 +188,37 @@ class ToolCallStreamingBackend(RecordingBackend):
         }
 
 
+class ToolCallResponseBackend(RecordingBackend):
+    async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.requests.append(payload)
+        created_at = time.time()
+        return {
+            "id": "resp_tool_1",
+            "object": "response",
+            "created_at": created_at,
+            "status": "completed",
+            "model": payload["model"],
+            "output": [
+                {
+                    "id": "fc_fake_1",
+                    "type": "function_call",
+                    "call_id": "call_fake_1",
+                    "name": "lookup_weather",
+                    "arguments": '{"city":"Tokyo"}',
+                    "status": "completed",
+                }
+            ],
+            "parallel_tool_calls": True,
+            "tool_choice": payload.get("tool_choice") or "auto",
+            "tools": payload.get("tools") or [],
+            "usage": {
+                "input_tokens": 7,
+                "output_tokens": 2,
+                "total_tokens": 9,
+            },
+        }
+
+
 class NativeSessionRecordingBackend(RecordingBackend):
     supports_native_sessions = True
 
@@ -461,6 +492,57 @@ async def test_chat_completions_create_streams_openai_chunks(
     assert usage_total_tokens == 8
     assert backend.requests[0]["instructions"] == "You are terse."
     assert backend.requests[0]["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_create_returns_tool_calls_without_streaming():
+    backend = ToolCallResponseBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        completion = await client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {"role": "user", "content": "Call the weather tool for Tokyo."}
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup_weather",
+                        "description": "Look up weather.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    },
+                }
+            ],
+        )
+
+        message = completion.choices[0].message
+        assert message.content is None
+        assert message.tool_calls is not None
+        tool_call = message.tool_calls[0]
+        function = getattr(tool_call, "function")
+        assert tool_call.id == "call_fake_1"
+        assert tool_call.type == "function"
+        assert function.name == "lookup_weather"
+        assert function.arguments == '{"city":"Tokyo"}'
+        assert completion.choices[0].finish_reason == "tool_calls"
+        assert backend.requests[0]["tools"][0]["name"] == "lookup_weather"
+    finally:
+        await http_client.aclose()
 
 
 @pytest.mark.asyncio

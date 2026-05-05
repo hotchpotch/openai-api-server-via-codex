@@ -107,6 +107,68 @@ class FakeAppServerClient:
         self.started = False
 
 
+class FakeToolCallAppServerClient(FakeAppServerClient):
+    async def turn_start(
+        self, *, thread_id: str, input_items: list[dict[str, Any]], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.turn_start_calls.append(
+            {"thread_id": thread_id, "input": input_items, "params": params}
+        )
+        self._turn_counter += 1
+        turn_id = f"turn_{self._turn_counter}"
+        item = {
+            "type": "dynamicToolCall",
+            "id": "call_weather_1",
+            "namespace": None,
+            "tool": "lookup_weather",
+            "arguments": {"city": "Tokyo"},
+            "status": "inProgress",
+            "contentItems": None,
+            "success": None,
+            "durationMs": None,
+        }
+        self._notifications.extend(
+            [
+                {
+                    "method": "turn/started",
+                    "params": {
+                        "threadId": thread_id,
+                        "turn": {"id": turn_id, "items": [], "status": "inProgress"},
+                    },
+                },
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "item": item,
+                    },
+                },
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": turn_id,
+                        "item": {**item, "status": "completed"},
+                    },
+                },
+                {
+                    "method": "turn/completed",
+                    "params": {
+                        "threadId": thread_id,
+                        "turn": {
+                            "id": turn_id,
+                            "items": [],
+                            "status": "completed",
+                            "completedAt": 1_700_000_000,
+                        },
+                    },
+                },
+            ]
+        )
+        return {"turn": {"id": turn_id, "items": [], "status": "inProgress"}}
+
+
 @pytest.mark.asyncio
 async def test_app_server_backend_creates_thread_and_binds_response_id(
     monkeypatch: pytest.MonkeyPatch,
@@ -184,6 +246,76 @@ async def test_app_server_backend_streams_responses_events(
     ]
     assert events[0]["response"]["id"] == "resp_turn_1"
     assert events[-1]["response"]["output"][0]["content"][0]["text"] == "reply 1"
+
+
+@pytest.mark.asyncio
+async def test_app_server_backend_projects_dynamic_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = FakeToolCallAppServerClient()
+    monkeypatch.setattr(
+        "openai_api_server_via_codex.app_server.borrow_codex_key",
+        lambda auth_json=None: ("access-token", "account-id"),
+    )
+    backend = CodexAppServerBackend(client_factory=lambda: fake_client)
+
+    events = [
+        event
+        async for event in backend.stream_response(
+            {
+                "model": "gpt-5.4",
+                "input": [{"role": "user", "content": "Call weather for Tokyo."}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "name": "lookup_weather",
+                        "description": "Look up weather.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    }
+                ],
+            }
+        )
+    ]
+
+    assert fake_client.thread_start_calls[0]["dynamicTools"] == [
+        {
+            "name": "lookup_weather",
+            "description": "Look up weather.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+            },
+            "deferLoading": False,
+        }
+    ]
+    assert fake_client.thread_start_calls[0]["experimentalRawEvents"] is True
+    assert fake_client.thread_start_calls[0]["persistExtendedHistory"] is True
+
+    assert [event["type"] for event in events] == [
+        "response.created",
+        "response.output_item.added",
+        "response.function_call_arguments.delta",
+        "response.output_item.done",
+        "response.completed",
+    ]
+    assert events[1]["item"]["type"] == "function_call"
+    assert events[1]["item"]["name"] == "lookup_weather"
+    assert events[2]["delta"] == '{"city":"Tokyo"}'
+    assert events[3]["item"] == {
+        "id": "call_weather_1",
+        "type": "function_call",
+        "call_id": "call_weather_1",
+        "name": "lookup_weather",
+        "arguments": '{"city":"Tokyo"}',
+        "status": "completed",
+    }
+    assert events[-1]["response"]["output"] == [events[3]["item"]]
+    assert events[-1]["response"]["tools"][0]["name"] == "lookup_weather"
 
 
 @pytest.mark.asyncio
