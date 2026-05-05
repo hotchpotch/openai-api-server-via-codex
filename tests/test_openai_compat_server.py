@@ -1147,7 +1147,7 @@ async def test_chat_completions_response_format_maps_to_responses_text_config(
 ):
     client, backend = openai_client_with_backend
 
-    await client.chat.completions.create(
+    completion = await client.chat.completions.create(
         model="gpt-5.4",
         messages=[
             {"role": "user", "content": "Return a JSON object with answer=yes."}
@@ -1186,8 +1186,9 @@ async def test_chat_completions_response_format_maps_to_responses_text_config(
     }
     assert backend.requests[0]["temperature"] == 0.2
     assert backend.requests[0]["top_p"] == 0.9
-    assert backend.requests[0]["metadata"] == {"case": "response-format"}
+    assert "metadata" not in backend.requests[0]
     assert backend.requests[0]["user"] == "compat-user"
+    assert completion.model_dump(mode="json")["metadata"] == {"case": "response-format"}
 
 
 @pytest.mark.asyncio

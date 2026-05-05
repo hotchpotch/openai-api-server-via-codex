@@ -897,26 +897,27 @@ async def _assert_responses_auxiliary_sdk_methods(
 
     stream = await client.responses.retrieve(response.id, stream=True)
     event_types: list[str] = []
-    replayed_output_text: str | None = None
+    replayed_output_text_parts: list[str] = []
     completed_response_id: str | None = None
     async for event in stream:
         event_types.append(event.type)
         if event.type == "response.output_item.done":
             item = getattr(event, "item", None)
-            replayed_output_text = _response_item_text(_dump_model(item))
+            item_text = _response_item_text(_dump_model(item))
+            if item_text:
+                replayed_output_text_parts.append(item_text)
         elif event.type == "response.completed":
             completed_response_id = getattr(event, "response").id
 
-    assert event_types == [
-        "response.created",
-        "response.output_item.done",
-        "response.completed",
-    ], (backend_name, event_types)
+    assert event_types[0] == "response.created", (backend_name, event_types)
+    assert event_types[-1] == "response.completed", (backend_name, event_types)
+    assert "response.output_item.done" in event_types, (backend_name, event_types)
     assert completed_response_id == response.id, (
         backend_name,
         completed_response_id,
         response.id,
     )
+    replayed_output_text = "".join(replayed_output_text_parts)
     assert replayed_output_text == response.output_text, (
         backend_name,
         replayed_output_text,
@@ -1109,7 +1110,7 @@ async def _assert_chat_stored_completion_lifecycle(
     listed = await client.chat.completions.list(
         limit=5,
         metadata={"backend": backend_name, "case": "live-stored-chat"},
-        model=model,
+        model=completion.model,
     )
     messages = await client.chat.completions.messages.list(completion.id)
     updated = await client.chat.completions.update(

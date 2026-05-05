@@ -286,7 +286,6 @@ def chat_request_to_response_payload(
         payload,
         response_payload,
         (
-            "metadata",
             "parallel_tool_calls",
             "service_tier",
             "temperature",
