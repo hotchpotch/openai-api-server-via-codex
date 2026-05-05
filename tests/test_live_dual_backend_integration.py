@@ -254,6 +254,11 @@ async def test_live_dual_backends_handle_openai_client_compatibility_matrix() ->
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
                 )
+                await _assert_chat_stream_multiple_choices(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
                 await _assert_chat_stream_include_usage(
                     client,
                     LIVE_LONG_TEST_MODEL,
@@ -1249,6 +1254,52 @@ async def _assert_chat_stream_include_usage(
     assert usage_seen, backend_name
     assert _contains_marker(text, marker), (backend_name, text)
     print(f"{backend_name} chat stream include_usage: {_short_text(text)}")
+
+
+async def _assert_chat_stream_multiple_choices(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-STREAM-N-313"
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "Preserve exact marker strings.",
+            },
+            {
+                "role": "user",
+                "content": f"Reply with one short sentence containing {marker}.",
+            },
+        ],
+        stream=True,
+        n=2,
+        reasoning_effort="low",
+    )
+
+    content_parts: dict[int, list[str]] = {0: [], 1: []}
+    finish_reasons: dict[int, list[str]] = {0: [], 1: []}
+    async for chunk in stream:
+        for choice in chunk.choices:
+            if choice.delta.content:
+                content_parts.setdefault(choice.index, []).append(choice.delta.content)
+            if choice.finish_reason:
+                finish_reasons.setdefault(choice.index, []).append(choice.finish_reason)
+
+    texts = {index: "".join(parts) for index, parts in content_parts.items()}
+    assert sorted(texts) == [0, 1], (backend_name, texts)
+    assert all(_contains_marker(text, marker) for text in texts.values()), (
+        backend_name,
+        texts,
+    )
+    assert finish_reasons == {0: ["stop"], 1: ["stop"]}, (
+        backend_name,
+        finish_reasons,
+    )
+    print(
+        f"{backend_name} chat stream n=2 choices: "
+        f"{[_short_text(texts[index]) for index in sorted(texts)]}"
+    )
 
 
 async def _assert_responses_streaming_tool_call(

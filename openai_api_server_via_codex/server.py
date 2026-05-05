@@ -712,6 +712,7 @@ class _ChatStreamState:
     chat_id: str
     created: int
     model: str
+    choice_count: int = 1
     role_sent: bool = False
     saw_text_delta: bool = False
 
@@ -799,6 +800,7 @@ async def _chat_completion_event_stream(
         chat_id=f"chatcmpl_{created}",
         created=created,
         model=str(response_payload.get("model") or DEFAULT_MODEL),
+        choice_count=_chat_choice_count(chat_payload.get("n")),
     )
     include_usage = bool(
         isinstance(chat_payload.get("stream_options"), dict)
@@ -1023,11 +1025,12 @@ def _chat_chunk(
         if choices is not None
         else [
             {
-                "index": 0,
-                "delta": delta,
+                "index": index,
+                "delta": copy.deepcopy(delta),
                 "finish_reason": finish_reason,
                 "logprobs": None,
             }
+            for index in range(state.choice_count)
         ],
     }
     if usage is not None:

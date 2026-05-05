@@ -722,6 +722,42 @@ async def test_chat_completions_create_streams_openai_chunks(
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_streaming_n_duplicates_choice_chunks(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    stream = await client.chat.completions.create(
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Stream two choices."}],
+        stream=True,
+        n=2,
+        reasoning_effort="low",
+    )
+
+    roles: dict[int, list[str]] = {0: [], 1: []}
+    content_parts: dict[int, list[str]] = {0: [], 1: []}
+    finish_reasons: dict[int, list[str]] = {0: [], 1: []}
+    async for chunk in stream:
+        for choice in chunk.choices:
+            if choice.delta.role:
+                roles[choice.index].append(choice.delta.role)
+            if choice.delta.content:
+                content_parts[choice.index].append(choice.delta.content)
+            if choice.finish_reason:
+                finish_reasons[choice.index].append(choice.finish_reason)
+
+    assert roles == {0: ["assistant"], 1: ["assistant"]}
+    assert {
+        index: "".join(parts) for index, parts in content_parts.items()
+    } == {
+        0: "fake: Stream two choices.",
+        1: "fake: Stream two choices.",
+    }
+    assert finish_reasons == {0: ["stop"], 1: ["stop"]}
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_create_returns_tool_calls_without_streaming():
     backend = ToolCallResponseBackend()
     app = create_app(backend=backend)
