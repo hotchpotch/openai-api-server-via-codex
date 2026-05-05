@@ -34,6 +34,7 @@ from .compat import (
     extract_response_text,
     prepare_response_payload,
     response_to_chat_completion,
+    uses_legacy_chat_functions,
 )
 from .daemon import (
     DaemonError,
@@ -207,12 +208,14 @@ def create_app(
         response_payload = chat_request_to_response_payload(
             payload, default_model=request.app.state.default_model
         )
+        legacy_functions = uses_legacy_chat_functions(payload)
         if payload.get("stream"):
             return _sse_response(
                 _chat_completion_event_stream(
                     backend=_get_backend(request),
                     response_payload=response_payload,
                     chat_payload=payload,
+                    legacy_functions=legacy_functions,
                 )
             )
 
@@ -222,7 +225,9 @@ def create_app(
             return _openai_error(exc.status_code, str(exc), error_type="api_error")
         response = ensure_response_defaults(response, request_payload=response_payload)
         chat_completion = response_to_chat_completion(
-            response, fallback_model=response_payload["model"]
+            response,
+            fallback_model=response_payload["model"],
+            legacy_functions=legacy_functions,
         )
         return JSONResponse(chat_completion)
 
@@ -621,6 +626,7 @@ async def _chat_completion_event_stream(
     backend: CodexBackend,
     response_payload: dict[str, Any],
     chat_payload: dict[str, Any],
+    legacy_functions: bool = False,
 ) -> AsyncIterator[bytes]:
     created = int(time.time())
     state = _ChatStreamState(
@@ -663,20 +669,26 @@ async def _chat_completion_event_stream(
                         yield chunk
                     output_index = int(event.get("output_index") or 0)
                     emitted_tool_arguments.setdefault(output_index, "")
+                    if legacy_functions:
+                        delta = {
+                            "function_call": {
+                                "name": item.get("name") or "",
+                                "arguments": "",
+                            }
+                        }
+                    else:
+                        delta = {
+                            "tool_calls": [
+                                _chat_tool_call_delta(
+                                    item,
+                                    index=output_index,
+                                    arguments="",
+                                    include_identity=True,
+                                )
+                            ]
+                        }
                     yield _sse_data(
-                        _chat_chunk(
-                            state,
-                            {
-                                "tool_calls": [
-                                    _chat_tool_call_delta(
-                                        item,
-                                        index=output_index,
-                                        arguments="",
-                                        include_identity=True,
-                                    )
-                                ]
-                            },
-                        )
+                        _chat_chunk(state, delta)
                     )
                 continue
 
@@ -688,18 +700,19 @@ async def _chat_completion_event_stream(
                 emitted_tool_arguments[output_index] = (
                     emitted_tool_arguments.get(output_index, "") + delta
                 )
+                if legacy_functions:
+                    chunk_delta = {"function_call": {"arguments": delta}}
+                else:
+                    chunk_delta = {
+                        "tool_calls": [
+                            {
+                                "index": output_index,
+                                "function": {"arguments": delta},
+                            }
+                        ]
+                    }
                 yield _sse_data(
-                    _chat_chunk(
-                        state,
-                        {
-                            "tool_calls": [
-                                {
-                                    "index": output_index,
-                                    "function": {"arguments": delta},
-                                }
-                            ]
-                        },
-                    )
+                    _chat_chunk(state, chunk_delta)
                 )
                 continue
 
@@ -707,7 +720,11 @@ async def _chat_completion_event_stream(
                 item = event.get("item")
                 if isinstance(item, dict):
                     async for chunk in _chat_output_item_done_chunks(
-                        state, item, event, emitted_tool_arguments
+                        state,
+                        item,
+                        event,
+                        emitted_tool_arguments,
+                        legacy_functions=legacy_functions,
                     ):
                         yield chunk
                 continue
@@ -726,7 +743,9 @@ async def _chat_completion_event_stream(
                     async for chunk in _ensure_chat_role_chunk(state):
                         yield chunk
                     completion = response_to_chat_completion(
-                        response, fallback_model=state.model
+                        response,
+                        fallback_model=state.model,
+                        legacy_functions=legacy_functions,
                     )
                     finish_reason = completion["choices"][0]["finish_reason"]
                     yield _sse_data(
@@ -763,6 +782,8 @@ async def _chat_output_item_done_chunks(
     item: dict[str, Any],
     event: dict[str, Any],
     emitted_tool_arguments: dict[int, str],
+    *,
+    legacy_functions: bool = False,
 ) -> AsyncIterator[bytes]:
     if item.get("type") == "function_call":
         output_index = int(event.get("output_index") or 0)
@@ -770,20 +791,26 @@ async def _chat_output_item_done_chunks(
             async for chunk in _ensure_chat_role_chunk(state):
                 yield chunk
             emitted_tool_arguments[output_index] = str(item.get("arguments") or "")
+            if legacy_functions:
+                delta = {
+                    "function_call": {
+                        "name": item.get("name") or "",
+                        "arguments": emitted_tool_arguments[output_index],
+                    }
+                }
+            else:
+                delta = {
+                    "tool_calls": [
+                        _chat_tool_call_delta(
+                            item,
+                            index=output_index,
+                            arguments=emitted_tool_arguments[output_index],
+                            include_identity=True,
+                        )
+                    ]
+                }
             yield _sse_data(
-                _chat_chunk(
-                    state,
-                    {
-                        "tool_calls": [
-                            _chat_tool_call_delta(
-                                item,
-                                index=output_index,
-                                arguments=emitted_tool_arguments[output_index],
-                                include_identity=True,
-                            )
-                        ]
-                    },
-                )
+                _chat_chunk(state, delta)
             )
         return
 

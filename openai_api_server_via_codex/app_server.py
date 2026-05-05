@@ -578,6 +578,19 @@ def response_input_to_app_server_input(input_value: Any) -> list[dict[str, Any]]
 
 
 def _response_item_to_app_server_items(value: dict[str, Any]) -> list[dict[str, Any]]:
+    if value.get("type") == "function_call":
+        call_id = value.get("call_id") or value.get("id") or "unknown"
+        name = value.get("name") or "function"
+        arguments = value.get("arguments")
+        if not isinstance(arguments, str):
+            arguments = _json_arguments(arguments)
+        return [
+            {
+                "type": "text",
+                "text": f"assistant tool call {call_id} {name}: {arguments}",
+            }
+        ]
+
     if value.get("type") == "function_call_output":
         return [
             {

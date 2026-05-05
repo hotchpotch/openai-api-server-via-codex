@@ -367,6 +367,12 @@ def test_response_input_to_app_server_input_maps_text_roles_and_images() -> None
                     },
                 ],
             },
+            {
+                "type": "function_call",
+                "call_id": "call_2",
+                "name": "lookup_weather",
+                "arguments": '{"city":"Tokyo"}',
+            },
             {"type": "function_call_output", "call_id": "call_1", "output": "42"},
         ]
     ) == [
@@ -374,5 +380,9 @@ def test_response_input_to_app_server_input_maps_text_roles_and_images() -> None
         {"type": "text", "text": "assistant: Previous."},
         {"type": "text", "text": "user: Look."},
         {"type": "image", "url": "data:image/png;base64,AAAA"},
+        {
+            "type": "text",
+            "text": 'assistant tool call call_2 lookup_weather: {"city":"Tokyo"}',
+        },
         {"type": "text", "text": "tool call_1: 42"},
     ]

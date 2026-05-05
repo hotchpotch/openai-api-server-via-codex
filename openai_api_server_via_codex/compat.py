@@ -145,10 +145,15 @@ def chat_request_to_response_payload(
         response_payload.setdefault("text", {})["verbosity"] = payload["verbosity"]
 
     tools = _chat_tools_to_response_tools(payload.get("tools"))
+    tools.extend(_chat_functions_to_response_tools(payload.get("functions")))
     if tools:
         response_payload["tools"] = tools
 
     tool_choice = _chat_tool_choice_to_response_tool_choice(payload.get("tool_choice"))
+    if tool_choice is None:
+        tool_choice = _chat_function_call_to_response_tool_choice(
+            payload.get("function_call")
+        )
     if tool_choice is not None:
         response_payload["tool_choice"] = tool_choice
 
@@ -161,7 +166,10 @@ def chat_request_to_response_payload(
 
 
 def response_to_chat_completion(
-    response: dict[str, Any], *, fallback_model: str = DEFAULT_MODEL
+    response: dict[str, Any],
+    *,
+    fallback_model: str = DEFAULT_MODEL,
+    legacy_functions: bool = False,
 ) -> dict[str, Any]:
     usage = response.get("usage") or {}
     prompt_tokens = int(usage.get("input_tokens") or 0)
@@ -170,11 +178,18 @@ def response_to_chat_completion(
     created = int(response.get("created_at") or time.time())
     response_id = str(response.get("id") or f"resp_{created}")
     tool_calls = _response_function_calls_to_chat_tool_calls(response)
+    legacy_function_call = (
+        _response_function_calls_to_chat_function_call(response)
+        if legacy_functions
+        else None
+    )
     message: dict[str, Any] = {
         "role": "assistant",
         "content": None if tool_calls else extract_response_text(response),
     }
-    if tool_calls:
+    if legacy_function_call is not None:
+        message["function_call"] = legacy_function_call
+    elif tool_calls:
         message["tool_calls"] = tool_calls
 
     return {
@@ -188,7 +203,9 @@ def response_to_chat_completion(
             {
                 "index": 0,
                 "message": message,
-                "finish_reason": _chat_finish_reason(response),
+                "finish_reason": _chat_finish_reason(
+                    response, legacy_functions=legacy_functions
+                ),
                 "logprobs": None,
             }
         ],
@@ -264,6 +281,19 @@ def _response_function_calls_to_chat_tool_calls(
     return tool_calls
 
 
+def _response_function_calls_to_chat_function_call(
+    response: dict[str, Any],
+) -> dict[str, str] | None:
+    for item in response.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        return {
+            "name": str(item.get("name") or ""),
+            "arguments": str(item.get("arguments") or ""),
+        }
+    return None
+
+
 def _collect_instructions(messages: Any) -> str | None:
     if not isinstance(messages, list):
         return None
@@ -309,12 +339,17 @@ def _chat_messages_to_response_input(messages: Any) -> list[Any]:
             continue
 
         if role == "assistant":
+            legacy_function_call = _chat_function_call_to_response_function_call(
+                message.get("function_call")
+            )
+            if legacy_function_call:
+                response_input.append(legacy_function_call)
             for function_call in _chat_tool_calls_to_response_function_calls(
                 message.get("tool_calls")
             ):
                 response_input.append(function_call)
             content = _chat_content_to_text(message.get("content"))
-            if content or not message.get("tool_calls"):
+            if content or not (message.get("tool_calls") or legacy_function_call):
                 response_input.append({"role": "assistant", "content": content})
             continue
 
@@ -355,6 +390,25 @@ def _chat_tool_calls_to_response_function_calls(tool_calls: Any) -> list[dict[st
             }
         )
     return function_calls
+
+
+def _chat_function_call_to_response_function_call(
+    function_call: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(function_call, dict):
+        return None
+    name = function_call.get("name")
+    if not name:
+        return None
+    arguments = function_call.get("arguments")
+    if not isinstance(arguments, str):
+        arguments = "{}"
+    return {
+        "type": "function_call",
+        "call_id": str(name),
+        "name": str(name),
+        "arguments": arguments,
+    }
 
 
 def _chat_content_to_response_content(content: Any) -> Any:
@@ -420,19 +474,34 @@ def _chat_tools_to_response_tools(tools: Any) -> list[dict[str, Any]]:
             response_tools.append(copy.deepcopy(tool))
             continue
         function = tool.get("function") or {}
-        if not isinstance(function, dict) or not function.get("name"):
-            continue
-        response_tools.append(
-            {
-                "type": "function",
-                "name": function["name"],
-                "description": function.get("description"),
-                "parameters": function.get("parameters")
-                or {"type": "object", "properties": {}},
-                "strict": bool(function.get("strict", False)),
-            }
-        )
+        response_tool = _chat_function_to_response_tool(function)
+        if response_tool:
+            response_tools.append(response_tool)
     return response_tools
+
+
+def _chat_functions_to_response_tools(functions: Any) -> list[dict[str, Any]]:
+    if not isinstance(functions, list):
+        return []
+    response_tools: list[dict[str, Any]] = []
+    for function in functions:
+        response_tool = _chat_function_to_response_tool(function)
+        if response_tool:
+            response_tools.append(response_tool)
+    return response_tools
+
+
+def _chat_function_to_response_tool(function: Any) -> dict[str, Any] | None:
+    if not isinstance(function, dict) or not function.get("name"):
+        return None
+    return {
+        "type": "function",
+        "name": function["name"],
+        "description": function.get("description"),
+        "parameters": function.get("parameters")
+        or {"type": "object", "properties": {}},
+        "strict": bool(function.get("strict", False)),
+    }
 
 
 def _chat_tool_choice_to_response_tool_choice(tool_choice: Any) -> Any:
@@ -447,6 +516,23 @@ def _chat_tool_choice_to_response_tool_choice(tool_choice: Any) -> Any:
         if isinstance(function, dict) and function.get("name"):
             return {"type": "function", "name": function["name"]}
     return copy.deepcopy(tool_choice)
+
+
+def _chat_function_call_to_response_tool_choice(function_call: Any) -> Any:
+    if function_call is None:
+        return None
+    if isinstance(function_call, str):
+        return function_call
+    if not isinstance(function_call, dict):
+        return None
+    name = function_call.get("name")
+    if name:
+        return {"type": "function", "name": name}
+    return None
+
+
+def uses_legacy_chat_functions(payload: dict[str, Any]) -> bool:
+    return bool(payload.get("functions")) and not bool(payload.get("tools"))
 
 
 def _chat_response_format_to_text_config(response_format: Any) -> dict[str, Any]:
@@ -492,10 +578,12 @@ def _copy_first_present(
             return
 
 
-def _chat_finish_reason(response: dict[str, Any]) -> str:
+def _chat_finish_reason(
+    response: dict[str, Any], *, legacy_functions: bool = False
+) -> str:
     if response.get("status") == "incomplete":
         return "length"
     for item in response.get("output") or []:
         if isinstance(item, dict) and item.get("type") == "function_call":
-            return "tool_calls"
+            return "function_call" if legacy_functions else "tool_calls"
     return "stop"

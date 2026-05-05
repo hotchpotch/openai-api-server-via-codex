@@ -596,6 +596,68 @@ async def test_chat_completions_create_returns_tool_calls_without_streaming():
 
 
 @pytest.mark.asyncio
+async def test_chat_completions_legacy_functions_translate_to_response_tools():
+    backend = ToolCallResponseBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        completion = await client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {"role": "user", "content": "Call the weather function for Tokyo."}
+            ],
+            functions=[
+                {
+                    "name": "lookup_weather",
+                    "description": "Look up weather.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                }
+            ],
+            function_call={"name": "lookup_weather"},
+        )
+
+        message = completion.choices[0].message
+        assert message.content is None
+        assert message.function_call is not None
+        assert message.function_call.name == "lookup_weather"
+        assert message.function_call.arguments == '{"city":"Tokyo"}'
+        assert message.tool_calls is None
+        assert completion.choices[0].finish_reason == "function_call"
+        assert backend.requests[0]["tools"] == [
+            {
+                "type": "function",
+                "name": "lookup_weather",
+                "description": "Look up weather.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+                "strict": False,
+            }
+        ]
+        assert backend.requests[0]["tool_choice"] == {
+            "type": "function",
+            "name": "lookup_weather",
+        }
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_chat_completions_with_tool_result_preserves_assistant_tool_call():
     backend = RecordingBackend()
     app = create_app(backend=backend)
@@ -654,6 +716,110 @@ async def test_chat_completions_with_tool_result_preserves_assistant_tool_call()
         ]
     finally:
         await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_with_legacy_function_result_preserves_function_call():
+    backend = RecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        await client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {"role": "user", "content": "Call the weather function for Tokyo."},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "function_call": {
+                        "name": "lookup_weather",
+                        "arguments": '{"city":"Tokyo"}',
+                    },
+                },
+                {
+                    "role": "function",
+                    "name": "lookup_weather",
+                    "content": "Tokyo is sunny.",
+                },
+                {"role": "user", "content": "Summarize the function result."},
+            ],
+        )
+
+        assert backend.requests[0]["input"] == [
+            {"role": "user", "content": "Call the weather function for Tokyo."},
+            {
+                "type": "function_call",
+                "call_id": "lookup_weather",
+                "name": "lookup_weather",
+                "arguments": '{"city":"Tokyo"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "lookup_weather",
+                "output": "Tokyo is sunny.",
+            },
+            {"role": "user", "content": "Summarize the function result."},
+        ]
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_response_format_maps_to_responses_text_config(
+    openai_client_with_backend,
+):
+    client, backend = openai_client_with_backend
+
+    await client.chat.completions.create(
+        model="gpt-5.4",
+        messages=[
+            {"role": "user", "content": "Return a JSON object with answer=yes."}
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "compat_answer",
+                "strict": True,
+                "schema": {
+                    "type": "object",
+                    "properties": {"answer": {"type": "string"}},
+                    "required": ["answer"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        temperature=0.2,
+        top_p=0.9,
+        metadata={"case": "response-format"},
+        user="compat-user",
+    )
+
+    assert backend.requests[0]["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "compat_answer",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+                "additionalProperties": False,
+            },
+        }
+    }
+    assert backend.requests[0]["temperature"] == 0.2
+    assert backend.requests[0]["top_p"] == 0.9
+    assert backend.requests[0]["metadata"] == {"case": "response-format"}
+    assert backend.requests[0]["user"] == "compat-user"
 
 
 @pytest.mark.asyncio

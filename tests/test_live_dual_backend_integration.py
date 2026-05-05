@@ -11,7 +11,7 @@ from typing import Any, cast
 
 import httpx
 import pytest
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAI
 
 
 ONE_PIXEL_PNG_DATA_URL = (
@@ -182,6 +182,76 @@ async def test_live_dual_backends_handle_long_multi_turn_tool_and_text_flows() -
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
                 )
+        finally:
+            await http_client.close()
+            await app_client.close()
+    finally:
+        await http_server.stop()
+        await app_server.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
+    reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
+)
+async def test_live_dual_backends_handle_openai_client_compatibility_matrix() -> None:
+    http_server = await _start_server("chatgpt-http")
+    app_server = await _start_server("codex-app-server")
+    try:
+        http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
+        app_client = AsyncOpenAI(api_key="test", base_url=f"{app_server.base_url}/v1")
+        try:
+            await _assert_model_list_contains(
+                http_client,
+                app_client,
+                LIVE_LONG_TEST_MODEL,
+            )
+
+            async for backend_name, client in _named_clients(http_client, app_client):
+                await _assert_responses_manual_context_without_previous_response_id(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_responses_structured_outputs(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_chat_structured_outputs(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_chat_legacy_functions(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_responses_streaming_tool_call(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_chat_streaming_tool_call(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+
+            await asyncio.to_thread(
+                _assert_sync_client_smoke,
+                http_server.base_url,
+                LIVE_LONG_TEST_MODEL,
+                "chatgpt-http",
+            )
+            await asyncio.to_thread(
+                _assert_sync_client_smoke,
+                app_server.base_url,
+                LIVE_LONG_TEST_MODEL,
+                "codex-app-server",
+            )
         finally:
             await http_client.close()
             await app_client.close()
@@ -712,6 +782,342 @@ async def _assert_long_plain_text_responses_conversation(
     _assert_contains_markers(final_text, markers, backend_name)
 
 
+async def _assert_responses_manual_context_without_previous_response_id(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-MANUAL-CONTEXT-909"
+    first_input = f"Remember exact marker {marker}. Reply with exactly: ready"
+    first = await client.responses.create(
+        model=model,
+        instructions="Preserve exact marker strings.",
+        input=first_input,
+        reasoning={"effort": "low"},
+    )
+    _assert_response_api_shape(first, backend_name)
+
+    manual_context = [
+        {"role": "user", "content": first_input},
+        *_dump_model(first).get("output", []),
+        {"role": "user", "content": "Return only the exact marker."},
+    ]
+    second = await client.responses.create(
+        model=model,
+        instructions="Return marker strings exactly.",
+        input=cast(Any, manual_context),
+        reasoning={"effort": "low"},
+    )
+    _assert_response_api_shape(second, backend_name)
+    print(
+        f"{backend_name} responses manual context: "
+        f"{_short_text(second.output_text)}"
+    )
+    assert _contains_marker(second.output_text, marker), (
+        backend_name,
+        second.output_text,
+    )
+
+
+async def _assert_responses_structured_outputs(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    schema = _compat_structured_schema()
+    response = await client.responses.create(
+        model=model,
+        instructions="Return only JSON that satisfies the supplied schema.",
+        input="Set code to RESP-STRUCT-204 and count to 7.",
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "compat_structured_response",
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        reasoning={"effort": "low"},
+    )
+    _assert_response_api_shape(response, backend_name)
+    parsed = _parse_json_text(response.output_text)
+    print(f"{backend_name} responses structured output: {parsed}")
+    assert parsed == {"code": "RESP-STRUCT-204", "count": 7}, (
+        backend_name,
+        response.output_text,
+    )
+
+
+async def _assert_chat_structured_outputs(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    schema = _compat_structured_schema()
+    completion = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "Return only JSON that satisfies the supplied schema.",
+            },
+            {
+                "role": "user",
+                "content": "Set code to CHAT-STRUCT-305 and count to 11.",
+            },
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "compat_structured_chat",
+                "strict": True,
+                "schema": schema,
+            },
+        },
+        reasoning_effort="low",
+    )
+    _assert_chat_api_shape(completion, backend_name)
+    text = completion.choices[0].message.content or ""
+    parsed = _parse_json_text(text)
+    print(f"{backend_name} chat structured output: {parsed}")
+    assert parsed == {"code": "CHAT-STRUCT-305", "count": 11}, (
+        backend_name,
+        text,
+    )
+
+
+async def _assert_chat_legacy_functions(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-LEGACY-FUNC-5150"
+    first = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Use the provided legacy function when invoice status is "
+                    "requested. Do not invent invoice data."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Call lookup_invoice_status for invoice_id INV-5150. "
+                    "Do not answer from memory."
+                ),
+            },
+        ],
+        functions=[
+            {
+                "name": "lookup_invoice_status",
+                "description": "Look up invoice status by invoice id.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "invoice_id": {
+                            "type": "string",
+                            "description": "The invoice id to look up.",
+                        }
+                    },
+                    "required": ["invoice_id"],
+                    "additionalProperties": False,
+                },
+            }
+        ],
+        function_call={"name": "lookup_invoice_status"},
+        reasoning_effort="low",
+    )
+    _assert_chat_api_shape(first, backend_name)
+    function_call = first.choices[0].message.function_call
+    assert function_call is not None, (backend_name, first.model_dump(mode="json"))
+    arguments = _json_object(function_call.arguments)
+    assert arguments.get("invoice_id") == "INV-5150", (
+        backend_name,
+        function_call,
+    )
+    print(
+        f"{backend_name} chat legacy function call: "
+        f"name={function_call.name} args={function_call.arguments}"
+    )
+
+    second = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": "Answer from function results only."},
+            {
+                "role": "user",
+                "content": (
+                    "Call lookup_invoice_status for invoice_id INV-5150. "
+                    "Do not answer from memory."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "function_call": {
+                    "name": function_call.name,
+                    "arguments": function_call.arguments,
+                },
+            },
+            {
+                "role": "function",
+                "name": function_call.name,
+                "content": (
+                    f"INV-5150 status: paid. Ledger marker: {marker}. "
+                    "Payment rail: bank transfer."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Using only the function result, state the invoice status "
+                    "and ledger marker."
+                ),
+            },
+        ],
+        reasoning_effort="low",
+    )
+    _assert_chat_api_shape(second, backend_name)
+    second_text = second.choices[0].message.content or ""
+    print(f"{backend_name} chat legacy function result: {_short_text(second_text)}")
+    assert _contains_marker(second_text, marker), (backend_name, second_text)
+    assert "paid" in second_text.lower(), (backend_name, second_text)
+
+
+async def _assert_responses_streaming_tool_call(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    tool = _probe_tool("emit_response_probe")
+    stream = await client.responses.create(
+        model=model,
+        instructions="Use the supplied function tool when asked for a probe.",
+        input=(
+            "Call emit_response_probe with probe_id RESP-STREAM-606 and "
+            "do not answer directly."
+        ),
+        tools=cast(Any, [tool]),
+        tool_choice={"type": "function", "name": "emit_response_probe"},
+        stream=True,
+        reasoning={"effort": "low"},
+    )
+
+    event_types: list[str] = []
+    function_call: dict[str, Any] | None = None
+    async for event in stream:
+        event_types.append(event.type)
+        if event.type == "response.output_item.done":
+            item = getattr(event, "item", None)
+            dumped = _dump_model(item)
+            if dumped.get("type") == "function_call":
+                function_call = dumped
+    assert "response.completed" in event_types, (backend_name, event_types)
+    assert function_call is not None, (backend_name, event_types)
+    assert function_call["name"] == "emit_response_probe", (
+        backend_name,
+        function_call,
+    )
+    assert _json_object(function_call.get("arguments")).get("probe_id") == (
+        "RESP-STREAM-606"
+    ), (backend_name, function_call)
+    print(
+        f"{backend_name} responses streaming tool call: "
+        f"events={event_types} call={function_call}"
+    )
+
+
+async def _assert_chat_streaming_tool_call(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "Use the supplied function tool when asked for a probe.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Call emit_chat_probe with probe_id CHAT-STREAM-707 and "
+                    "do not answer directly."
+                ),
+            },
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": _probe_function("emit_chat_probe"),
+            }
+        ],
+        tool_choice={"type": "function", "function": {"name": "emit_chat_probe"}},
+        stream=True,
+        reasoning_effort="low",
+    )
+
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    argument_parts: list[str] = []
+    finish_reasons: list[str] = []
+    async for chunk in stream:
+        if not chunk.choices:
+            continue
+        choice = chunk.choices[0]
+        if choice.delta.tool_calls:
+            tool_call = choice.delta.tool_calls[0]
+            tool_call_id = tool_call.id or tool_call_id
+            if tool_call.function:
+                tool_name = tool_call.function.name or tool_name
+                if tool_call.function.arguments:
+                    argument_parts.append(tool_call.function.arguments)
+        if choice.finish_reason:
+            finish_reasons.append(choice.finish_reason)
+
+    arguments_text = "".join(argument_parts)
+    arguments = _json_object(arguments_text)
+    assert tool_call_id, backend_name
+    assert tool_name == "emit_chat_probe", (backend_name, tool_name)
+    assert arguments.get("probe_id") == "CHAT-STREAM-707", (
+        backend_name,
+        arguments_text,
+    )
+    assert finish_reasons == ["tool_calls"], (backend_name, finish_reasons)
+    print(
+        f"{backend_name} chat streaming tool call: "
+        f"id={tool_call_id} name={tool_name} args={arguments_text}"
+    )
+
+
+def _assert_sync_client_smoke(
+    base_url: str, model: str, backend_name: str
+) -> None:
+    client = OpenAI(api_key="test", base_url=f"{base_url}/v1")
+    try:
+        response = client.responses.create(
+            model=model,
+            input=f"Reply with a short sentence containing {backend_name}-SYNC-OK.",
+            reasoning={"effort": "low"},
+        )
+        _assert_response_api_shape(response, backend_name)
+        chat = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        f"Reply with a short sentence containing "
+                        f"{backend_name}-SYNC-CHAT-OK."
+                    ),
+                }
+            ],
+            reasoning_effort="low",
+        )
+        _assert_chat_api_shape(chat, backend_name)
+        print(
+            f"{backend_name} sync responses: {_short_text(response.output_text)}"
+        )
+        print(
+            f"{backend_name} sync chat: "
+            f"{_short_text(chat.choices[0].message.content or '')}"
+        )
+    finally:
+        client.close()
+
+
 async def _assert_model_list_contains(
     http_client: AsyncOpenAI, app_client: AsyncOpenAI, model: str
 ) -> None:
@@ -747,6 +1153,73 @@ def _dump_model(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _assert_response_api_shape(response: Any, backend_name: str) -> None:
+    dumped = _dump_model(response)
+    assert dumped.get("object") == "response", (backend_name, dumped)
+    assert dumped.get("id"), (backend_name, dumped)
+    assert dumped.get("model"), (backend_name, dumped)
+    assert isinstance(dumped.get("output"), list), (backend_name, dumped)
+    assert getattr(response, "output_text", "") is not None, (backend_name, dumped)
+
+
+def _assert_chat_api_shape(completion: Any, backend_name: str) -> None:
+    dumped = _dump_model(completion)
+    assert dumped.get("object") == "chat.completion", (backend_name, dumped)
+    assert dumped.get("id"), (backend_name, dumped)
+    assert dumped.get("model"), (backend_name, dumped)
+    assert dumped.get("choices"), (backend_name, dumped)
+    first_choice = dumped["choices"][0]
+    assert first_choice.get("index") == 0, (backend_name, dumped)
+    assert isinstance(first_choice.get("message"), dict), (backend_name, dumped)
+
+
+def _compat_structured_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "code": {"type": "string"},
+            "count": {"type": "integer"},
+        },
+        "required": ["code", "count"],
+        "additionalProperties": False,
+    }
+
+
+def _probe_tool(name: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        **_probe_function(name),
+    }
+
+
+def _probe_function(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": "Emit a probe function call for compatibility testing.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "probe_id": {
+                    "type": "string",
+                    "description": "The probe id to echo.",
+                }
+            },
+            "required": ["probe_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    }
+
+
+def _parse_json_text(text: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise AssertionError(f"Expected JSON text, got: {text}") from exc
+    assert isinstance(parsed, dict), parsed
+    return parsed
 
 
 def _json_object(value: Any) -> dict[str, Any]:
