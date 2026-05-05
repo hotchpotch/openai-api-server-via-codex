@@ -25,6 +25,7 @@ def test_parse_args_keeps_top_level_help(capsys) -> None:
     assert "start" in output
     assert "stop" in output
     assert "status" in output
+    assert "config-generate" in output
 
 
 def test_server_settings_default_backend_is_codex_http() -> None:
@@ -39,6 +40,41 @@ def test_parse_args_rejects_removed_chatgpt_http_backend() -> None:
         server.parse_args(["serve", "--backend", "chatgpt-http"])
 
     assert exc_info.value.code == 2
+
+
+def test_config_generate_writes_template(tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "config.toml"
+
+    result = server._main(["config-generate", "--config", str(config_path)])
+
+    assert result == 0
+    text = config_path.read_text(encoding="utf-8")
+    assert "[server]" in text
+    assert 'backend = "codex-http"' in text
+    assert "Wrote config:" in capsys.readouterr().out
+
+
+def test_config_generate_refuses_existing_file(tmp_path: Path, capsys) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("existing = true\n", encoding="utf-8")
+
+    result = server._main(["config-generate", "--config", str(config_path)])
+
+    assert result == 1
+    assert config_path.read_text(encoding="utf-8") == "existing = true\n"
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_config_generate_stdout_does_not_write_default_config(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config-home"))
+
+    result = server._main(["config-generate", "--stdout"])
+
+    assert result == 0
+    assert "[server]" in capsys.readouterr().out
+    assert not (tmp_path / "config-home").exists()
 
 
 def test_server_settings_prefer_cli_over_env(

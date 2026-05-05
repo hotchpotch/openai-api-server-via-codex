@@ -34,6 +34,7 @@ from .backend import (
     CodexBackendError,
     CodexHttpBackend,
 )
+from . import config as config_module
 from .compat import (
     ChatCompletionStore,
     DEFAULT_MODEL,
@@ -520,6 +521,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     status = subparsers.add_parser("status", help="show background server status")
     _add_daemon_selector_options(status)
 
+    config_generate = subparsers.add_parser(
+        "config-generate", help="write a default TOML configuration"
+    )
+    config_generate.add_argument("--config", help="config file path")
+    config_generate.add_argument(
+        "--force", action="store_true", help="overwrite an existing config file"
+    )
+    config_generate.add_argument(
+        "--stdout", action="store_true", help="print the template instead of writing"
+    )
+
     return parser.parse_args(argv)
 
 
@@ -590,6 +602,24 @@ def main(argv: list[str] | None = None) -> None:
 
 def _main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+
+    if args.command == "config-generate":
+        if args.stdout:
+            print(config_module.default_config_toml(), end="")
+            return 0
+        try:
+            path = config_module.write_default_config(
+                getattr(args, "config", None), force=bool(args.force)
+            )
+        except FileExistsError as exc:
+            existing_path = Path(exc.args[0])
+            print(
+                f"Config already exists: {existing_path}. Use --force to overwrite.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"Wrote config: {path}")
+        return 0
 
     if args.command == "serve":
         settings = server_settings_from_args(args)
