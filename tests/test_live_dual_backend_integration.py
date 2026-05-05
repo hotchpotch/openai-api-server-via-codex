@@ -16,6 +16,10 @@ ONE_PIXEL_PNG_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
 )
+RED_SQUARE_PNG_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC"
+)
 
 
 @pytest.mark.asyncio
@@ -106,6 +110,41 @@ async def test_live_http_and_app_server_backends_support_same_openai_calls() -> 
         await app_server.stop()
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
+    reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
+)
+async def test_live_dual_backends_handle_images_multi_turn_and_reasoning() -> None:
+    http_server = await _start_server("chatgpt-http")
+    app_server = await _start_server("codex-app-server")
+    try:
+        http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
+        app_client = AsyncOpenAI(api_key="test", base_url=f"{app_server.base_url}/v1")
+        try:
+            http_models = await http_client.models.list()
+            app_models = await app_client.models.list()
+            model = _select_model(
+                [model.id for model in http_models.data],
+                [model.id for model in app_models.data],
+            )
+
+            async for backend_name, client in _named_clients(http_client, app_client):
+                await _assert_responses_multi_turn_with_reasoning(
+                    client, model, backend_name
+                )
+                await _assert_chat_multi_turn_with_reasoning(
+                    client, model, backend_name
+                )
+                await _assert_image_inputs(client, model, backend_name)
+        finally:
+            await http_client.close()
+            await app_client.close()
+    finally:
+        await http_server.stop()
+        await app_server.stop()
+
+
 class _RunningServer:
     def __init__(self, process: subprocess.Popen[str], base_url: str) -> None:
         self.process = process
@@ -156,6 +195,165 @@ async def _clients(
 ) -> AsyncIterator[AsyncOpenAI]:
     yield http_client
     yield app_client
+
+
+async def _named_clients(
+    http_client: AsyncOpenAI, app_client: AsyncOpenAI
+) -> AsyncIterator[tuple[str, AsyncOpenAI]]:
+    yield "chatgpt-http", http_client
+    yield "codex-app-server", app_client
+
+
+async def _assert_responses_multi_turn_with_reasoning(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-RESP-MARKER-731"
+    first = await client.responses.create(
+        model=model,
+        instructions=(
+            "Preserve exact marker strings. When asked later, return the marker "
+            "verbatim."
+        ),
+        input=f"Remember this exact marker: {marker}. Reply with exactly: ready",
+        reasoning={"effort": "low"},
+    )
+    assert first.output_text.strip(), backend_name
+
+    followup = await client.responses.create(
+        model=model,
+        input="Return the exact marker I asked you to remember.",
+        previous_response_id=first.id,
+        reasoning={"effort": "high"},
+    )
+    assert _contains_marker(followup.output_text, marker), (
+        backend_name,
+        followup.output_text,
+    )
+
+
+async def _assert_chat_multi_turn_with_reasoning(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-CHAT-MARKER-582"
+    first = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Preserve exact marker strings. When asked later, return the "
+                    "marker verbatim."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Remember this exact marker: {marker}. Reply with ready.",
+            },
+        ],
+        reasoning_effort="low",
+    )
+    first_message = first.choices[0].message.content
+    assert first_message, backend_name
+
+    followup = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Preserve exact marker strings. When asked later, return the "
+                    "marker verbatim."
+                ),
+            },
+            {
+                "role": "user",
+                "content": f"Remember this exact marker: {marker}. Reply with ready.",
+            },
+            {"role": "assistant", "content": first_message},
+            {"role": "user", "content": "Return the exact marker I asked you to remember."},
+        ],
+        reasoning_effort="high",
+    )
+    followup_message = followup.choices[0].message.content or ""
+    assert _contains_marker(followup_message, marker), (
+        backend_name,
+        followup_message,
+    )
+
+
+async def _assert_image_inputs(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    response_image = await client.responses.create(
+        model=model,
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "The image is a simple solid-color square. What is "
+                            "the dominant color? Reply with one word."
+                        ),
+                    },
+                    {
+                        "type": "input_image",
+                        "image_url": RED_SQUARE_PNG_DATA_URL,
+                        "detail": "low",
+                    },
+                ],
+            }
+        ],
+        reasoning={"effort": "low"},
+    )
+    assert _mentions_red(response_image.output_text), (
+        backend_name,
+        response_image.output_text,
+    )
+
+    chat_image = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "The image is a simple solid-color square. What is "
+                            "the dominant color? Reply with one word."
+                        ),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": RED_SQUARE_PNG_DATA_URL,
+                            "detail": "low",
+                        },
+                    },
+                ],
+            }
+        ],
+        reasoning_effort="low",
+    )
+    chat_image_text = chat_image.choices[0].message.content or ""
+    assert _mentions_red(chat_image_text), (backend_name, chat_image_text)
+
+
+def _contains_marker(text: str, marker: str) -> bool:
+    normalized_text = _normalize_marker_text(text)
+    normalized_marker = _normalize_marker_text(marker)
+    return normalized_marker in normalized_text
+
+
+def _normalize_marker_text(text: str) -> str:
+    return "".join(char.upper() for char in text if char.isalnum())
+
+
+def _mentions_red(text: str) -> bool:
+    normalized = _normalize_marker_text(text)
+    return "RED" in normalized or "赤" in text
 
 
 def _select_model(http_models: list[str], app_models: list[str]) -> str:
