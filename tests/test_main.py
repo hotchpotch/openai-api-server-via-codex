@@ -1,16 +1,9 @@
-import subprocess
-import sys
-from pathlib import Path
+from fastapi.testclient import TestClient
+
+from openai_api_server_via_codex.server import create_app
 
 
-def test_main_prints_project_greeting():
-    project_root = Path(__file__).parents[1]
-
-    result = subprocess.run(
-        [sys.executable, str(project_root / "main.py")],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.stdout == "Hello from openai-api-server-via-codex!\n"
+def test_healthz():
+    client = TestClient(create_app())
+    response = client.get("/healthz")
+    assert response.json() == {"status": "ok"}

@@ -4,11 +4,20 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "fastapi>=0.136.1",
+    "openai>=2.34.0",
+    "pydantic>=2.13.3",
+    "uvicorn>=0.46.0",
+]
+
+[project.scripts]
+openai-api-server-via-codex = "openai_api_server_via_codex.server:main"
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
     "ruff>=0.15.12",
     "tox>=4.53.1",
     "tox-uv>=1.35.1",
@@ -24,6 +33,7 @@ parallel_show_output = true
 env_list = py311, lint, type
 
 [testenv]
+dependency_groups = dev
 commands = pytest {posargs}
 
 [testenv:lint]
@@ -32,3 +42,7 @@ commands = ruff check .
 [testenv:type]
 commands = ty check
 """
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
