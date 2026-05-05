@@ -214,6 +214,11 @@ async def test_live_dual_backends_handle_openai_client_compatibility_matrix() ->
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
                 )
+                await _assert_responses_auxiliary_sdk_methods(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
                 await _assert_responses_manual_context_without_previous_response_id(
                     client,
                     LIVE_LONG_TEST_MODEL,
@@ -230,6 +235,11 @@ async def test_live_dual_backends_handle_openai_client_compatibility_matrix() ->
                     backend_name,
                 )
                 await _assert_chat_multiple_choices(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_chat_stored_completion_lifecycle(
                     client,
                     LIVE_LONG_TEST_MODEL,
                     backend_name,
@@ -873,6 +883,91 @@ async def _assert_responses_retrieve_and_input_items(
     )
 
 
+async def _assert_responses_auxiliary_sdk_methods(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-RESP-AUX-626"
+    response = await client.responses.create(
+        model=model,
+        instructions="Return exact marker strings without modification.",
+        input=f"Reply with one sentence containing {marker}.",
+        reasoning={"effort": "low"},
+    )
+    _assert_response_api_shape(response, backend_name)
+
+    stream = await client.responses.retrieve(response.id, stream=True)
+    event_types: list[str] = []
+    replayed_output_text: str | None = None
+    completed_response_id: str | None = None
+    async for event in stream:
+        event_types.append(event.type)
+        if event.type == "response.output_item.done":
+            item = getattr(event, "item", None)
+            replayed_output_text = _response_item_text(_dump_model(item))
+        elif event.type == "response.completed":
+            completed_response_id = getattr(event, "response").id
+
+    assert event_types == [
+        "response.created",
+        "response.output_item.done",
+        "response.completed",
+    ], (backend_name, event_types)
+    assert completed_response_id == response.id, (
+        backend_name,
+        completed_response_id,
+        response.id,
+    )
+    assert replayed_output_text == response.output_text, (
+        backend_name,
+        replayed_output_text,
+        response.output_text,
+    )
+
+    token_count = await client.responses.input_tokens.count(
+        model=model,
+        instructions="Count marker prompts for compatibility testing.",
+        input=cast(
+            Any,
+            [
+                {"role": "user", "content": f"Count this marker: {marker}."},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "plus one tiny image"},
+                        {"type": "input_image", "image_url": ONE_PIXEL_PNG_DATA_URL},
+                    ],
+                },
+            ],
+        ),
+        reasoning={"effort": "low"},
+    )
+    assert token_count.object == "response.input_tokens", (
+        backend_name,
+        token_count,
+    )
+    assert token_count.input_tokens > 0, (backend_name, token_count)
+
+    delete_target = await client.responses.create(
+        model=model,
+        input=f"Create a temporary response for deletion: {marker}.",
+        reasoning={"effort": "low"},
+    )
+    assert await client.responses.delete(delete_target.id) is None
+    with pytest.raises(Exception) as exc_info:
+        await client.responses.retrieve(delete_target.id)
+    assert getattr(exc_info.value, "status_code", None) == 404, backend_name
+
+    with pytest.raises(Exception) as cancel_exc_info:
+        await client.responses.cancel(response.id)
+    assert getattr(cancel_exc_info.value, "status_code", None) == 409, backend_name
+
+    print(
+        f"{backend_name} responses auxiliary SDK methods: "
+        f"events={event_types} tokens={token_count.input_tokens} "
+        f"text={_short_text(response.output_text)}"
+    )
+
+
 async def _assert_responses_manual_context_without_previous_response_id(
     client: AsyncOpenAI, model: str, backend_name: str
 ) -> None:
@@ -990,6 +1085,102 @@ async def _assert_chat_multiple_choices(
         texts,
     )
     print(f"{backend_name} chat n=2 choices: {[_short_text(text) for text in texts]}")
+
+
+async def _assert_chat_stored_completion_lifecycle(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-CHAT-STORE-414"
+    completion = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "Preserve exact marker strings.",
+            },
+            {"role": "user", "content": f"Reply with exactly: {marker}"},
+        ],
+        metadata={"backend": backend_name, "case": "live-stored-chat"},
+        store=True,
+        reasoning_effort="low",
+    )
+    _assert_chat_api_shape(completion, backend_name)
+    retrieved = await client.chat.completions.retrieve(completion.id)
+    listed = await client.chat.completions.list(
+        limit=5,
+        metadata={"backend": backend_name, "case": "live-stored-chat"},
+        model=model,
+    )
+    messages = await client.chat.completions.messages.list(completion.id)
+    updated = await client.chat.completions.update(
+        completion.id,
+        metadata={"backend": backend_name, "case": "live-stored-chat-updated"},
+    )
+
+    retrieved_text = retrieved.choices[0].message.content or ""
+    assert retrieved.id == completion.id, (backend_name, retrieved.id, completion.id)
+    assert retrieved_text == (completion.choices[0].message.content or ""), (
+        backend_name,
+        retrieved_text,
+        completion.choices[0].message.content,
+    )
+    assert _contains_marker(retrieved_text, marker), (backend_name, retrieved_text)
+    assert [item.id for item in listed.data] == [completion.id], (
+        backend_name,
+        listed.model_dump(mode="json"),
+    )
+    assert [message.role for message in messages.data] == ["assistant"], (
+        backend_name,
+        messages.model_dump(mode="json"),
+    )
+    assert messages.data[0].content == retrieved_text, (
+        backend_name,
+        messages.model_dump(mode="json"),
+        retrieved_text,
+    )
+    assert updated.model_dump(mode="json").get("metadata") == {
+        "backend": backend_name,
+        "case": "live-stored-chat-updated",
+    }, (backend_name, updated.model_dump(mode="json"))
+
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "user", "content": f"Reply with one sentence containing {marker}."}
+        ],
+        stream=True,
+        store=True,
+        reasoning_effort="low",
+    )
+    stream_completion_id: str | None = None
+    stream_text_parts: list[str] = []
+    async for chunk in stream:
+        stream_completion_id = chunk.id
+        for choice in chunk.choices:
+            if choice.delta.content:
+                stream_text_parts.append(choice.delta.content)
+    assert stream_completion_id is not None, backend_name
+    stream_text = "".join(stream_text_parts)
+    stream_retrieved = await client.chat.completions.retrieve(stream_completion_id)
+    assert stream_retrieved.choices[0].message.content == stream_text, (
+        backend_name,
+        stream_retrieved.model_dump(mode="json"),
+        stream_text,
+    )
+
+    deleted = await client.chat.completions.delete(completion.id)
+    stream_deleted = await client.chat.completions.delete(stream_completion_id)
+    assert deleted.deleted is True, (backend_name, deleted)
+    assert stream_deleted.deleted is True, (backend_name, stream_deleted)
+    with pytest.raises(Exception) as exc_info:
+        await client.chat.completions.retrieve(completion.id)
+    assert getattr(exc_info.value, "status_code", None) == 404, backend_name
+
+    print(
+        f"{backend_name} chat stored lifecycle: "
+        f"retrieved={_short_text(retrieved_text)} "
+        f"stream={_short_text(stream_text)}"
+    )
 
 
 async def _assert_chat_json_object_format(
@@ -1481,6 +1672,14 @@ def _dump_model(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     return {}
+
+
+def _response_item_text(item: dict[str, Any]) -> str:
+    texts: list[str] = []
+    for content in item.get("content") or []:
+        if isinstance(content, dict) and content.get("type") == "output_text":
+            texts.append(str(content.get("text") or ""))
+    return "".join(texts)
 
 
 def _assert_response_api_shape(response: Any, backend_name: str) -> None:

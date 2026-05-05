@@ -512,6 +512,97 @@ async def test_responses_retrieve_and_input_items_list_use_local_store(
 
 
 @pytest.mark.asyncio
+async def test_responses_retrieve_can_stream_stored_response_events(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    created = await client.responses.create(
+        model="gpt-5.4",
+        input="Stream retrieve-marker from the local store.",
+    )
+    stream = await client.responses.retrieve(created.id, stream=True)
+
+    event_types: list[str] = []
+    completed_response_id: str | None = None
+    output_item_text: str | None = None
+    async for event in stream:
+        event_types.append(event.type)
+        if event.type == "response.output_item.done":
+            item = getattr(event, "item")
+            output_item_text = _response_output_text({"output": [item.model_dump()]})
+        elif event.type == "response.completed":
+            completed_response_id = getattr(event, "response").id
+
+    assert event_types == [
+        "response.created",
+        "response.output_item.done",
+        "response.completed",
+    ]
+    assert completed_response_id == created.id
+    assert output_item_text == created.output_text
+
+
+@pytest.mark.asyncio
+async def test_responses_delete_removes_stored_response(openai_client_with_backend):
+    client, _backend = openai_client_with_backend
+
+    created = await client.responses.create(
+        model="gpt-5.4",
+        input="Delete this response from the local store.",
+    )
+
+    assert await client.responses.delete(created.id) is None
+    with pytest.raises(Exception) as exc_info:
+        await client.responses.retrieve(created.id)
+
+    assert getattr(exc_info.value, "status_code", None) == 404
+
+
+@pytest.mark.asyncio
+async def test_responses_cancel_completed_response_returns_openai_error(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    created = await client.responses.create(
+        model="gpt-5.4",
+        input="Completed responses cannot be cancelled.",
+    )
+
+    with pytest.raises(Exception) as exc_info:
+        await client.responses.cancel(created.id)
+
+    assert getattr(exc_info.value, "status_code", None) == 409
+
+
+@pytest.mark.asyncio
+async def test_responses_input_tokens_count_uses_openai_client_shape(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    count = await client.responses.input_tokens.count(
+        model="gpt-5.4",
+        instructions="Count this test input.",
+        input=[
+            {"role": "user", "content": "alpha beta gamma"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "delta"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AA=="},
+                ],
+            },
+        ],
+        reasoning={"effort": "low"},
+    )
+
+    assert count.object == "response.input_tokens"
+    assert count.input_tokens > 0
+
+
+@pytest.mark.asyncio
 async def test_responses_input_items_list_supports_basic_cursor_params(
     openai_client_with_backend,
 ):
@@ -1097,6 +1188,99 @@ async def test_chat_completions_response_format_maps_to_responses_text_config(
     assert backend.requests[0]["top_p"] == 0.9
     assert backend.requests[0]["metadata"] == {"case": "response-format"}
     assert backend.requests[0]["user"] == "compat-user"
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_store_true_supports_sdk_lifecycle(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    completion = await client.chat.completions.create(
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Remember stored-chat-marker."}],
+        metadata={"suite": "stored-chat"},
+        store=True,
+    )
+    retrieved = await client.chat.completions.retrieve(completion.id)
+    listed_page = await client.chat.completions.list(
+        limit=10,
+        metadata={"suite": "stored-chat"},
+        model="gpt-5.4",
+    )
+    messages_page = await client.chat.completions.messages.list(completion.id)
+    updated = await client.chat.completions.update(
+        completion.id,
+        metadata={"suite": "stored-chat-updated"},
+    )
+    deleted = await client.chat.completions.delete(completion.id)
+
+    assert retrieved.id == completion.id
+    assert retrieved.choices[0].message.content == "fake: Remember stored-chat-marker."
+    assert [item.id for item in listed_page.data] == [completion.id]
+    assert listed_page.has_more is False
+    assert messages_page.object == "list"
+    assert [message.role for message in messages_page.data] == ["assistant"]
+    assert messages_page.data[0].content == "fake: Remember stored-chat-marker."
+    assert updated.model_dump(mode="json")["metadata"] == {
+        "suite": "stored-chat-updated"
+    }
+    assert deleted.id == completion.id
+    assert deleted.deleted is True
+    assert deleted.object == "chat.completion.deleted"
+
+    with pytest.raises(Exception) as exc_info:
+        await client.chat.completions.retrieve(completion.id)
+    assert getattr(exc_info.value, "status_code", None) == 404
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_store_false_is_not_retrievable_or_listed(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    completion = await client.chat.completions.create(
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Do not store this completion."}],
+        metadata={"suite": "not-stored-chat"},
+    )
+    listed_page = await client.chat.completions.list(
+        limit=10,
+        metadata={"suite": "not-stored-chat"},
+    )
+
+    assert listed_page.data == []
+    with pytest.raises(Exception) as exc_info:
+        await client.chat.completions.retrieve(completion.id)
+
+    assert getattr(exc_info.value, "status_code", None) == 404
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_store_true_stream_is_retrievable(
+    openai_client_with_backend,
+):
+    client, _backend = openai_client_with_backend
+
+    stream = await client.chat.completions.create(
+        model="gpt-5.4",
+        messages=[{"role": "user", "content": "Stream stored chat marker."}],
+        stream=True,
+        store=True,
+    )
+
+    chunk_id: str | None = None
+    text_parts: list[str] = []
+    async for chunk in stream:
+        chunk_id = chunk.id
+        for choice in chunk.choices:
+            if choice.delta.content:
+                text_parts.append(choice.delta.content)
+
+    assert chunk_id is not None
+    retrieved = await client.chat.completions.retrieve(chunk_id)
+    assert retrieved.choices[0].message.content == "".join(text_parts)
 
 
 @pytest.mark.asyncio

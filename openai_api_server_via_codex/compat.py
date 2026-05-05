@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, List
 
 
 DEFAULT_MODEL = "gpt-5.4"
@@ -17,12 +17,29 @@ class StoredResponse:
     response: dict[str, Any]
 
 
+@dataclass(slots=True)
+class StoredChatCompletion:
+    completion: dict[str, Any]
+    messages: list[dict[str, Any]]
+    metadata: dict[str, Any]
+
+
 class ResponseStore:
     def __init__(self) -> None:
         self._responses: dict[str, StoredResponse] = {}
 
     def get(self, response_id: str) -> StoredResponse | None:
         return self._responses.get(response_id)
+
+    def delete(self, response_id: str) -> bool:
+        return self._responses.pop(response_id, None) is not None
+
+    def cancel(self, response_id: str) -> StoredResponse | None:
+        stored = self._responses.get(response_id)
+        if stored is None:
+            return None
+        stored.response["status"] = "cancelled"
+        return stored
 
     def remember(
         self,
@@ -37,6 +54,80 @@ class ResponseStore:
             + response_output_as_input_messages(response),
             response=copy.deepcopy(response),
         )
+
+
+class ChatCompletionStore:
+    def __init__(self) -> None:
+        self._completions: dict[str, StoredChatCompletion] = {}
+        self._order: list[str] = []
+
+    def get(self, completion_id: str) -> StoredChatCompletion | None:
+        return self._completions.get(completion_id)
+
+    def remember(
+        self,
+        completion_id: str,
+        *,
+        completion: dict[str, Any],
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        metadata = copy.deepcopy(metadata or {})
+        stored_completion = copy.deepcopy(completion)
+        stored_completion["metadata"] = metadata
+        self._completions[completion_id] = StoredChatCompletion(
+            completion=stored_completion,
+            messages=_chat_completion_store_messages(stored_completion),
+            metadata=metadata,
+        )
+        if completion_id not in self._order:
+            self._order.append(completion_id)
+
+    def update_metadata(
+        self, completion_id: str, metadata: dict[str, Any] | None
+    ) -> StoredChatCompletion | None:
+        stored = self._completions.get(completion_id)
+        if stored is None:
+            return None
+        stored.metadata = copy.deepcopy(metadata or {})
+        stored.completion["metadata"] = copy.deepcopy(stored.metadata)
+        return stored
+
+    def delete(self, completion_id: str) -> bool:
+        if self._completions.pop(completion_id, None) is None:
+            return False
+        self._order = [item_id for item_id in self._order if item_id != completion_id]
+        return True
+
+    def list(
+        self,
+        *,
+        model: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        order: str | None = None,
+        after: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[List[dict[str, Any]], bool]:
+        completion_ids = list(self._order)
+        if order == "desc":
+            completion_ids.reverse()
+        if after in completion_ids:
+            completion_ids = completion_ids[completion_ids.index(after) + 1 :]
+
+        items: list[dict[str, Any]] = []
+        for completion_id in completion_ids:
+            stored = self._completions[completion_id]
+            completion = stored.completion
+            if model and completion.get("model") != model:
+                continue
+            if metadata and not _metadata_matches(stored.metadata, metadata):
+                continue
+            items.append(copy.deepcopy(completion))
+
+        has_more = False
+        if limit is not None:
+            has_more = len(items) > limit
+            items = items[:limit]
+        return items, has_more
 
 
 def prepare_response_payload(
@@ -127,6 +218,28 @@ def response_output_as_input_messages(response: dict[str, Any]) -> list[dict[str
         if text:
             messages.append({"role": "assistant", "content": text})
     return messages
+
+
+def _chat_completion_store_messages(completion: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    completion_id = str(completion.get("id") or "chatcmpl")
+    choices = completion.get("choices") or []
+    if not isinstance(choices, list):
+        return messages
+    for index, choice in enumerate(choices):
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        store_message = copy.deepcopy(message)
+        store_message["id"] = f"{completion_id}_msg_{choice.get('index', index)}"
+        messages.append(store_message)
+    return messages
+
+
+def _metadata_matches(metadata: dict[str, Any], expected: dict[str, Any]) -> bool:
+    return all(str(metadata.get(key)) == str(value) for key, value in expected.items())
 
 
 def _function_call_as_input_item(item: dict[str, Any]) -> dict[str, Any] | None:

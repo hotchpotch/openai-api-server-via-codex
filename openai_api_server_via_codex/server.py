@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import copy
 import inspect
 import json
@@ -15,7 +16,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import Body, FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from .app_server import (
@@ -28,6 +29,7 @@ from .app_server import (
 from .auth import AUTH_JSON_ENV, CodexAuthConfig
 from .backend import CODEX_BASE_URL, CodexBackend, CodexBackendError, OpenAICodexBackend
 from .compat import (
+    ChatCompletionStore,
     DEFAULT_MODEL,
     ResponseStore,
     chat_request_to_response_payload,
@@ -116,6 +118,7 @@ def create_app(
         app_server_cwd=app_server_cwd or os.environ.get(CODEX_APP_SERVER_CWD_ENV),
     )
     app.state.response_store = ResponseStore()
+    app.state.chat_completion_store = ChatCompletionStore()
     app.state.default_model = default_model or os.environ.get(
         "OPENAI_VIA_CODEX_DEFAULT_MODEL", DEFAULT_MODEL
     )
@@ -200,8 +203,37 @@ def create_app(
         )
         return JSONResponse(response)
 
+    @app.post("/v1/responses/input_tokens", response_model=None)
+    async def count_response_input_tokens(
+        request: Request, body: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        prepared = prepare_response_payload(
+            body, default_model=request.app.state.default_model
+        )
+        previous_response_id = prepared.get("previous_response_id")
+        if previous_response_id and not _backend_supports_native_sessions(
+            _get_backend(request)
+        ):
+            stored = _get_response_store(request).get(str(previous_response_id))
+            if stored is None:
+                return _openai_error(
+                    404,
+                    f"Unknown previous_response_id: {previous_response_id}",
+                    param="previous_response_id",
+                )
+            prepared["input"] = stored.context_items + prepared["input"]
+
+        return JSONResponse(
+            {
+                "object": "response.input_tokens",
+                "input_tokens": _estimate_input_tokens(prepared),
+            }
+        )
+
     @app.get("/v1/responses/{response_id}", response_model=None)
-    async def retrieve_response(request: Request, response_id: str) -> JSONResponse:
+    async def retrieve_response(
+        request: Request, response_id: str
+    ) -> JSONResponse | StreamingResponse:
         stored = _get_response_store(request).get(response_id)
         if stored is None:
             return _openai_error(
@@ -209,7 +241,39 @@ def create_app(
                 f"Unknown response_id: {response_id}",
                 param="response_id",
             )
+        if request.query_params.get("stream") == "true":
+            return _sse_response(_stored_response_event_stream(stored.response))
         return JSONResponse(copy.deepcopy(stored.response))
+
+    @app.delete("/v1/responses/{response_id}", response_model=None)
+    async def delete_response(request: Request, response_id: str) -> Response | JSONResponse:
+        deleted = _get_response_store(request).delete(response_id)
+        if not deleted:
+            return _openai_error(
+                404,
+                f"Unknown response_id: {response_id}",
+                param="response_id",
+            )
+        return Response(status_code=204)
+
+    @app.post("/v1/responses/{response_id}/cancel", response_model=None)
+    async def cancel_response(request: Request, response_id: str) -> JSONResponse:
+        stored = _get_response_store(request).get(response_id)
+        if stored is None:
+            return _openai_error(
+                404,
+                f"Unknown response_id: {response_id}",
+                param="response_id",
+            )
+        if stored.response.get("status") not in {"queued", "in_progress"}:
+            return _openai_error(
+                409,
+                "Only queued or in-progress background responses can be cancelled.",
+                param="response_id",
+            )
+        cancelled = _get_response_store(request).cancel(response_id)
+        assert cancelled is not None
+        return JSONResponse(copy.deepcopy(cancelled.response))
 
     @app.get("/v1/responses/{response_id}/input_items", response_model=None)
     async def list_response_input_items(
@@ -246,6 +310,18 @@ def create_app(
             }
         )
 
+    @app.get("/v1/chat/completions", response_model=None)
+    async def list_chat_completions(request: Request) -> JSONResponse:
+        metadata = _metadata_query_params(request)
+        items, has_more = _get_chat_completion_store(request).list(
+            model=request.query_params.get("model"),
+            metadata=metadata,
+            order=request.query_params.get("order"),
+            after=request.query_params.get("after"),
+            limit=_positive_int(request.query_params.get("limit")),
+        )
+        return JSONResponse(_cursor_page(items, has_more=has_more))
+
     @app.post("/v1/chat/completions", response_model=None)
     async def create_chat_completion(
         request: Request, body: dict[str, Any] = Body(...)
@@ -263,6 +339,7 @@ def create_app(
                     response_payload=response_payload,
                     chat_payload=payload,
                     legacy_functions=legacy_functions,
+                    chat_store=_get_chat_completion_store(request),
                 )
             )
 
@@ -277,7 +354,98 @@ def create_app(
             legacy_functions=legacy_functions,
             n=_chat_choice_count(payload.get("n")),
         )
+        if payload.get("metadata") is not None:
+            chat_completion["metadata"] = copy.deepcopy(payload["metadata"])
+        if payload.get("store") is True:
+            _get_chat_completion_store(request).remember(
+                str(chat_completion["id"]),
+                completion=chat_completion,
+                metadata=payload.get("metadata") or {},
+            )
         return JSONResponse(chat_completion)
+
+    @app.get("/v1/chat/completions/{completion_id}", response_model=None)
+    async def retrieve_chat_completion(
+        request: Request, completion_id: str
+    ) -> JSONResponse:
+        stored = _get_chat_completion_store(request).get(completion_id)
+        if stored is None:
+            return _openai_error(
+                404,
+                f"Unknown completion_id: {completion_id}",
+                param="completion_id",
+            )
+        return JSONResponse(copy.deepcopy(stored.completion))
+
+    @app.post("/v1/chat/completions/{completion_id}", response_model=None)
+    async def update_chat_completion(
+        request: Request,
+        completion_id: str,
+        body: dict[str, Any] = Body(default_factory=dict),
+    ) -> JSONResponse:
+        metadata = body.get("metadata")
+        if metadata is not None and not isinstance(metadata, dict):
+            return _openai_error(
+                400,
+                "metadata must be an object or null.",
+                param="metadata",
+            )
+        stored = _get_chat_completion_store(request).update_metadata(
+            completion_id, metadata
+        )
+        if stored is None:
+            return _openai_error(
+                404,
+                f"Unknown completion_id: {completion_id}",
+                param="completion_id",
+            )
+        return JSONResponse(copy.deepcopy(stored.completion))
+
+    @app.delete("/v1/chat/completions/{completion_id}", response_model=None)
+    async def delete_chat_completion(
+        request: Request, completion_id: str
+    ) -> JSONResponse:
+        deleted = _get_chat_completion_store(request).delete(completion_id)
+        if not deleted:
+            return _openai_error(
+                404,
+                f"Unknown completion_id: {completion_id}",
+                param="completion_id",
+            )
+        return JSONResponse(
+            {
+                "id": completion_id,
+                "object": "chat.completion.deleted",
+                "deleted": True,
+            }
+        )
+
+    @app.get("/v1/chat/completions/{completion_id}/messages", response_model=None)
+    async def list_chat_completion_messages(
+        request: Request, completion_id: str
+    ) -> JSONResponse:
+        stored = _get_chat_completion_store(request).get(completion_id)
+        if stored is None:
+            return _openai_error(
+                404,
+                f"Unknown completion_id: {completion_id}",
+                param="completion_id",
+            )
+
+        messages = [copy.deepcopy(message) for message in stored.messages]
+        order = request.query_params.get("order")
+        if order == "desc":
+            messages.reverse()
+        after = request.query_params.get("after")
+        if after:
+            messages = _messages_after_cursor(messages, after)
+        limit = _positive_int(request.query_params.get("limit"))
+        has_more = False
+        if limit is not None:
+            has_more = len(messages) > limit
+            messages = messages[:limit]
+
+        return JSONResponse(_cursor_page(messages, has_more=has_more))
 
     return app
 
@@ -556,6 +724,10 @@ def _get_response_store(request: Request) -> ResponseStore:
     return request.app.state.response_store
 
 
+def _get_chat_completion_store(request: Request) -> ChatCompletionStore:
+    return request.app.state.chat_completion_store
+
+
 def _backend_supports_native_sessions(backend: CodexBackend) -> bool:
     return bool(getattr(backend, "supports_native_sessions", False))
 
@@ -596,6 +768,92 @@ def _items_after_cursor(items: list[Any], after: str) -> list[Any]:
         if _input_item_id(item, index) == after:
             return items[index + 1 :]
     return items
+
+
+def _messages_after_cursor(items: list[dict[str, Any]], after: str) -> list[dict[str, Any]]:
+    for index, item in enumerate(items):
+        if str(item.get("id") or f"message_{index}") == after:
+            return items[index + 1 :]
+    return items
+
+
+def _cursor_page(items: list[dict[str, Any]], *, has_more: bool) -> dict[str, Any]:
+    return {
+        "object": "list",
+        "data": items,
+        "first_id": str(items[0].get("id")) if items else None,
+        "last_id": str(items[-1].get("id")) if items else None,
+        "has_more": has_more,
+    }
+
+
+def _metadata_query_params(request: Request) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    for key, value in request.query_params.multi_items():
+        if key.startswith("metadata[") and key.endswith("]"):
+            metadata[key[len("metadata[") : -1]] = value
+        elif key == "metadata":
+            parsed = _parse_metadata_query_value(value)
+            if parsed:
+                metadata.update(parsed)
+    return metadata
+
+
+def _parse_metadata_query_value(value: str) -> dict[str, Any]:
+    if not value:
+        return {}
+    for parser in (json.loads, ast.literal_eval):
+        try:
+            parsed = parser(value)
+        except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(parsed, dict):
+            return {str(key): parsed[key] for key in parsed}
+    return {}
+
+
+def _estimate_input_tokens(prepared: dict[str, Any]) -> int:
+    text_parts = [str(prepared.get("instructions") or "")]
+    text_parts.extend(_text_values(prepared.get("input")))
+    text_parts.extend(_text_values(prepared.get("tools")))
+    text_parts.extend(_text_values(prepared.get("text")))
+    text = " ".join(part for part in text_parts if part)
+    image_count = _typed_item_count(prepared.get("input"), "input_image")
+    file_count = _typed_item_count(prepared.get("input"), "input_file")
+    char_tokens = max(1, (len(text) + 3) // 4)
+    word_tokens = len([part for part in text.replace("\n", " ").split(" ") if part])
+    return max(1, char_tokens, word_tokens) + image_count * 85 + file_count * 85
+
+
+def _text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        values: list[str] = []
+        for key, item in value.items():
+            if key in {"text", "content", "instructions", "name", "description"}:
+                values.extend(_text_values(item))
+            elif isinstance(item, (dict, list)):
+                values.extend(_text_values(item))
+        return values
+    if isinstance(value, list):
+        values: list[str] = []
+        for item in value:
+            values.extend(_text_values(item))
+        return values
+    return []
+
+
+def _typed_item_count(value: Any, item_type: str) -> int:
+    if isinstance(value, dict):
+        return int(value.get("type") == item_type) + sum(
+            _typed_item_count(item, item_type) for item in value.values()
+        )
+    if isinstance(value, list):
+        return sum(_typed_item_count(item, item_type) for item in value)
+    return 0
 
 
 def _response_input_page_item(item: Any, index: int) -> Any:
@@ -788,12 +1046,51 @@ async def _responses_event_stream(
     yield b"data: [DONE]\n\n"
 
 
+async def _stored_response_event_stream(
+    response: dict[str, Any],
+) -> AsyncIterator[bytes]:
+    stored_response = copy.deepcopy(response)
+    created_response = copy.deepcopy(stored_response)
+    created_response["status"] = "in_progress"
+    created_response["output"] = []
+
+    yield _sse_data(
+        {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": created_response,
+        }
+    )
+    sequence_number = 1
+    for output_index, item in enumerate(stored_response.get("output") or []):
+        if not isinstance(item, dict):
+            continue
+        yield _sse_data(
+            {
+                "type": "response.output_item.done",
+                "sequence_number": sequence_number,
+                "output_index": output_index,
+                "item": item,
+            }
+        )
+        sequence_number += 1
+    yield _sse_data(
+        {
+            "type": "response.completed",
+            "sequence_number": sequence_number,
+            "response": stored_response,
+        }
+    )
+    yield b"data: [DONE]\n\n"
+
+
 async def _chat_completion_event_stream(
     *,
     backend: CodexBackend,
     response_payload: dict[str, Any],
     chat_payload: dict[str, Any],
     legacy_functions: bool = False,
+    chat_store: ChatCompletionStore | None = None,
 ) -> AsyncIterator[bytes]:
     created = int(time.time())
     state = _ChatStreamState(
@@ -918,7 +1215,16 @@ async def _chat_completion_event_stream(
                         response,
                         fallback_model=state.model,
                         legacy_functions=legacy_functions,
+                        n=state.choice_count,
                     )
+                    if chat_payload.get("metadata") is not None:
+                        completion["metadata"] = copy.deepcopy(chat_payload["metadata"])
+                    if chat_payload.get("store") is True and chat_store is not None:
+                        chat_store.remember(
+                            str(completion["id"]),
+                            completion=completion,
+                            metadata=chat_payload.get("metadata") or {},
+                        )
                     finish_reason = completion["choices"][0]["finish_reason"]
                     yield _sse_data(
                         _chat_chunk(state, {}, finish_reason=finish_reason)
