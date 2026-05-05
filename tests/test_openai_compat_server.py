@@ -322,6 +322,56 @@ async def test_responses_previous_response_id_expands_local_context(
 
 
 @pytest.mark.asyncio
+async def test_responses_previous_response_id_preserves_function_calls_for_tool_outputs():
+    backend = ToolCallResponseBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        first = await client.responses.create(
+            model="gpt-5.4",
+            input="Call the weather tool for Tokyo.",
+        )
+        await client.responses.create(
+            model="gpt-5.4",
+            input=[
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_fake_1",
+                    "output": "Tokyo is sunny.",
+                }
+            ],
+            previous_response_id=first.id,
+        )
+
+        assert "previous_response_id" not in backend.requests[1]
+        assert backend.requests[1]["input"] == [
+            {"role": "user", "content": "Call the weather tool for Tokyo."},
+            {
+                "type": "function_call",
+                "call_id": "call_fake_1",
+                "name": "lookup_weather",
+                "arguments": '{"city":"Tokyo"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_fake_1",
+                "output": "Tokyo is sunny.",
+            },
+        ]
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_responses_previous_response_id_is_forwarded_to_native_session_backend():
     backend = NativeSessionRecordingBackend()
     app = create_app(backend=backend)
@@ -541,6 +591,67 @@ async def test_chat_completions_create_returns_tool_calls_without_streaming():
         assert function.arguments == '{"city":"Tokyo"}'
         assert completion.choices[0].finish_reason == "tool_calls"
         assert backend.requests[0]["tools"][0]["name"] == "lookup_weather"
+    finally:
+        await http_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_with_tool_result_preserves_assistant_tool_call():
+    backend = RecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        await client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[
+                {"role": "user", "content": "Call the weather tool for Tokyo."},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_fake_1",
+                            "type": "function",
+                            "function": {
+                                "name": "lookup_weather",
+                                "arguments": '{"city":"Tokyo"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_fake_1",
+                    "content": "Tokyo is sunny.",
+                },
+                {"role": "user", "content": "Summarize the tool result."},
+            ],
+        )
+
+        assert backend.requests[0]["input"] == [
+            {"role": "user", "content": "Call the weather tool for Tokyo."},
+            {
+                "type": "function_call",
+                "call_id": "call_fake_1",
+                "name": "lookup_weather",
+                "arguments": '{"city":"Tokyo"}',
+            },
+            {
+                "type": "function_call_output",
+                "call_id": "call_fake_1",
+                "output": "Tokyo is sunny.",
+            },
+            {"role": "user", "content": "Summarize the tool result."},
+        ]
     finally:
         await http_client.aclose()
 

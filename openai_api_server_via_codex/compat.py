@@ -64,21 +64,41 @@ def response_output_as_input_messages(response: dict[str, Any]) -> list[dict[str
     for item in response.get("output") or []:
         if not isinstance(item, dict):
             continue
-        if item.get("type") != "message" or item.get("role") != "assistant":
+        if item.get("type") == "function_call":
+            function_call = _function_call_as_input_item(item)
+            if function_call:
+                messages.append(function_call)
             continue
-        text = _output_message_text(item)
-        if not text:
-            continue
-        message: dict[str, Any] = {"role": "assistant", "content": text}
-        if item.get("phase"):
-            message["phase"] = item["phase"]
-        messages.append(message)
+        if item.get("type") == "message" and item.get("role") == "assistant":
+            text = _output_message_text(item)
+            if not text:
+                continue
+            message: dict[str, Any] = {"role": "assistant", "content": text}
+            if item.get("phase"):
+                message["phase"] = item["phase"]
+            messages.append(message)
 
     if not messages:
         text = extract_response_text(response)
         if text:
             messages.append({"role": "assistant", "content": text})
     return messages
+
+
+def _function_call_as_input_item(item: dict[str, Any]) -> dict[str, Any] | None:
+    call_id = item.get("call_id") or item.get("id")
+    name = item.get("name")
+    if not call_id or not name:
+        return None
+    arguments = item.get("arguments")
+    if not isinstance(arguments, str):
+        arguments = "{}"
+    return {
+        "type": "function_call",
+        "call_id": str(call_id),
+        "name": str(name),
+        "arguments": arguments,
+    }
 
 
 def chat_request_to_response_payload(
@@ -289,12 +309,13 @@ def _chat_messages_to_response_input(messages: Any) -> list[Any]:
             continue
 
         if role == "assistant":
-            response_input.append(
-                {
-                    "role": "assistant",
-                    "content": _chat_content_to_text(message.get("content")),
-                }
-            )
+            for function_call in _chat_tool_calls_to_response_function_calls(
+                message.get("tool_calls")
+            ):
+                response_input.append(function_call)
+            content = _chat_content_to_text(message.get("content"))
+            if content or not message.get("tool_calls"):
+                response_input.append({"role": "assistant", "content": content})
             continue
 
         if role == "user":
@@ -305,6 +326,35 @@ def _chat_messages_to_response_input(messages: Any) -> list[Any]:
                 }
             )
     return response_input
+
+
+def _chat_tool_calls_to_response_function_calls(tool_calls: Any) -> list[dict[str, Any]]:
+    if not isinstance(tool_calls, list):
+        return []
+
+    function_calls: list[dict[str, Any]] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        function = tool_call.get("function")
+        if not isinstance(function, dict):
+            continue
+        call_id = tool_call.get("id")
+        name = function.get("name")
+        if not call_id or not name:
+            continue
+        arguments = function.get("arguments")
+        if not isinstance(arguments, str):
+            arguments = "{}"
+        function_calls.append(
+            {
+                "type": "function_call",
+                "call_id": str(call_id),
+                "name": str(name),
+                "arguments": arguments,
+            }
+        )
+    return function_calls
 
 
 def _chat_content_to_response_content(content: Any) -> Any:

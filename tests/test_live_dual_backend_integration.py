@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
 import subprocess
 import sys
 from collections.abc import AsyncIterator
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -20,6 +22,7 @@ RED_SQUARE_PNG_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC"
 )
+LIVE_LONG_TEST_MODEL = "gpt-5.4-mini"
 
 
 @pytest.mark.asyncio
@@ -137,6 +140,48 @@ async def test_live_dual_backends_handle_images_multi_turn_and_reasoning() -> No
                     client, model, backend_name
                 )
                 await _assert_image_inputs(client, model, backend_name)
+        finally:
+            await http_client.close()
+            await app_client.close()
+    finally:
+        await http_server.stop()
+        await app_server.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
+    reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
+)
+async def test_live_dual_backends_handle_long_multi_turn_tool_and_text_flows() -> None:
+    http_server = await _start_server("chatgpt-http")
+    app_server = await _start_server("codex-app-server")
+    try:
+        http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
+        app_client = AsyncOpenAI(api_key="test", base_url=f"{app_server.base_url}/v1")
+        try:
+            await _assert_model_list_contains(
+                http_client,
+                app_client,
+                LIVE_LONG_TEST_MODEL,
+            )
+
+            async for backend_name, client in _named_clients(http_client, app_client):
+                await _assert_responses_multi_turn_tool_calling(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_chat_multi_turn_tool_calling(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
+                await _assert_long_plain_text_responses_conversation(
+                    client,
+                    LIVE_LONG_TEST_MODEL,
+                    backend_name,
+                )
         finally:
             await http_client.close()
             await app_client.close()
@@ -339,6 +384,393 @@ async def _assert_image_inputs(
     )
     chat_image_text = chat_image.choices[0].message.content or ""
     assert _mentions_red(chat_image_text), (backend_name, chat_image_text)
+
+
+async def _assert_responses_multi_turn_tool_calling(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-RESP-TOOL-4242"
+    tool: dict[str, Any] = {
+        "type": "function",
+        "name": "lookup_order_status",
+        "description": "Look up an order status by order id.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "order_id": {
+                    "type": "string",
+                    "description": "The order id to look up.",
+                }
+            },
+            "required": ["order_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    }
+    first = await client.responses.create(
+        model=model,
+        instructions=(
+            "Use the provided function tool when the user asks for order status. "
+            "Do not invent order status data."
+        ),
+        input=(
+            "Call lookup_order_status for order_id ORDER-4242. "
+            "Do not answer from memory."
+        ),
+        tools=cast(Any, [tool]),
+        tool_choice={"type": "function", "name": "lookup_order_status"},
+        reasoning={"effort": "low"},
+    )
+    function_call = _first_function_call(first)
+    assert function_call is not None, (backend_name, _dump_model(first))
+    assert function_call["name"] == "lookup_order_status", (
+        backend_name,
+        function_call,
+    )
+    call_arguments = _json_object(function_call.get("arguments"))
+    assert call_arguments.get("order_id") == "ORDER-4242", (
+        backend_name,
+        function_call,
+    )
+    print(
+        f"{backend_name} responses tool call: "
+        f"name={function_call['name']} args={function_call.get('arguments')}"
+    )
+
+    second = await client.responses.create(
+        model=model,
+        input=[
+            {
+                "type": "function_call_output",
+                "call_id": function_call["call_id"],
+                "output": (
+                    f"ORDER-4242 status: shipped. Carrier: Yamato. "
+                    f"Tracking marker: {marker}. Delivery window: Friday morning."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Using only the tool output just provided, state the order "
+                    "status, carrier, and tracking marker in one sentence."
+                ),
+            },
+        ],
+        previous_response_id=first.id,
+        reasoning={"effort": "low"},
+    )
+    second_text = second.output_text
+    print(f"{backend_name} responses tool result: {_short_text(second_text)}")
+    assert _contains_marker(second_text, marker), (backend_name, second_text)
+    assert "shipped" in second_text.lower(), (backend_name, second_text)
+
+    third = await client.responses.create(
+        model=model,
+        input="Return only the tracking marker from the tool result.",
+        previous_response_id=second.id,
+        reasoning={"effort": "low"},
+    )
+    third_text = third.output_text
+    print(f"{backend_name} responses tool follow-up: {_short_text(third_text)}")
+    assert _contains_marker(third_text, marker), (backend_name, third_text)
+
+
+async def _assert_chat_multi_turn_tool_calling(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    marker = f"{backend_name}-CHAT-TOOL-7788"
+    first = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "Use the provided function tool when the user asks for customer "
+                    "tier data. Do not invent customer tier data."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Call lookup_customer_tier for customer_id CUST-7788. "
+                    "Do not answer from memory."
+                ),
+            },
+        ],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_customer_tier",
+                    "description": "Look up customer tier by customer id.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "customer_id": {
+                                "type": "string",
+                                "description": "The customer id to look up.",
+                            }
+                        },
+                        "required": ["customer_id"],
+                        "additionalProperties": False,
+                    },
+                    "strict": True,
+                },
+            }
+        ],
+        tool_choice={"type": "function", "function": {"name": "lookup_customer_tier"}},
+        reasoning_effort="low",
+    )
+    message = first.choices[0].message
+    tool_calls = message.tool_calls or []
+    assert tool_calls, (backend_name, first.model_dump(mode="json"))
+    tool_call = tool_calls[0]
+    tool_call_data = _dump_model(tool_call)
+    tool_function = tool_call_data.get("function") or {}
+    assert isinstance(tool_function, dict), (backend_name, tool_call_data)
+    tool_call_id = str(tool_call_data.get("id") or "")
+    tool_name = str(tool_function.get("name") or "")
+    tool_arguments_text = str(tool_function.get("arguments") or "")
+    tool_arguments = _json_object(tool_arguments_text)
+    assert tool_name == "lookup_customer_tier", (
+        backend_name,
+        tool_call_data,
+    )
+    assert tool_arguments.get("customer_id") == "CUST-7788", (
+        backend_name,
+        tool_call_data,
+    )
+    print(
+        f"{backend_name} chat tool call: "
+        f"name={tool_name} args={tool_arguments_text}"
+    )
+
+    second = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "Answer from supplied tool results only.",
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Call lookup_customer_tier for customer_id CUST-7788. "
+                    "Do not answer from memory."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": tool_arguments_text,
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": (
+                    f"CUST-7788 tier: platinum. Renewal marker: {marker}. "
+                    "Account owner: Sato."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Using only the tool result, state the customer tier and "
+                    "renewal marker."
+                ),
+            },
+        ],
+        reasoning_effort="low",
+    )
+    second_text = second.choices[0].message.content or ""
+    print(f"{backend_name} chat tool result: {_short_text(second_text)}")
+    assert _contains_marker(second_text, marker), (backend_name, second_text)
+    assert "platinum" in second_text.lower(), (backend_name, second_text)
+
+    third = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": "Preserve marker strings exactly."},
+            {
+                "role": "user",
+                "content": (
+                    "Call lookup_customer_tier for customer_id CUST-7788. "
+                    "Do not answer from memory."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": tool_arguments_text,
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "content": (
+                    f"CUST-7788 tier: platinum. Renewal marker: {marker}. "
+                    "Account owner: Sato."
+                ),
+            },
+            {"role": "assistant", "content": second_text},
+            {
+                "role": "user",
+                "content": "Return only the renewal marker from the tool result.",
+            },
+        ],
+        reasoning_effort="low",
+    )
+    third_text = third.choices[0].message.content or ""
+    print(f"{backend_name} chat tool follow-up: {_short_text(third_text)}")
+    assert _contains_marker(third_text, marker), (backend_name, third_text)
+
+
+async def _assert_long_plain_text_responses_conversation(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    markers = [
+        f"{backend_name}-PLAIN-ALPHA-101",
+        f"{backend_name}-PLAIN-BRAVO-202",
+        f"{backend_name}-PLAIN-CHARLIE-303",
+        f"{backend_name}-PLAIN-DELTA-404",
+    ]
+    first = await client.responses.create(
+        model=model,
+        instructions=(
+            "This is a plain text memory check. Do not use tools. Preserve all "
+            "marker strings exactly."
+        ),
+        input=(
+            f"Remember marker one: {markers[0]}. "
+            "Reply with a short acknowledgement."
+        ),
+        reasoning={"effort": "low"},
+    )
+    print(f"{backend_name} plain turn 1: {_short_text(first.output_text)}")
+
+    second = await client.responses.create(
+        model=model,
+        input=(
+            f"Add marker two: {markers[1]}. "
+            "List the markers you know so far in order."
+        ),
+        previous_response_id=first.id,
+        reasoning={"effort": "low"},
+    )
+    print(f"{backend_name} plain turn 2: {_short_text(second.output_text)}")
+    _assert_contains_markers(second.output_text, markers[:2], backend_name)
+
+    third = await client.responses.create(
+        model=model,
+        input=(
+            f"Add marker three: {markers[2]}. "
+            "Write one Japanese sentence that includes all known markers."
+        ),
+        previous_response_id=second.id,
+        reasoning={"effort": "low"},
+    )
+    print(f"{backend_name} plain turn 3: {_short_text(third.output_text)}")
+    _assert_contains_markers(third.output_text, markers[:3], backend_name)
+
+    fourth = await client.responses.create(
+        model=model,
+        input=(
+            f"Add marker four: {markers[3]}. "
+            "Return the four markers in chronological order."
+        ),
+        previous_response_id=third.id,
+        reasoning={"effort": "low"},
+    )
+    print(f"{backend_name} plain turn 4: {_short_text(fourth.output_text)}")
+    _assert_contains_markers(fourth.output_text, markers, backend_name)
+
+    final = await client.responses.create(
+        model=model,
+        input="Return only the four remembered markers separated by pipes.",
+        previous_response_id=fourth.id,
+        reasoning={"effort": "low"},
+    )
+    final_text = final.output_text
+    print(f"{backend_name} plain final: {_short_text(final_text)}")
+    _assert_contains_markers(final_text, markers, backend_name)
+
+
+async def _assert_model_list_contains(
+    http_client: AsyncOpenAI, app_client: AsyncOpenAI, model: str
+) -> None:
+    http_models = await http_client.models.list()
+    app_models = await app_client.models.list()
+    assert model in [item.id for item in http_models.data], (
+        "chatgpt-http",
+        model,
+        [item.id for item in http_models.data],
+    )
+    assert model in [item.id for item in app_models.data], (
+        "codex-app-server",
+        model,
+        [item.id for item in app_models.data],
+    )
+
+
+def _first_function_call(response: Any) -> dict[str, Any] | None:
+    for item in _dump_model(response).get("output") or []:
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            call_id = item.get("call_id") or item.get("id")
+            if call_id:
+                item["call_id"] = str(call_id)
+            return item
+    return None
+
+
+def _dump_model(value: Any) -> dict[str, Any]:
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(mode="json")
+        if isinstance(dumped, dict):
+            return dumped
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _assert_contains_markers(text: str, markers: list[str], backend_name: str) -> None:
+    missing = [marker for marker in markers if not _contains_marker(text, marker)]
+    assert not missing, (backend_name, missing, text)
+
+
+def _short_text(text: str, limit: int = 240) -> str:
+    normalized = " ".join(text.split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 3]}..."
 
 
 def _contains_marker(text: str, marker: str) -> bool:
