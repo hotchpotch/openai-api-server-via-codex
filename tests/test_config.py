@@ -39,3 +39,32 @@ def test_default_config_toml_documents_core_options() -> None:
     assert "state_dir" in text
     assert "[codex]" in text
     assert "auth_json" in text
+
+
+def test_load_config_reads_existing_toml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[server]
+host = "127.0.0.9"
+port = 8123
+
+[codex]
+auth_json = "/tmp/auth.json"
+
+[daemon]
+state_dir = "/tmp/state"
+""",
+        encoding="utf-8",
+    )
+
+    loaded = config.load_config(config_path)
+
+    assert loaded["server"]["host"] == "127.0.0.9"
+    assert loaded["server"]["port"] == 8123
+    assert loaded["codex"]["auth_json"] == "/tmp/auth.json"
+    assert loaded["daemon"]["state_dir"] == "/tmp/state"
+
+
+def test_load_config_returns_empty_dict_for_missing_file(tmp_path: Path) -> None:
+    assert config.load_config(tmp_path / "missing.toml") == {}

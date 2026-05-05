@@ -115,6 +115,114 @@ def test_server_settings_select_app_server_backend(monkeypatch) -> None:
     assert settings.codex_bin == "/tmp/codex"
 
 
+def test_server_settings_read_config_file(tmp_path: Path) -> None:
+    auth_json = tmp_path / "auth.json"
+    app_cwd = tmp_path / "app-server-cwd"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[server]
+backend = "codex-app-server"
+host = "127.0.0.9"
+port = 9009
+default_model = "gpt-5.4-mini"
+timeout = 12.5
+
+[codex]
+auth_json = "{auth_json}"
+backend_base_url = "https://example.test/codex"
+client_version = "2.0.0"
+codex_bin = "/tmp/codex-bin"
+app_server_cwd = "{app_cwd}"
+""",
+        encoding="utf-8",
+    )
+
+    args = server.parse_args(["serve", "--config", str(config_path)])
+    loaded_config = server.load_config_for_args(args)
+    settings = server.server_settings_from_args(args, loaded_config)
+
+    assert settings.backend == "codex-app-server"
+    assert settings.host == "127.0.0.9"
+    assert settings.port == 9009
+    assert settings.default_model == "gpt-5.4-mini"
+    assert settings.timeout == 12.5
+    assert settings.auth_json == auth_json.resolve()
+    assert settings.backend_base_url == "https://example.test/codex"
+    assert settings.client_version == "2.0.0"
+    assert settings.codex_bin == "/tmp/codex-bin"
+    assert settings.app_server_cwd == app_cwd.resolve()
+
+
+def test_server_settings_precedence_is_cli_then_env_then_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[server]
+host = "127.0.0.9"
+port = 9009
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_VIA_CODEX_PORT", "9010")
+
+    args = server.parse_args(
+        ["serve", "--config", str(config_path), "--host", "127.0.0.11"]
+    )
+    loaded_config = server.load_config_for_args(args)
+    settings = server.server_settings_from_args(args, loaded_config)
+
+    assert settings.host == "127.0.0.11"
+    assert settings.port == 9010
+
+
+def test_daemon_paths_read_config_file(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    pid_file = tmp_path / "explicit.pid"
+    log_file = tmp_path / "explicit.log"
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[server]
+host = "127.0.0.9"
+port = 9009
+
+[daemon]
+state_dir = "{state_dir}"
+pid_file = "{pid_file}"
+log_file = "{log_file}"
+""",
+        encoding="utf-8",
+    )
+
+    args = server.parse_args(["start", "--config", str(config_path)])
+    loaded_config = server.load_config_for_args(args)
+    settings = server.server_settings_from_args(args, loaded_config)
+    paths = server.daemon_paths_from_args(args, settings, loaded_config)
+
+    assert paths.state_dir == state_dir.resolve()
+    assert paths.pid_file == pid_file.resolve()
+    assert paths.log_file == log_file.resolve()
+
+
+def test_stop_timeout_reads_config_file(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[daemon]
+stop_timeout = 2.5
+""",
+        encoding="utf-8",
+    )
+
+    args = server.parse_args(["stop", "--config", str(config_path)])
+    loaded_config = server.load_config_for_args(args)
+
+    assert server.stop_timeout_from_args(args, loaded_config) == 2.5
+
+
 def test_serve_command_uses_current_python_module_and_selected_settings(
     tmp_path: Path, monkeypatch
 ) -> None:

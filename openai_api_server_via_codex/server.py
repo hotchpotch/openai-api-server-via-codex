@@ -48,6 +48,10 @@ from .compat import (
 )
 from .daemon import (
     DaemonError,
+    DaemonPaths,
+    LOG_FILE_ENV,
+    PID_FILE_ENV,
+    STATE_DIR_ENV,
     daemon_status,
     resolve_daemon_paths,
     start_background,
@@ -74,6 +78,9 @@ class ServerSettings:
     codex_bin: str | None = None
     app_server_cwd: Path | None = None
     auth_json: Path | None = None
+
+
+ConfigData = dict[str, Any]
 
 
 def _resolve_optional_path(value: str | Path | None) -> Path | None:
@@ -503,22 +510,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve = subparsers.add_parser("serve", help="run the server in the foreground")
+    _add_config_option(serve)
     _add_server_options(serve)
 
     start = subparsers.add_parser("start", help="run the server in the background")
+    _add_config_option(start)
     _add_server_options(start)
     _add_daemon_options(start)
 
     stop = subparsers.add_parser("stop", help="stop the background server")
+    _add_config_option(stop)
     _add_daemon_selector_options(stop)
     stop.add_argument(
         "--stop-timeout",
         type=float,
-        default=10.0,
+        default=None,
         help="seconds to wait after SIGTERM before SIGKILL",
     )
 
     status = subparsers.add_parser("status", help="show background server status")
+    _add_config_option(status)
     _add_daemon_selector_options(status)
 
     config_generate = subparsers.add_parser(
@@ -535,34 +546,131 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def server_settings_from_args(args: argparse.Namespace) -> ServerSettings:
+def load_config_for_args(args: argparse.Namespace) -> ConfigData:
+    return config_module.load_config(getattr(args, "config", None))
+
+
+def server_settings_from_args(
+    args: argparse.Namespace, loaded_config: ConfigData | None = None
+) -> ServerSettings:
+    config_data = loaded_config or {}
     return ServerSettings(
-        backend=_arg_env_str(
-            args, "backend", "OPENAI_VIA_CODEX_BACKEND", CODEX_BACKEND_HTTP
+        backend=_arg_env_config_str(
+            args,
+            "backend",
+            "OPENAI_VIA_CODEX_BACKEND",
+            config_data,
+            "server",
+            "backend",
+            CODEX_BACKEND_HTTP,
         ),
-        host=_arg_env_str(args, "host", "OPENAI_VIA_CODEX_HOST", "127.0.0.1"),
-        port=_arg_env_int(args, "port", "OPENAI_VIA_CODEX_PORT", 8000),
-        backend_base_url=_arg_env_str(
+        host=_arg_env_config_str(
+            args,
+            "host",
+            "OPENAI_VIA_CODEX_HOST",
+            config_data,
+            "server",
+            "host",
+            config_module.DEFAULT_HOST,
+        ),
+        port=_arg_env_config_int(
+            args,
+            "port",
+            "OPENAI_VIA_CODEX_PORT",
+            config_data,
+            "server",
+            "port",
+            config_module.DEFAULT_PORT,
+        ),
+        backend_base_url=_arg_env_config_str(
             args,
             "backend_base_url",
             "OPENAI_VIA_CODEX_BACKEND_BASE_URL",
+            config_data,
+            "codex",
+            "backend_base_url",
             CODEX_BASE_URL,
         ),
-        client_version=_arg_env_str(
-            args, "client_version", "OPENAI_VIA_CODEX_CLIENT_VERSION", "1.0.0"
+        client_version=_arg_env_config_str(
+            args,
+            "client_version",
+            "OPENAI_VIA_CODEX_CLIENT_VERSION",
+            config_data,
+            "codex",
+            "client_version",
+            config_module.DEFAULT_CLIENT_VERSION,
         ),
-        timeout=_arg_env_float(args, "timeout", "OPENAI_VIA_CODEX_TIMEOUT", 180.0),
-        default_model=_arg_env_str(
-            args, "default_model", "OPENAI_VIA_CODEX_DEFAULT_MODEL", DEFAULT_MODEL
+        timeout=_arg_env_config_float(
+            args,
+            "timeout",
+            "OPENAI_VIA_CODEX_TIMEOUT",
+            config_data,
+            "server",
+            "timeout",
+            config_module.DEFAULT_TIMEOUT,
         ),
-        codex_bin=_arg_env_optional_str(args, "codex_bin", CODEX_BIN_ENV),
+        default_model=_arg_env_config_str(
+            args,
+            "default_model",
+            "OPENAI_VIA_CODEX_DEFAULT_MODEL",
+            config_data,
+            "server",
+            "default_model",
+            DEFAULT_MODEL,
+        ),
+        codex_bin=_arg_env_config_optional_str(
+            args, "codex_bin", CODEX_BIN_ENV, config_data, "codex", "codex_bin"
+        ),
         app_server_cwd=_resolve_optional_path(
-            getattr(args, "app_server_cwd", None)
-            or os.environ.get(CODEX_APP_SERVER_CWD_ENV)
+            _arg_env_config_optional_str(
+                args,
+                "app_server_cwd",
+                CODEX_APP_SERVER_CWD_ENV,
+                config_data,
+                "codex",
+                "app_server_cwd",
+            )
         ),
         auth_json=_resolve_optional_path(
-            getattr(args, "auth_json", None) or os.environ.get(AUTH_JSON_ENV)
+            _arg_env_config_optional_str(
+                args, "auth_json", AUTH_JSON_ENV, config_data, "codex", "auth_json"
+            )
         ),
+    )
+
+
+def daemon_paths_from_args(
+    args: argparse.Namespace,
+    settings: ServerSettings,
+    loaded_config: ConfigData | None = None,
+) -> DaemonPaths:
+    config_data = loaded_config or {}
+    return resolve_daemon_paths(
+        host=settings.host,
+        port=settings.port,
+        state_dir=_arg_env_config_optional_str(
+            args, "state_dir", STATE_DIR_ENV, config_data, "daemon", "state_dir"
+        ),
+        pid_file=_arg_env_config_optional_str(
+            args, "pid_file", PID_FILE_ENV, config_data, "daemon", "pid_file"
+        ),
+        log_file=_arg_env_config_optional_str(
+            args, "log_file", LOG_FILE_ENV, config_data, "daemon", "log_file"
+        ),
+    )
+
+
+def stop_timeout_from_args(
+    args: argparse.Namespace, loaded_config: ConfigData | None = None
+) -> float:
+    return _arg_env_config_float(
+        args,
+        "stop_timeout",
+        "OPENAI_VIA_CODEX_STOP_TIMEOUT",
+        loaded_config or {},
+        "daemon",
+        "stop_timeout",
+        config_module.DEFAULT_STOP_TIMEOUT,
     )
 
 
@@ -621,8 +729,10 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"Wrote config: {path}")
         return 0
 
+    loaded_config = load_config_for_args(args)
+
     if args.command == "serve":
-        settings = server_settings_from_args(args)
+        settings = server_settings_from_args(args, loaded_config)
         uvicorn.run(
             create_app(
                 default_model=settings.default_model,
@@ -640,14 +750,8 @@ def _main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    settings = server_settings_from_args(args)
-    paths = resolve_daemon_paths(
-        host=settings.host,
-        port=settings.port,
-        state_dir=getattr(args, "state_dir", None),
-        pid_file=getattr(args, "pid_file", None),
-        log_file=getattr(args, "log_file", None),
-    )
+    settings = server_settings_from_args(args, loaded_config)
+    paths = daemon_paths_from_args(args, settings, loaded_config)
 
     if args.command == "start":
         try:
@@ -662,7 +766,7 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "stop":
-        result = stop_background(paths, timeout=args.stop_timeout)
+        result = stop_background(paths, timeout=stop_timeout_from_args(args, loaded_config))
         if result.state == "not_running":
             print(f"Not running. PID file: {paths.pid_file}")
         elif result.state == "stale":
@@ -704,6 +808,10 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_config_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", help="path to config.toml")
+
+
 def _add_daemon_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--state-dir", help="directory for default PID and log files")
     parser.add_argument("--pid-file", help="explicit PID file path")
@@ -725,6 +833,26 @@ def _arg_env_str(
     return os.environ.get(env_name, default)
 
 
+def _arg_env_config_str(
+    args: argparse.Namespace,
+    arg_name: str,
+    env_name: str,
+    config_data: ConfigData,
+    section: str,
+    key: str,
+    default: str,
+) -> str:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return str(value)
+    if env_value := os.environ.get(env_name):
+        return env_value
+    config_value = _config_value(config_data, section, key)
+    if config_value is not None:
+        return str(config_value)
+    return default
+
+
 def _arg_env_int(
     args: argparse.Namespace, arg_name: str, env_name: str, default: int
 ) -> int:
@@ -732,6 +860,26 @@ def _arg_env_int(
     if value is not None:
         return int(value)
     return int(os.environ.get(env_name, str(default)))
+
+
+def _arg_env_config_int(
+    args: argparse.Namespace,
+    arg_name: str,
+    env_name: str,
+    config_data: ConfigData,
+    section: str,
+    key: str,
+    default: int,
+) -> int:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return int(value)
+    if env_value := os.environ.get(env_name):
+        return int(env_value)
+    config_value = _config_value(config_data, section, key)
+    if config_value is not None:
+        return int(config_value)
+    return default
 
 
 def _arg_env_float(
@@ -743,6 +891,26 @@ def _arg_env_float(
     return float(os.environ.get(env_name, str(default)))
 
 
+def _arg_env_config_float(
+    args: argparse.Namespace,
+    arg_name: str,
+    env_name: str,
+    config_data: ConfigData,
+    section: str,
+    key: str,
+    default: float,
+) -> float:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return float(value)
+    if env_value := os.environ.get(env_name):
+        return float(env_value)
+    config_value = _config_value(config_data, section, key)
+    if config_value is not None:
+        return float(config_value)
+    return default
+
+
 def _arg_env_optional_str(
     args: argparse.Namespace, arg_name: str, env_name: str
 ) -> str | None:
@@ -750,6 +918,32 @@ def _arg_env_optional_str(
     if value is not None:
         return str(value)
     return os.environ.get(env_name)
+
+
+def _arg_env_config_optional_str(
+    args: argparse.Namespace,
+    arg_name: str,
+    env_name: str,
+    config_data: ConfigData,
+    section: str,
+    key: str,
+) -> str | None:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return str(value)
+    if env_value := os.environ.get(env_name):
+        return env_value
+    config_value = _config_value(config_data, section, key)
+    if config_value is not None:
+        return str(config_value)
+    return None
+
+
+def _config_value(config_data: ConfigData, section: str, key: str) -> Any:
+    section_data = config_data.get(section)
+    if not isinstance(section_data, dict):
+        return None
+    return section_data.get(key)
 
 
 def _get_backend(request: Request) -> CodexBackend:

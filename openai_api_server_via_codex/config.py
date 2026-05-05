@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tomllib
 from pathlib import Path
+from typing import Any
 
 from .backend import CODEX_BACKEND_HTTP, CODEX_BASE_URL
 from .compat import DEFAULT_MODEL
@@ -67,6 +69,15 @@ state_dir = {state_dir}
 # log_file = "/path/to/openai-api-server-via-codex.log"
 stop_timeout = {DEFAULT_STOP_TIMEOUT}
 """
+
+
+def load_config(path: str | Path | None = None) -> dict[str, Any]:
+    config_path = resolve_config_path(path)
+    if not config_path.exists():
+        return {}
+    with config_path.open("rb") as file:
+        loaded = tomllib.load(file)
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def write_default_config(path: str | Path | None = None, *, force: bool = False) -> Path:

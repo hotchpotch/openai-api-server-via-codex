@@ -7,6 +7,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .config import default_daemon_state_dir
+
 
 STATE_DIR_ENV = "OPENAI_VIA_CODEX_STATE_DIR"
 PID_FILE_ENV = "OPENAI_VIA_CODEX_PID_FILE"
@@ -145,11 +147,7 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
 
 
 def _default_state_dir() -> Path:
-    if xdg_state_home := os.environ.get("XDG_STATE_HOME"):
-        root = Path(xdg_state_home)
-    else:
-        root = Path("~/.local/state")
-    return root / "openai-api-server-via-codex"
+    return default_daemon_state_dir()
 
 
 def _path_from_arg_env_default(

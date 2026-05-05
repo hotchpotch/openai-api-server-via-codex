@@ -21,6 +21,20 @@ def test_resolve_daemon_paths_uses_uvx_safe_state_dir(tmp_path: Path) -> None:
     assert paths.log_file == tmp_path.resolve() / "server-127.0.0.1-8123.log"
 
 
+def test_resolve_daemon_paths_defaults_under_xdg_config_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+    paths = daemon.resolve_daemon_paths(host="127.0.0.1", port=8123)
+
+    assert paths.state_dir == (
+        tmp_path / "xdg-config" / "openai-api-server-via-codex" / "run"
+    ).resolve()
+    assert paths.pid_file.parent == paths.state_dir
+    assert paths.log_file.parent == paths.state_dir
+
+
 def test_start_background_refuses_live_pid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
