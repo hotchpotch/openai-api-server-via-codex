@@ -62,6 +62,22 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
             )
             assert second.output_text.strip()
 
+            response_stream = await client.responses.create(
+                model=model,
+                input="Stream a short reply with the token: response-stream-ok",
+                stream=True,
+                reasoning={"effort": "low"},
+            )
+            response_stream_text: list[str] = []
+            response_stream_completed = False
+            async for event in response_stream:
+                if event.type == "response.output_text.delta":
+                    response_stream_text.append(str(getattr(event, "delta")))
+                elif event.type == "response.completed":
+                    response_stream_completed = True
+            assert "".join(response_stream_text).strip()
+            assert response_stream_completed
+
             chat = await client.chat.completions.create(
                 model=model,
                 messages=[
@@ -71,6 +87,28 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
                 reasoning_effort="low",
             )
             assert chat.choices[0].message.content
+
+            chat_stream = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "Answer with concise text only."},
+                    {
+                        "role": "user",
+                        "content": "Stream a short reply with the token: chat-stream-ok",
+                    },
+                ],
+                stream=True,
+                reasoning_effort="low",
+            )
+            chat_stream_text: list[str] = []
+            chat_stream_finished = False
+            async for chunk in chat_stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    chat_stream_text.append(chunk.choices[0].delta.content)
+                if chunk.choices and chunk.choices[0].finish_reason:
+                    chat_stream_finished = True
+            assert "".join(chat_stream_text).strip()
+            assert chat_stream_finished
 
             image_chat = await client.chat.completions.create(
                 model=model,

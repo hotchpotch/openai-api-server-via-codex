@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
 import httpx
@@ -17,6 +18,9 @@ DEFAULT_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]
 class CodexBackend(Protocol):
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Create a Responses API response through Codex."""
+
+    def stream_response(self, payload: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        """Stream Responses API events through Codex."""
 
     async def list_models(self) -> list[str]:
         """Return model ids exposed by Codex."""
@@ -41,6 +45,12 @@ class OpenAICodexBackend:
         self.timeout = timeout
 
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        stream = self.stream_response(payload)
+        return await _collect_streamed_response(stream, payload)
+
+    async def stream_response(
+        self, payload: dict[str, Any]
+    ) -> AsyncIterator[dict[str, Any]]:
         token, account_id = await self._borrow_key()
         headers = self._headers(account_id)
         client = AsyncOpenAI(
@@ -53,7 +63,8 @@ class OpenAICodexBackend:
         codex_payload["stream"] = True
         try:
             stream = await client.responses.create(**codex_payload)
-            response = await _collect_streamed_response(stream, payload)
+            async for event in stream:
+                yield _dump_openai_model(event)
         except APIStatusError as exc:
             raise CodexBackendError(
                 _status_error_message(exc), status_code=exc.status_code
@@ -62,7 +73,6 @@ class OpenAICodexBackend:
             raise CodexBackendError(str(exc)) from exc
         finally:
             await client.close()
-        return response
 
     async def list_models(self) -> list[str]:
         try:
@@ -117,6 +127,12 @@ def _dump_openai_model(value: Any) -> dict[str, Any]:
     raise CodexBackendError(f"Unsupported Codex response type: {type(value)!r}")
 
 
+def _event_value(event: Any, key: str) -> Any:
+    if isinstance(event, dict):
+        return event.get(key)
+    return getattr(event, key, None)
+
+
 async def _collect_streamed_response(
     stream: Any, payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -126,22 +142,22 @@ async def _collect_streamed_response(
     last_response_id: str | None = None
 
     async for event in stream:
-        event_type = getattr(event, "type", None)
+        event_type = _event_value(event, "type")
         if event_type == "response.created":
-            response = getattr(event, "response", None)
+            response = _event_value(event, "response")
             if response is not None:
                 dumped = _dump_openai_model(response)
                 last_response_id = str(dumped.get("id") or last_response_id or "")
         elif event_type == "response.output_text.delta":
-            delta = getattr(event, "delta", None)
+            delta = _event_value(event, "delta")
             if isinstance(delta, str):
                 text_parts.append(delta)
         elif event_type == "response.output_item.done":
-            item = getattr(event, "item", None)
+            item = _event_value(event, "item")
             if item is not None:
                 output_items.append(_dump_openai_model(item))
         elif event_type == "response.completed":
-            response = getattr(event, "response", None)
+            response = _event_value(event, "response")
             if response is not None:
                 completed_response = _dump_openai_model(response)
 

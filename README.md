@@ -36,6 +36,26 @@ chat = client.chat.completions.create(
     reasoning_effort="low",
 )
 print(chat.choices[0].message.content)
+
+stream = client.responses.create(
+    model="gpt-5.4",
+    input="Stream a short reply.",
+    stream=True,
+    reasoning={"effort": "low"},
+)
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="")
+
+chat_stream = client.chat.completions.create(
+    model="gpt-5.4",
+    messages=[{"role": "user", "content": "Stream a short reply."}],
+    stream=True,
+    reasoning_effort="low",
+)
+for chunk in chat_stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
 ```
 
 `previous_response_id` is supported locally by storing response context in
@@ -45,8 +65,10 @@ works through the standard `messages` list.
 Image input is supported for URL and data URL image parts, for example
 `{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`.
 
-Streaming is not implemented yet; `stream=true` currently returns a structured
-OpenAI-style error response.
+Streaming is supported for both Responses and Chat Completions. Chat
+Completions streaming converts Codex Responses events into
+`chat.completion.chunk` deltas, including text, function tool-call arguments,
+finish reasons, and `stream_options={"include_usage": true}` usage chunks.
 
 Live integration test:
 
