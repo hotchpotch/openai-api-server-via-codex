@@ -14,6 +14,13 @@ dependencies = [
 [project.scripts]
 openai-api-server-via-codex = "openai_api_server_via_codex.server:main"
 
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["openai_api_server_via_codex*"]
+
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",

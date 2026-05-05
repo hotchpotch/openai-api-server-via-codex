@@ -1,0 +1,107 @@
+from __future__ import annotations
+
+import signal
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from openai_api_server_via_codex import daemon
+
+
+def test_resolve_daemon_paths_uses_uvx_safe_state_dir(tmp_path: Path) -> None:
+    paths = daemon.resolve_daemon_paths(
+        host="127.0.0.1",
+        port=8123,
+        state_dir=tmp_path,
+    )
+
+    assert paths.state_dir == tmp_path.resolve()
+    assert paths.pid_file == tmp_path.resolve() / "server-127.0.0.1-8123.pid"
+    assert paths.log_file == tmp_path.resolve() / "server-127.0.0.1-8123.log"
+
+
+def test_start_background_refuses_live_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = daemon.resolve_daemon_paths(
+        host="127.0.0.1",
+        port=8123,
+        state_dir=tmp_path,
+    )
+    paths.pid_file.write_text("123\n")
+    monkeypatch.setattr(daemon, "is_pid_alive", lambda pid: True)
+
+    with pytest.raises(daemon.DaemonError, match="Already running"):
+        daemon.start_background(["python", "-m", "fake"], paths)
+
+
+def test_start_background_removes_stale_pid_and_writes_new_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = daemon.resolve_daemon_paths(
+        host="127.0.0.1",
+        port=8123,
+        state_dir=tmp_path,
+    )
+    paths.pid_file.write_text("123\n")
+    popen_calls: list[dict[str, Any]] = []
+
+    class FakeProcess:
+        pid = 456
+
+    def fake_popen(command: list[str], **kwargs: Any) -> FakeProcess:
+        popen_calls.append({"command": command, **kwargs})
+        return FakeProcess()
+
+    monkeypatch.setattr(daemon, "is_pid_alive", lambda pid: False)
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+
+    pid = daemon.start_background(["python", "-m", "fake"], paths)
+
+    assert pid == 456
+    assert paths.pid_file.read_text() == "456\n"
+    assert popen_calls[0]["command"] == ["python", "-m", "fake"]
+    assert popen_calls[0]["start_new_session"] is True
+    assert paths.log_file.exists()
+
+
+def test_stop_background_terms_live_pid_and_removes_pid_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths = daemon.resolve_daemon_paths(
+        host="127.0.0.1",
+        port=8123,
+        state_dir=tmp_path,
+    )
+    paths.pid_file.write_text("456\n")
+    sent_signals: list[tuple[int, int]] = []
+    monkeypatch.setattr(daemon, "is_pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        daemon.os,
+        "kill",
+        lambda pid, sig: sent_signals.append((pid, sig)),
+    )
+    monkeypatch.setattr(daemon, "_wait_for_pid_exit", lambda pid, timeout: True)
+
+    result = daemon.stop_background(paths, timeout=0.1)
+
+    assert result.state == "stopped"
+    assert result.pid == 456
+    assert sent_signals == [(456, signal.SIGTERM)]
+    assert not paths.pid_file.exists()
+
+
+def test_status_reports_stale_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    paths = daemon.resolve_daemon_paths(
+        host="127.0.0.1",
+        port=8123,
+        state_dir=tmp_path,
+    )
+    paths.pid_file.write_text("789\n")
+    monkeypatch.setattr(daemon, "is_pid_alive", lambda pid: False)
+
+    status = daemon.daemon_status(paths)
+
+    assert status.state == "stale"
+    assert status.pid == 789

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import argparse
+import inspect
 import json
 import os
+import sys
 import time
+from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -12,7 +17,15 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from .backend import CodexBackend, CodexBackendError, OpenAICodexBackend
+from .app_server import (
+    CODEX_APP_SERVER_CWD_ENV,
+    CODEX_BACKEND_APP_SERVER,
+    CODEX_BIN_ENV,
+    CodexAppServerBackend,
+    CodexAppServerConfig,
+)
+from .auth import AUTH_JSON_ENV, CodexAuthConfig
+from .backend import CODEX_BASE_URL, CodexBackend, CodexBackendError, OpenAICodexBackend
 from .compat import (
     DEFAULT_MODEL,
     ResponseStore,
@@ -21,6 +34,13 @@ from .compat import (
     extract_response_text,
     prepare_response_payload,
     response_to_chat_completion,
+)
+from .daemon import (
+    DaemonError,
+    daemon_status,
+    resolve_daemon_paths,
+    start_background,
+    stop_background,
 )
 
 
@@ -31,19 +51,67 @@ class OpenAICompatRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+@dataclass(frozen=True)
+class ServerSettings:
+    backend: str
+    host: str
+    port: int
+    backend_base_url: str
+    client_version: str
+    timeout: float
+    default_model: str
+    codex_bin: str | None = None
+    app_server_cwd: Path | None = None
+    auth_json: Path | None = None
+
+
+def _resolve_optional_path(value: str | Path | None) -> Path | None:
+    if value is None:
+        return None
+    return Path(value).expanduser().resolve()
+
+
 def create_app(
     *,
     backend: CodexBackend | None = None,
     default_model: str | None = None,
+    backend_name: str | None = None,
+    auth_json: str | Path | None = None,
+    backend_base_url: str | None = None,
+    client_version: str | None = None,
+    timeout: float | None = None,
+    codex_bin: str | None = None,
+    app_server_cwd: str | Path | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="OpenAI API Server via Codex")
-    app.state.backend = backend or OpenAICodexBackend(
-        base_url=os.environ.get(
-            "OPENAI_VIA_CODEX_BACKEND_BASE_URL",
-            "https://chatgpt.com/backend-api/codex",
-        ),
-        client_version=os.environ.get("OPENAI_VIA_CODEX_CLIENT_VERSION", "1.0.0"),
-        timeout=float(os.environ.get("OPENAI_VIA_CODEX_TIMEOUT", "180")),
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        try:
+            yield
+        finally:
+            await _close_backend(getattr(app.state, "backend", None))
+
+    app = FastAPI(title="OpenAI API Server via Codex", lifespan=lifespan)
+    selected_backend = backend_name or os.environ.get(
+        "OPENAI_VIA_CODEX_BACKEND", "chatgpt-http"
+    )
+    selected_timeout = (
+        timeout
+        if timeout is not None
+        else float(os.environ.get("OPENAI_VIA_CODEX_TIMEOUT", "180"))
+    )
+    selected_auth_config = CodexAuthConfig(
+        auth_json=_resolve_optional_path(auth_json or os.environ.get(AUTH_JSON_ENV))
+    )
+    app.state.backend = backend or _build_backend(
+        backend=selected_backend,
+        backend_base_url=backend_base_url
+        or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
+        client_version=client_version
+        or os.environ.get("OPENAI_VIA_CODEX_CLIENT_VERSION", "1.0.0"),
+        timeout=selected_timeout,
+        auth_config=selected_auth_config,
+        codex_bin=codex_bin or os.environ.get(CODEX_BIN_ENV),
+        app_server_cwd=app_server_cwd or os.environ.get(CODEX_APP_SERVER_CWD_ENV),
     )
     app.state.response_store = ResponseStore()
     app.state.default_model = default_model or os.environ.get(
@@ -81,8 +149,10 @@ def create_app(
             payload, default_model=request.app.state.default_model
         )
         store = _get_response_store(request)
+        backend = _get_backend(request)
+        native_sessions = _backend_supports_native_sessions(backend)
         previous_response_id = prepared.get("previous_response_id")
-        if previous_response_id:
+        if previous_response_id and not native_sessions:
             stored = store.get(str(previous_response_id))
             if stored is None:
                 return _openai_error(
@@ -96,11 +166,11 @@ def create_app(
             backend_payload = {
                 key: value
                 for key, value in prepared.items()
-                if key != "previous_response_id"
+                if native_sessions or key != "previous_response_id"
             }
             return _sse_response(
                 _responses_event_stream(
-                    backend=_get_backend(request),
+                    backend=backend,
                     store=store,
                     prepared=prepared,
                     backend_payload=backend_payload,
@@ -111,10 +181,10 @@ def create_app(
         backend_payload = {
             key: value
             for key, value in prepared.items()
-            if key != "previous_response_id"
+            if native_sessions or key != "previous_response_id"
         }
         try:
-            response = await _get_backend(request).create_response(backend_payload)
+            response = await backend.create_response(backend_payload)
         except CodexBackendError as exc:
             return _openai_error(exc.status_code, str(exc), error_type="api_error")
         response = ensure_response_defaults(response, request_payload=prepared)
@@ -159,16 +229,270 @@ def create_app(
     return app
 
 
+def _build_backend(
+    *,
+    backend: str,
+    backend_base_url: str,
+    client_version: str,
+    timeout: float,
+    auth_config: CodexAuthConfig,
+    codex_bin: str | None,
+    app_server_cwd: str | Path | None,
+) -> CodexBackend:
+    if backend == CODEX_BACKEND_APP_SERVER:
+        return CodexAppServerBackend(
+            config=CodexAppServerConfig(
+                codex_bin=codex_bin or "codex",
+                cwd=_resolve_optional_path(app_server_cwd),
+                timeout=timeout,
+                auth_config=auth_config,
+            )
+        )
+    if backend != "chatgpt-http":
+        raise ValueError(
+            "OPENAI_VIA_CODEX_BACKEND must be 'chatgpt-http' or 'codex-app-server'."
+        )
+    return OpenAICodexBackend(
+        base_url=backend_base_url,
+        client_version=client_version,
+        timeout=timeout,
+        auth_config=auth_config,
+    )
+
+
 app = create_app()
 
 
-def main() -> None:
-    uvicorn.run(
-        "openai_api_server_via_codex.server:app",
-        host=os.environ.get("OPENAI_VIA_CODEX_HOST", "127.0.0.1"),
-        port=int(os.environ.get("OPENAI_VIA_CODEX_PORT", "8000")),
-        reload=False,
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or (argv[0].startswith("-") and argv[0] not in {"-h", "--help"}):
+        argv = ["serve", *argv]
+
+    parser = argparse.ArgumentParser(
+        prog="openai-api-server-via-codex",
+        description="OpenAI-compatible API server backed by Codex credentials.",
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    serve = subparsers.add_parser("serve", help="run the server in the foreground")
+    _add_server_options(serve)
+
+    start = subparsers.add_parser("start", help="run the server in the background")
+    _add_server_options(start)
+    _add_daemon_options(start)
+
+    stop = subparsers.add_parser("stop", help="stop the background server")
+    _add_daemon_selector_options(stop)
+    stop.add_argument(
+        "--stop-timeout",
+        type=float,
+        default=10.0,
+        help="seconds to wait after SIGTERM before SIGKILL",
+    )
+
+    status = subparsers.add_parser("status", help="show background server status")
+    _add_daemon_selector_options(status)
+
+    return parser.parse_args(argv)
+
+
+def server_settings_from_args(args: argparse.Namespace) -> ServerSettings:
+    return ServerSettings(
+        backend=_arg_env_str(
+            args, "backend", "OPENAI_VIA_CODEX_BACKEND", "chatgpt-http"
+        ),
+        host=_arg_env_str(args, "host", "OPENAI_VIA_CODEX_HOST", "127.0.0.1"),
+        port=_arg_env_int(args, "port", "OPENAI_VIA_CODEX_PORT", 8000),
+        backend_base_url=_arg_env_str(
+            args,
+            "backend_base_url",
+            "OPENAI_VIA_CODEX_BACKEND_BASE_URL",
+            CODEX_BASE_URL,
+        ),
+        client_version=_arg_env_str(
+            args, "client_version", "OPENAI_VIA_CODEX_CLIENT_VERSION", "1.0.0"
+        ),
+        timeout=_arg_env_float(args, "timeout", "OPENAI_VIA_CODEX_TIMEOUT", 180.0),
+        default_model=_arg_env_str(
+            args, "default_model", "OPENAI_VIA_CODEX_DEFAULT_MODEL", DEFAULT_MODEL
+        ),
+        codex_bin=_arg_env_optional_str(args, "codex_bin", CODEX_BIN_ENV),
+        app_server_cwd=_resolve_optional_path(
+            getattr(args, "app_server_cwd", None)
+            or os.environ.get(CODEX_APP_SERVER_CWD_ENV)
+        ),
+        auth_json=_resolve_optional_path(
+            getattr(args, "auth_json", None) or os.environ.get(AUTH_JSON_ENV)
+        ),
+    )
+
+
+def serve_command(settings: ServerSettings) -> list[str]:
+    command = [
+        sys.executable,
+        "-m",
+        "openai_api_server_via_codex.server",
+        "serve",
+        "--backend",
+        settings.backend,
+        "--host",
+        settings.host,
+        "--port",
+        str(settings.port),
+        "--backend-base-url",
+        settings.backend_base_url,
+        "--client-version",
+        settings.client_version,
+        "--timeout",
+        str(settings.timeout),
+        "--default-model",
+        settings.default_model,
+    ]
+    if settings.codex_bin is not None:
+        command.extend(["--codex-bin", settings.codex_bin])
+    if settings.app_server_cwd is not None:
+        command.extend(["--app-server-cwd", str(settings.app_server_cwd)])
+    if settings.auth_json is not None:
+        command.extend(["--auth-json", str(settings.auth_json)])
+    return command
+
+
+def main(argv: list[str] | None = None) -> None:
+    raise SystemExit(_main(argv))
+
+
+def _main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
+    if args.command == "serve":
+        settings = server_settings_from_args(args)
+        uvicorn.run(
+            create_app(
+                default_model=settings.default_model,
+                backend_name=settings.backend,
+                auth_json=settings.auth_json,
+                backend_base_url=settings.backend_base_url,
+                client_version=settings.client_version,
+                timeout=settings.timeout,
+                codex_bin=settings.codex_bin,
+                app_server_cwd=settings.app_server_cwd,
+            ),
+            host=settings.host,
+            port=settings.port,
+            reload=False,
+        )
+        return 0
+
+    settings = server_settings_from_args(args)
+    paths = resolve_daemon_paths(
+        host=settings.host,
+        port=settings.port,
+        state_dir=getattr(args, "state_dir", None),
+        pid_file=getattr(args, "pid_file", None),
+        log_file=getattr(args, "log_file", None),
+    )
+
+    if args.command == "start":
+        try:
+            pid = start_background(serve_command(settings), paths)
+        except DaemonError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(f"Started openai-api-server-via-codex on {settings.host}:{settings.port}")
+        print(f"PID: {pid}")
+        print(f"PID file: {paths.pid_file}")
+        print(f"Log file: {paths.log_file}")
+        return 0
+
+    if args.command == "stop":
+        result = stop_background(paths, timeout=args.stop_timeout)
+        if result.state == "not_running":
+            print(f"Not running. PID file: {paths.pid_file}")
+        elif result.state == "stale":
+            print(f"Removed stale PID {result.pid}. PID file: {paths.pid_file}")
+        else:
+            print(f"Stopped PID {result.pid} ({result.state}).")
+        return 0
+
+    if args.command == "status":
+        status = daemon_status(paths)
+        if status.pid is None:
+            print(f"stopped. PID file: {status.pid_file}")
+        else:
+            print(f"{status.state}: PID {status.pid}")
+            print(f"PID file: {status.pid_file}")
+            print(f"Log file: {status.log_file}")
+        return 0
+
+    raise AssertionError(f"Unhandled command: {args.command}")
+
+
+def _add_server_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backend",
+        choices=("chatgpt-http", CODEX_BACKEND_APP_SERVER),
+        help="backend implementation",
+    )
+    parser.add_argument("--host", help="server host")
+    parser.add_argument("--port", type=int, help="server port")
+    parser.add_argument("--auth-json", help="path to Codex auth.json")
+    parser.add_argument("--backend-base-url", help="Codex backend base URL")
+    parser.add_argument("--client-version", help="Codex client_version parameter")
+    parser.add_argument("--timeout", type=float, help="backend timeout in seconds")
+    parser.add_argument("--default-model", help="default model when request omits model")
+    parser.add_argument("--codex-bin", help="codex binary used by app-server backend")
+    parser.add_argument(
+        "--app-server-cwd",
+        help="working directory used by the Codex app-server backend",
+    )
+
+
+def _add_daemon_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--state-dir", help="directory for default PID and log files")
+    parser.add_argument("--pid-file", help="explicit PID file path")
+    parser.add_argument("--log-file", help="explicit log file path")
+
+
+def _add_daemon_selector_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", help="server host used to derive default PID file")
+    parser.add_argument("--port", type=int, help="server port used to derive default PID file")
+    _add_daemon_options(parser)
+
+
+def _arg_env_str(
+    args: argparse.Namespace, arg_name: str, env_name: str, default: str
+) -> str:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return str(value)
+    return os.environ.get(env_name, default)
+
+
+def _arg_env_int(
+    args: argparse.Namespace, arg_name: str, env_name: str, default: int
+) -> int:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return int(value)
+    return int(os.environ.get(env_name, str(default)))
+
+
+def _arg_env_float(
+    args: argparse.Namespace, arg_name: str, env_name: str, default: float
+) -> float:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return float(value)
+    return float(os.environ.get(env_name, str(default)))
+
+
+def _arg_env_optional_str(
+    args: argparse.Namespace, arg_name: str, env_name: str
+) -> str | None:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return str(value)
+    return os.environ.get(env_name)
 
 
 def _get_backend(request: Request) -> CodexBackend:
@@ -177,6 +501,19 @@ def _get_backend(request: Request) -> CodexBackend:
 
 def _get_response_store(request: Request) -> ResponseStore:
     return request.app.state.response_store
+
+
+def _backend_supports_native_sessions(backend: CodexBackend) -> bool:
+    return bool(getattr(backend, "supports_native_sessions", False))
+
+
+async def _close_backend(backend: Any) -> None:
+    close = getattr(backend, "close", None)
+    if close is None:
+        return
+    result = close()
+    if inspect.isawaitable(result):
+        await result
 
 
 def _openai_error(
@@ -534,3 +871,7 @@ def _normalize_stream_event(event: Any) -> dict[str, Any]:
 def _sse_data(data: dict[str, Any]) -> bytes:
     payload = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
     return f"data: {payload}\n\n".encode()
+
+
+if __name__ == "__main__":
+    main()

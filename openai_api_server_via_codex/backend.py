@@ -8,7 +8,7 @@ from typing import Any, Protocol
 import httpx
 from openai import APIError, APIStatusError, AsyncOpenAI
 
-from .auth import BorrowKeyError, borrow_codex_key
+from .auth import BorrowKeyError, CodexAuthConfig, borrow_codex_key
 
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
@@ -39,10 +39,12 @@ class OpenAICodexBackend:
         base_url: str = CODEX_BASE_URL,
         client_version: str = "1.0.0",
         timeout: float = 180.0,
+        auth_config: CodexAuthConfig | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.client_version = client_version
         self.timeout = timeout
+        self.auth_config = auth_config or CodexAuthConfig()
 
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         stream = self.stream_response(payload)
@@ -106,7 +108,7 @@ class OpenAICodexBackend:
 
     async def _borrow_key(self) -> tuple[str, str | None]:
         try:
-            return await asyncio.to_thread(borrow_codex_key)
+            return await asyncio.to_thread(borrow_codex_key, self.auth_config.auth_json)
         except BorrowKeyError as exc:
             raise CodexBackendError(str(exc), status_code=401) from exc
 
