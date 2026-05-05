@@ -2,7 +2,7 @@ OpenAI API Server via Codex
 ===========================
 
 FastAPI-based OpenAI-compatible API facade that forwards generation requests to
-the Codex ChatGPT backend using the local `codex login` credentials.
+the Codex HTTP backend using the local `codex login` credentials.
 
 Supported endpoints:
 
@@ -44,8 +44,8 @@ terminal.
 Backend selection:
 
 ```bash
-# Default ChatGPT Codex HTTP backend
-uv run openai-api-server-via-codex --backend chatgpt-http --port 8000
+# Default Codex HTTP backend
+uv run openai-api-server-via-codex --backend codex-http --port 8000
 
 # Experimental native Codex app-server backend
 uv run openai-api-server-via-codex --backend codex-app-server --port 8001
@@ -53,11 +53,11 @@ uv run openai-api-server-via-codex --backend codex-app-server --port 8001
 
 The two backends intentionally map to the two Codex integration routes:
 
-- `chatgpt-http` forwards OpenAI Responses-compatible payloads to the ChatGPT
-  Codex HTTP backend using the borrowed Codex OAuth token. This is the best
-  route when you want normal OpenAI function-calling semantics where the API
-  returns `function_call` / `tool_calls` and the client sends tool results in a
-  later request.
+- `codex-http` forwards OpenAI Responses-compatible payloads to the Codex HTTP
+  backend using the borrowed Codex OAuth token. This is the best route when you
+  want normal OpenAI function-calling semantics where the API returns
+  `function_call` / `tool_calls` and the client sends tool results in a later
+  request.
 - `codex-app-server` starts the native `codex app-server --listen stdio://`
   runtime and speaks its JSON-RPC thread/turn protocol. OpenAI function tools
   are exposed to Codex as app-server `dynamicTools`, and app-server dynamic tool
@@ -70,7 +70,7 @@ memory so `previous_response_id` can continue a thread without replaying the
 full local response context. Use `--codex-bin` or `OPENAI_VIA_CODEX_CODEX_BIN`
 to select a Codex binary, and `--app-server-cwd` or
 `OPENAI_VIA_CODEX_APP_SERVER_CWD` to set the Codex thread working directory.
-The default backend remains `chatgpt-http`; select `codex-app-server`
+The default backend remains `codex-http`; select `codex-app-server`
 explicitly because the app-server protocol is still experimental.
 
 Use with `openai-python`:
@@ -128,7 +128,7 @@ Completions streaming converts Codex Responses events into
 finish reasons, and `stream_options={"include_usage": true}` usage chunks.
 
 Function calling is supported for both streaming and non-streaming Chat
-Completions on the `chatgpt-http` route. For `codex-app-server`, function
+Completions on the `codex-http` route. For `codex-app-server`, function
 schemas are passed as Codex dynamic tools and dynamic tool calls are surfaced as
 OpenAI-compatible tool calls. Because native app-server dynamic tools are
 normally executed by the app-server client, the adapter returns a safe failed

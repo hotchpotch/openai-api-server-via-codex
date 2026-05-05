@@ -27,7 +27,13 @@ from .app_server import (
     CodexAppServerConfig,
 )
 from .auth import AUTH_JSON_ENV, CodexAuthConfig
-from .backend import CODEX_BASE_URL, CodexBackend, CodexBackendError, OpenAICodexBackend
+from .backend import (
+    CODEX_BACKEND_HTTP,
+    CODEX_BASE_URL,
+    CodexBackend,
+    CodexBackendError,
+    CodexHttpBackend,
+)
 from .compat import (
     ChatCompletionStore,
     DEFAULT_MODEL,
@@ -96,7 +102,7 @@ def create_app(
 
     app = FastAPI(title="OpenAI API Server via Codex", lifespan=lifespan)
     selected_backend = backend_name or os.environ.get(
-        "OPENAI_VIA_CODEX_BACKEND", "chatgpt-http"
+        "OPENAI_VIA_CODEX_BACKEND", CODEX_BACKEND_HTTP
     )
     selected_timeout = (
         timeout
@@ -469,11 +475,11 @@ def _build_backend(
                 auth_config=auth_config,
             )
         )
-    if backend != "chatgpt-http":
+    if backend != CODEX_BACKEND_HTTP:
         raise ValueError(
-            "OPENAI_VIA_CODEX_BACKEND must be 'chatgpt-http' or 'codex-app-server'."
+            "OPENAI_VIA_CODEX_BACKEND must be 'codex-http' or 'codex-app-server'."
         )
-    return OpenAICodexBackend(
+    return CodexHttpBackend(
         base_url=backend_base_url,
         client_version=client_version,
         timeout=timeout,
@@ -520,7 +526,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def server_settings_from_args(args: argparse.Namespace) -> ServerSettings:
     return ServerSettings(
         backend=_arg_env_str(
-            args, "backend", "OPENAI_VIA_CODEX_BACKEND", "chatgpt-http"
+            args, "backend", "OPENAI_VIA_CODEX_BACKEND", CODEX_BACKEND_HTTP
         ),
         host=_arg_env_str(args, "host", "OPENAI_VIA_CODEX_HOST", "127.0.0.1"),
         port=_arg_env_int(args, "port", "OPENAI_VIA_CODEX_PORT", 8000),
@@ -651,7 +657,7 @@ def _main(argv: list[str] | None = None) -> int:
 def _add_server_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--backend",
-        choices=("chatgpt-http", CODEX_BACKEND_APP_SERVER),
+        choices=(CODEX_BACKEND_HTTP, CODEX_BACKEND_APP_SERVER),
         help="backend implementation",
     )
     parser.add_argument("--host", help="server host")

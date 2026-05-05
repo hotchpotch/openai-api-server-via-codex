@@ -12,6 +12,7 @@ from .auth import BorrowKeyError, CodexAuthConfig, borrow_codex_key
 
 
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
+CODEX_BACKEND_HTTP = "codex-http"
 DEFAULT_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]
 
 
@@ -32,7 +33,7 @@ class CodexBackendError(Exception):
         self.status_code = status_code
 
 
-class OpenAICodexBackend:
+class CodexHttpBackend:
     def __init__(
         self,
         *,

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from openai_api_server_via_codex import server
 
 
@@ -23,6 +25,20 @@ def test_parse_args_keeps_top_level_help(capsys) -> None:
     assert "start" in output
     assert "stop" in output
     assert "status" in output
+
+
+def test_server_settings_default_backend_is_codex_http() -> None:
+    args = server.parse_args(["serve"])
+    settings = server.server_settings_from_args(args)
+
+    assert settings.backend == "codex-http"
+
+
+def test_parse_args_rejects_removed_chatgpt_http_backend() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        server.parse_args(["serve", "--backend", "chatgpt-http"])
+
+    assert exc_info.value.code == 2
 
 
 def test_server_settings_prefer_cli_over_env(

@@ -31,7 +31,7 @@ LIVE_LONG_TEST_MODEL = "gpt-5.4-mini"
     reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
 )
 async def test_live_http_and_app_server_backends_support_same_openai_calls() -> None:
-    http_server = await _start_server("chatgpt-http")
+    http_server = await _start_server("codex-http")
     app_server = await _start_server("codex-app-server")
     try:
         http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
@@ -119,7 +119,7 @@ async def test_live_http_and_app_server_backends_support_same_openai_calls() -> 
     reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
 )
 async def test_live_dual_backends_handle_images_multi_turn_and_reasoning() -> None:
-    http_server = await _start_server("chatgpt-http")
+    http_server = await _start_server("codex-http")
     app_server = await _start_server("codex-app-server")
     try:
         http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
@@ -154,7 +154,7 @@ async def test_live_dual_backends_handle_images_multi_turn_and_reasoning() -> No
     reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
 )
 async def test_live_dual_backends_handle_long_multi_turn_tool_and_text_flows() -> None:
-    http_server = await _start_server("chatgpt-http")
+    http_server = await _start_server("codex-http")
     app_server = await _start_server("codex-app-server")
     try:
         http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
@@ -196,7 +196,7 @@ async def test_live_dual_backends_handle_long_multi_turn_tool_and_text_flows() -
     reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
 )
 async def test_live_dual_backends_handle_openai_client_compatibility_matrix() -> None:
-    http_server = await _start_server("chatgpt-http")
+    http_server = await _start_server("codex-http")
     app_server = await _start_server("codex-app-server")
     try:
         http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
@@ -289,7 +289,7 @@ async def test_live_dual_backends_handle_openai_client_compatibility_matrix() ->
                 _assert_sync_client_smoke,
                 http_server.base_url,
                 LIVE_LONG_TEST_MODEL,
-                "chatgpt-http",
+                "codex-http",
             )
             await asyncio.to_thread(
                 _assert_sync_client_smoke,
@@ -360,7 +360,7 @@ async def _clients(
 async def _named_clients(
     http_client: AsyncOpenAI, app_client: AsyncOpenAI
 ) -> AsyncIterator[tuple[str, AsyncOpenAI]]:
-    yield "chatgpt-http", http_client
+    yield "codex-http", http_client
     yield "codex-app-server", app_client
 
 
@@ -1644,7 +1644,7 @@ async def _assert_model_list_contains(
     http_models = await http_client.models.list()
     app_models = await app_client.models.list()
     assert model in [item.id for item in http_models.data], (
-        "chatgpt-http",
+        "codex-http",
         model,
         [item.id for item in http_models.data],
     )
