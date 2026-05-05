@@ -38,6 +38,7 @@ from .backend import (
 from . import config as config_module
 from .compat import (
     ChatCompletionStore,
+    DEFAULT_MAX_STORED_ITEMS,
     DEFAULT_MODEL,
     ResponseStore,
     chat_request_to_response_payload,
@@ -61,6 +62,7 @@ from .daemon import (
 
 
 LOGGER = logging.getLogger("openai_api_server_via_codex")
+MAX_STORED_ITEMS_ENV = "OPENAI_VIA_CODEX_MAX_STORED_ITEMS"
 
 
 class OpenAICompatRequest(BaseModel):
@@ -79,6 +81,7 @@ class ServerSettings:
     client_version: str
     timeout: float
     default_model: str
+    max_stored_items: int
     verbose: bool = False
     codex_bin: str | None = None
     app_server_cwd: Path | None = None
@@ -106,6 +109,7 @@ def create_app(
     codex_bin: str | None = None,
     app_server_cwd: str | Path | None = None,
     verbose: bool = False,
+    max_stored_items: int | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -124,6 +128,11 @@ def create_app(
         if timeout is not None
         else float(os.environ.get("OPENAI_VIA_CODEX_TIMEOUT", "180"))
     )
+    selected_max_stored_items = _non_negative_int_value(
+        max_stored_items
+        if max_stored_items is not None
+        else os.environ.get(MAX_STORED_ITEMS_ENV, DEFAULT_MAX_STORED_ITEMS)
+    )
     selected_auth_config = CodexAuthConfig(
         auth_json=_resolve_optional_path(auth_json or os.environ.get(AUTH_JSON_ENV))
     )
@@ -137,20 +146,25 @@ def create_app(
         auth_config=selected_auth_config,
         codex_bin=codex_bin or os.environ.get(CODEX_BIN_ENV),
         app_server_cwd=app_server_cwd or os.environ.get(CODEX_APP_SERVER_CWD_ENV),
+        max_stored_items=selected_max_stored_items,
     )
-    app.state.response_store = ResponseStore()
-    app.state.chat_completion_store = ChatCompletionStore()
+    app.state.max_stored_items = selected_max_stored_items
+    app.state.response_store = ResponseStore(max_entries=selected_max_stored_items)
+    app.state.chat_completion_store = ChatCompletionStore(
+        max_entries=selected_max_stored_items
+    )
     app.state.default_model = default_model or os.environ.get(
         "OPENAI_VIA_CODEX_DEFAULT_MODEL", DEFAULT_MODEL
     )
     _install_verbose_request_logging(app)
     if verbose:
         LOGGER.info(
-            "server.create_app backend=%s default_model=%s timeout=%s auth_json=%s "
+            "server.create_app backend=%s default_model=%s timeout=%s max_stored_items=%s auth_json=%s "
             "backend_base_url=%s codex_bin=%s app_server_cwd=%s",
             selected_backend,
             app.state.default_model,
             selected_timeout,
+            selected_max_stored_items,
             selected_auth_config.auth_json,
             backend_base_url
             or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
@@ -618,6 +632,7 @@ def _build_backend(
     auth_config: CodexAuthConfig,
     codex_bin: str | None,
     app_server_cwd: str | Path | None,
+    max_stored_items: int,
 ) -> CodexBackend:
     if backend == CODEX_BACKEND_APP_SERVER:
         return CodexAppServerBackend(
@@ -626,6 +641,7 @@ def _build_backend(
                 cwd=_resolve_optional_path(app_server_cwd),
                 timeout=timeout,
                 auth_config=auth_config,
+                max_thread_bindings=max_stored_items,
             )
         )
     if backend != CODEX_BACKEND_HTTP:
@@ -768,6 +784,15 @@ def server_settings_from_args(
             "verbose",
             False,
         ),
+        max_stored_items=_arg_env_config_non_negative_int(
+            args,
+            "max_stored_items",
+            MAX_STORED_ITEMS_ENV,
+            config_data,
+            "server",
+            "max_stored_items",
+            config_module.DEFAULT_MAX_STORED_ITEMS,
+        ),
         codex_bin=_arg_env_config_optional_str(
             args, "codex_bin", CODEX_BIN_ENV, config_data, "codex", "codex_bin"
         ),
@@ -842,6 +867,8 @@ def serve_command(settings: ServerSettings) -> list[str]:
         settings.client_version,
         "--timeout",
         str(settings.timeout),
+        "--max-stored-items",
+        str(settings.max_stored_items),
         "--default-model",
         settings.default_model,
     ]
@@ -898,6 +925,7 @@ def _main(argv: list[str] | None = None) -> int:
                 codex_bin=settings.codex_bin,
                 app_server_cwd=settings.app_server_cwd,
                 verbose=settings.verbose,
+                max_stored_items=settings.max_stored_items,
             ),
             host=settings.host,
             port=settings.port,
@@ -980,6 +1008,11 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--backend-base-url", help="Codex backend base URL")
     parser.add_argument("--client-version", help="Codex client_version parameter")
     parser.add_argument("--timeout", type=float, help="backend timeout in seconds")
+    parser.add_argument(
+        "--max-stored-items",
+        type=_non_negative_int_arg,
+        help="maximum in-memory responses, chat completions, and app-server bindings",
+    )
     parser.add_argument("--default-model", help="default model when request omits model")
     parser.add_argument(
         "--verbose",
@@ -1065,6 +1098,26 @@ def _arg_env_config_int(
     config_value = _config_value(config_data, section, key)
     if config_value is not None:
         return int(config_value)
+    return default
+
+
+def _arg_env_config_non_negative_int(
+    args: argparse.Namespace,
+    arg_name: str,
+    env_name: str,
+    config_data: ConfigData,
+    section: str,
+    key: str,
+    default: int,
+) -> int:
+    value = getattr(args, arg_name, None)
+    if value is not None:
+        return _non_negative_int_value(value)
+    if env_value := os.environ.get(env_name):
+        return _non_negative_int_value(env_value)
+    config_value = _config_value(config_data, section, key)
+    if config_value is not None:
+        return _non_negative_int_value(config_value)
     return default
 
 
@@ -1160,6 +1213,23 @@ def _parse_bool(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _non_negative_int_arg(value: str) -> int:
+    try:
+        return _non_negative_int_value(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _non_negative_int_value(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"expected a non-negative integer, got {value!r}") from exc
+    if parsed < 0:
+        raise ValueError(f"expected a non-negative integer, got {value!r}")
+    return parsed
+
+
 def _configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.WARNING
     LOGGER.setLevel(level)
@@ -1179,7 +1249,7 @@ def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
         config_path.exists(),
     )
     LOGGER.info(
-        "settings.resolved backend=%s host=%s port=%s default_model=%s timeout=%s "
+        "settings.resolved backend=%s host=%s port=%s default_model=%s timeout=%s max_stored_items=%s "
         "auth_json=%s backend_base_url=%s client_version=%s codex_bin=%s "
         "app_server_cwd=%s verbose=%s",
         settings.backend,
@@ -1187,6 +1257,7 @@ def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
         settings.port,
         settings.default_model,
         settings.timeout,
+        settings.max_stored_items,
         settings.auth_json,
         settings.backend_base_url,
         settings.client_version,

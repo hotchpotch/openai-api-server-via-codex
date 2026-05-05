@@ -6,7 +6,7 @@ import logging
 import os
 import time
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import Any
 
 from .auth import BorrowKeyError, CodexAuthConfig, borrow_codex_key
 from .backend import DEFAULT_MODELS, CodexBackendError, _collect_streamed_response
+from .compat import DEFAULT_MAX_STORED_ITEMS
 
 
 CODEX_BACKEND_APP_SERVER = "codex-app-server"
@@ -28,6 +29,7 @@ class CodexAppServerConfig:
     cwd: Path | None = None
     timeout: float = 180.0
     auth_config: CodexAuthConfig | None = None
+    max_thread_bindings: int = DEFAULT_MAX_STORED_ITEMS
 
 
 @dataclass(frozen=True)
@@ -341,7 +343,16 @@ class CodexAppServerBackend:
         self._client: Any | None = None
         self._client_lock = asyncio.Lock()
         self._turn_lock = asyncio.Lock()
-        self._bindings: dict[str, _ThreadBinding] = {}
+        self._max_thread_bindings = max(0, int(self.config.max_thread_bindings))
+        self._bindings: OrderedDict[str, _ThreadBinding] = OrderedDict()
+
+    @property
+    def binding_count(self) -> int:
+        return len(self._bindings)
+
+    @property
+    def binding_response_ids(self) -> tuple[str, ...]:
+        return tuple(self._bindings)
 
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await _collect_streamed_response(self.stream_response(payload), payload)
@@ -377,11 +388,14 @@ class CodexAppServerBackend:
                 new_thread,
                 len(input_items),
             )
-            self._bindings[response_id] = _ThreadBinding(
-                thread_id=thread_id,
-                model=str(payload.get("model") or "") or None,
-                dynamic_tools_fingerprint=_dynamic_tools_fingerprint(
-                    response_tools_to_app_server_dynamic_tools(payload.get("tools"))
+            self._remember_binding(
+                response_id,
+                _ThreadBinding(
+                    thread_id=thread_id,
+                    model=str(payload.get("model") or "") or None,
+                    dynamic_tools_fingerprint=_dynamic_tools_fingerprint(
+                        response_tools_to_app_server_dynamic_tools(payload.get("tools"))
+                    ),
                 ),
             )
             created_at = time.time()
@@ -702,6 +716,19 @@ class CodexAppServerBackend:
             self.config.cwd,
         )
         return str(thread_id), True
+
+    def _remember_binding(self, response_id: str, binding: _ThreadBinding) -> None:
+        if self._max_thread_bindings <= 0:
+            return
+        self._bindings.pop(response_id, None)
+        self._bindings[response_id] = binding
+        while len(self._bindings) > self._max_thread_bindings:
+            evicted_response_id, _ = self._bindings.popitem(last=False)
+            LOGGER.info(
+                "app-server.thread.binding.evicted response_id=%s max_thread_bindings=%d",
+                evicted_response_id,
+                self._max_thread_bindings,
+            )
 
 
 def _list_len(value: Any) -> int:

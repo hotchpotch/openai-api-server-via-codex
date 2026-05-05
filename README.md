@@ -48,6 +48,7 @@ port = 8000
 default_model = "gpt-5.4"
 timeout = 180.0
 verbose = false
+max_stored_items = 1000
 
 [codex]
 auth_json = "~/.codex/auth.json"
@@ -103,6 +104,14 @@ file paths and whether a ChatGPT account id was present are reported.
 
 When using `start`, pass `--verbose` or set it in config/env to preserve the
 same diagnostics in the background server log file printed by `start`.
+
+The in-memory compatibility stores are bounded by `max_stored_items`, default
+`1000`. This cap applies to stored Responses, stored Chat Completions, and
+`codex-app-server` response/thread bindings. Older entries are evicted first;
+set `--max-stored-items`, `OPENAI_VIA_CODEX_MAX_STORED_ITEMS`, or
+`[server].max_stored_items` to tune the limit. Setting it to `0` disables these
+in-memory stores, which also disables local `previous_response_id` chaining and
+stored-object retrieval.
 
 The two backends intentionally map to the two Codex integration routes:
 

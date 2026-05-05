@@ -43,6 +43,13 @@ def test_parse_args_rejects_removed_chatgpt_http_backend() -> None:
     assert exc_info.value.code == 2
 
 
+def test_parse_args_rejects_negative_max_stored_items() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        server.parse_args(["serve", "--max-stored-items", "-1"])
+
+    assert exc_info.value.code == 2
+
+
 def test_config_generate_writes_template(tmp_path: Path, capsys) -> None:
     config_path = tmp_path / "config.toml"
 
@@ -129,6 +136,7 @@ port = 9009
 default_model = "gpt-5.4-mini"
 timeout = 12.5
 verbose = true
+max_stored_items = 123
 
 [codex]
 auth_json = "{auth_json}"
@@ -150,6 +158,7 @@ app_server_cwd = "{app_cwd}"
     assert settings.default_model == "gpt-5.4-mini"
     assert settings.timeout == 12.5
     assert settings.verbose is True
+    assert settings.max_stored_items == 123
     assert settings.auth_json == auth_json.resolve()
     assert settings.backend_base_url == "https://example.test/codex"
     assert settings.client_version == "2.0.0"
@@ -244,6 +253,8 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
             "gpt-5.4-mini",
             "--timeout",
             "12.5",
+            "--max-stored-items",
+            "222",
             "--backend",
             "codex-app-server",
             "--codex-bin",
@@ -266,6 +277,8 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
     assert "gpt-5.4-mini" in command
     assert "--timeout" in command
     assert "12.5" in command
+    assert "--max-stored-items" in command
+    assert "222" in command
     assert "--backend" in command
     assert "codex-app-server" in command
     assert "--codex-bin" in command
@@ -295,3 +308,11 @@ def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:
     assert result == 0
     assert run_calls[0]["log_level"] == "debug"
     assert run_calls[0]["app"].state.verbose is True
+
+
+def test_create_app_uses_configured_max_stored_items() -> None:
+    app = server.create_app(max_stored_items=7)
+
+    assert app.state.max_stored_items == 7
+    assert app.state.response_store.max_entries == 7
+    assert app.state.chat_completion_store.max_entries == 7

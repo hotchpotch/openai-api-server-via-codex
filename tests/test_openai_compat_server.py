@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 import pytest
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, NotFoundError
 
 from openai_api_server_via_codex.server import create_app
 
@@ -396,6 +396,33 @@ async def test_responses_previous_response_id_expands_local_context(
         },
         {"role": "user", "content": "What name did I give?"},
     ]
+
+
+@pytest.mark.asyncio
+async def test_responses_previous_response_id_returns_404_after_store_eviction():
+    backend = RecordingBackend()
+    app = create_app(backend=backend, max_stored_items=1)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        first = await client.responses.create(model="gpt-5.4", input="first")
+        await client.responses.create(model="gpt-5.4", input="second")
+        with pytest.raises(NotFoundError):
+            await client.responses.create(
+                model="gpt-5.4",
+                input="resume first",
+                previous_response_id=first.id,
+            )
+    finally:
+        await http_client.aclose()
 
 
 @pytest.mark.asyncio

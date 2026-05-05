@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .backend import CODEX_BACKEND_HTTP, CODEX_BASE_URL
-from .compat import DEFAULT_MODEL
+from .compat import DEFAULT_MAX_STORED_ITEMS, DEFAULT_MODEL
 
 
 APP_NAME = "openai-api-server-via-codex"
@@ -55,6 +55,7 @@ port = {DEFAULT_PORT}
 default_model = "{DEFAULT_MODEL}"
 timeout = {DEFAULT_TIMEOUT}
 verbose = false
+max_stored_items = {DEFAULT_MAX_STORED_ITEMS}
 
 [codex]
 auth_json = "~/.codex/auth.json"

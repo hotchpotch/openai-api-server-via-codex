@@ -93,6 +93,10 @@ uv run openai-api-server-via-codex config-generate --stdout
 - Daemon PID and log files default under the config directory's `run/`
   subdirectory. `start`, `stop`, and `status` should all resolve the same
   config-backed daemon paths.
+- In-memory compatibility stores are intentionally bounded. Keep
+  `max_stored_items` defaulting to 1000 and apply it consistently to
+  `ResponseStore`, `ChatCompletionStore`, and `codex-app-server` response/thread
+  bindings. Evict oldest entries first; `0` means no in-memory storage.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
   debug-level uvicorn logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit

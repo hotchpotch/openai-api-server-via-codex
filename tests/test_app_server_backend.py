@@ -7,6 +7,7 @@ import pytest
 
 from openai_api_server_via_codex.app_server import (
     CodexAppServerBackend,
+    CodexAppServerConfig,
     response_input_to_app_server_input,
 )
 from openai_api_server_via_codex.backend import CodexBackendError
@@ -369,6 +370,45 @@ async def test_app_server_backend_unknown_previous_response_id_raises_404(
         )
 
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_app_server_backend_evicts_oldest_thread_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_client = FakeAppServerClient()
+    monkeypatch.setattr(
+        "openai_api_server_via_codex.app_server.borrow_codex_key",
+        lambda auth_json=None: ("access-token", "account-id"),
+    )
+    backend = CodexAppServerBackend(
+        config=CodexAppServerConfig(max_thread_bindings=2),
+        client_factory=lambda: fake_client,
+    )
+
+    first = await backend.create_response(
+        {"model": "gpt-5.4", "input": [{"role": "user", "content": "one"}]}
+    )
+    second = await backend.create_response(
+        {"model": "gpt-5.4", "input": [{"role": "user", "content": "two"}]}
+    )
+    third = await backend.create_response(
+        {"model": "gpt-5.4", "input": [{"role": "user", "content": "three"}]}
+    )
+
+    with pytest.raises(CodexBackendError) as exc_info:
+        await backend.create_response(
+            {
+                "model": "gpt-5.4",
+                "input": [{"role": "user", "content": "resume one"}],
+                "previous_response_id": first["id"],
+            }
+        )
+
+    assert exc_info.value.status_code == 404
+    assert backend.binding_count == 2
+    assert second["id"] in backend.binding_response_ids
+    assert third["id"] in backend.binding_response_ids
 
 
 @pytest.mark.asyncio

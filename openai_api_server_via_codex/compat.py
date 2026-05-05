@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import copy
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, List
 
 
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
+DEFAULT_MAX_STORED_ITEMS = 1000
 
 
 @dataclass(slots=True)
@@ -25,8 +27,13 @@ class StoredChatCompletion:
 
 
 class ResponseStore:
-    def __init__(self) -> None:
-        self._responses: dict[str, StoredResponse] = {}
+    def __init__(self, *, max_entries: int = DEFAULT_MAX_STORED_ITEMS) -> None:
+        self.max_entries = max(0, int(max_entries))
+        self._responses: OrderedDict[str, StoredResponse] = OrderedDict()
+
+    @property
+    def size(self) -> int:
+        return len(self._responses)
 
     def get(self, response_id: str) -> StoredResponse | None:
         return self._responses.get(response_id)
@@ -48,18 +55,31 @@ class ResponseStore:
         effective_input: list[Any],
         response: dict[str, Any],
     ) -> None:
+        if self.max_entries <= 0:
+            return
+        self._responses.pop(response_id, None)
         self._responses[response_id] = StoredResponse(
             effective_input=copy.deepcopy(effective_input),
             context_items=copy.deepcopy(effective_input)
             + response_output_as_input_messages(response),
             response=copy.deepcopy(response),
         )
+        self._evict_oldest()
+
+    def _evict_oldest(self) -> None:
+        while len(self._responses) > self.max_entries:
+            self._responses.popitem(last=False)
 
 
 class ChatCompletionStore:
-    def __init__(self) -> None:
+    def __init__(self, *, max_entries: int = DEFAULT_MAX_STORED_ITEMS) -> None:
+        self.max_entries = max(0, int(max_entries))
         self._completions: dict[str, StoredChatCompletion] = {}
         self._order: list[str] = []
+
+    @property
+    def size(self) -> int:
+        return len(self._completions)
 
     def get(self, completion_id: str) -> StoredChatCompletion | None:
         return self._completions.get(completion_id)
@@ -71,6 +91,8 @@ class ChatCompletionStore:
         completion: dict[str, Any],
         metadata: dict[str, Any] | None = None,
     ) -> None:
+        if self.max_entries <= 0:
+            return
         metadata = copy.deepcopy(metadata or {})
         stored_completion = copy.deepcopy(completion)
         stored_completion["metadata"] = metadata
@@ -81,6 +103,7 @@ class ChatCompletionStore:
         )
         if completion_id not in self._order:
             self._order.append(completion_id)
+        self._evict_oldest()
 
     def update_metadata(
         self, completion_id: str, metadata: dict[str, Any] | None
@@ -128,6 +151,11 @@ class ChatCompletionStore:
             has_more = len(items) > limit
             items = items[:limit]
         return items, has_more
+
+    def _evict_oldest(self) -> None:
+        while len(self._order) > self.max_entries:
+            completion_id = self._order.pop(0)
+            self._completions.pop(completion_id, None)
 
 
 def prepare_response_payload(
