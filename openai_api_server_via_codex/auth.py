@@ -159,9 +159,17 @@ def _read_auth(path: Path) -> dict[str, Any]:
 
 def _write_auth(path: Path, data: dict[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp.replace(path)
-    path.chmod(0o600)
+    fd = os.open(str(tmp), os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, indent=2))
+    except BaseException:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    os.replace(tmp, path)
 
 
 def _jwt_exp(token: str) -> float | None:

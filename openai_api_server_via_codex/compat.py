@@ -4,12 +4,14 @@ import copy
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, List
+from typing import Any, TypeAlias
 
 
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 DEFAULT_MAX_STORED_ITEMS = 1000
+
+_ChatCompletionPage: TypeAlias = tuple[list[dict[str, Any]], bool]
 
 
 @dataclass(slots=True)
@@ -129,7 +131,7 @@ class ChatCompletionStore:
         order: str | None = None,
         after: str | None = None,
         limit: int | None = None,
-    ) -> tuple[List[dict[str, Any]], bool]:
+    ) -> _ChatCompletionPage:
         completion_ids = list(self._order)
         if order == "desc":
             completion_ids.reverse()
@@ -199,7 +201,12 @@ def _normalize_response_input_item(item: Any) -> Any | None:
     if item_type == "reasoning":
         encrypted_content = item.get("encrypted_content")
         if isinstance(encrypted_content, str) and encrypted_content:
-            return {"type": "reasoning", "encrypted_content": encrypted_content}
+            summary = item.get("summary")
+            return {
+                "type": "reasoning",
+                "encrypted_content": encrypted_content,
+                "summary": summary if isinstance(summary, list) else [],
+            }
         return None
     if item_type == "message" and item.get("role") == "assistant":
         message: dict[str, Any] = {

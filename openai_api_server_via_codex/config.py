@@ -86,8 +86,22 @@ def write_default_config(path: str | Path | None = None, *, force: bool = False)
     if config_path.exists() and not force:
         raise FileExistsError(config_path)
     config_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    config_path.write_text(default_config_toml(), encoding="utf-8")
-    config_path.chmod(0o600)
+    tmp_path = config_path.with_suffix(config_path.suffix + ".tmp")
+    fd = os.open(
+        str(tmp_path),
+        os.O_CREAT | os.O_WRONLY | os.O_TRUNC,
+        0o600,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(default_config_toml())
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+    os.replace(tmp_path, config_path)
     return config_path
 
 

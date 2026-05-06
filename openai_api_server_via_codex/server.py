@@ -1610,7 +1610,7 @@ def _estimate_input_tokens(prepared: dict[str, Any]) -> int:
     file_count = _typed_item_count(prepared.get("input"), "input_file")
     char_tokens = max(1, (len(text) + 3) // 4)
     word_tokens = len([part for part in text.replace("\n", " ").split(" ") if part])
-    return max(1, char_tokens, word_tokens) + image_count * 85 + file_count * 85
+    return max(char_tokens, word_tokens) + image_count * 85 + file_count * 85
 
 
 def _text_values(value: Any) -> list[str]:
@@ -1618,16 +1618,15 @@ def _text_values(value: Any) -> list[str]:
         return []
     if isinstance(value, str):
         return [value]
+    values: list[str] = []
     if isinstance(value, dict):
-        values: list[str] = []
         for key, item in value.items():
             if key in {"text", "content", "instructions", "name", "description"}:
                 values.extend(_text_values(item))
-            elif isinstance(item, (dict, list)):
+            elif isinstance(item, dict | list):
                 values.extend(_text_values(item))
         return values
     if isinstance(value, list):
-        values: list[str] = []
         for item in value:
             values.extend(_text_values(item))
         return values
@@ -2172,7 +2171,16 @@ def _sse_data(data: dict[str, Any]) -> bytes:
     return f"data: {payload}\n\n".encode()
 
 
-app = create_app()
+_app_instance: FastAPI | None = None
+
+
+def __getattr__(name: str) -> Any:
+    if name == "app":
+        global _app_instance
+        if _app_instance is None:
+            _app_instance = create_app()
+        return _app_instance
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 if __name__ == "__main__":

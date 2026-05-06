@@ -73,3 +73,28 @@ state_dir = "/tmp/state"
 
 def test_load_config_returns_empty_dict_for_missing_file(tmp_path: Path) -> None:
     assert config.load_config(tmp_path / "missing.toml") == {}
+
+
+def test_write_default_config_uses_owner_only_permissions(tmp_path: Path) -> None:
+    config_path = tmp_path / "nested" / "config.toml"
+
+    written = config.write_default_config(config_path)
+
+    assert written == config_path
+    mode = config_path.stat().st_mode & 0o777
+    assert mode == 0o600
+    assert "[server]" in config_path.read_text(encoding="utf-8")
+
+
+def test_write_default_config_force_overwrites_with_owner_only_permissions(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text("# old", encoding="utf-8")
+    config_path.chmod(0o644)
+
+    config.write_default_config(config_path, force=True)
+
+    mode = config_path.stat().st_mode & 0o777
+    assert mode == 0o600
+    assert "[server]" in config_path.read_text(encoding="utf-8")

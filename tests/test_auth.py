@@ -229,6 +229,29 @@ def test_concurrent_expired_token_refreshes_once(
     assert refresh_count == 1
 
 
+def test_write_auth_uses_owner_only_permissions(tmp_path: Path) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth._write_auth(auth_path, {"hello": "world"})
+
+    mode = auth_path.stat().st_mode & 0o777
+    assert mode == 0o600
+    assert json.loads(auth_path.read_text(encoding="utf-8")) == {"hello": "world"}
+
+
+def test_write_auth_overwrites_existing_with_owner_only_permissions(
+    tmp_path: Path,
+) -> None:
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text("{}", encoding="utf-8")
+    auth_path.chmod(0o644)
+
+    auth._write_auth(auth_path, {"replaced": True})
+
+    mode = auth_path.stat().st_mode & 0o777
+    assert mode == 0o600
+    assert json.loads(auth_path.read_text(encoding="utf-8")) == {"replaced": True}
+
+
 def test_refresh_error_redacts_auth_values(monkeypatch: pytest.MonkeyPatch) -> None:
     def fail_urlopen(request: object) -> object:
         raise urllib.error.HTTPError(
