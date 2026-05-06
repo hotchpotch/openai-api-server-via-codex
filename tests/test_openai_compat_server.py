@@ -9,6 +9,7 @@ import httpx
 import pytest
 from openai import AsyncOpenAI, NotFoundError
 
+from openai_api_server_via_codex.backend import CodexProxyResponse
 from openai_api_server_via_codex.server import create_app
 
 
@@ -111,6 +112,54 @@ class RecordingBackend:
 
     async def list_models(self) -> list[str]:
         return ["gpt-5.4", "gpt-5.4-mini"]
+
+    async def proxy_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: bytes,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        raise AssertionError(f"unexpected proxy request: {method} {path!r}")
+
+
+class ProxyRecordingBackend(RecordingBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.proxy_requests: list[dict[str, Any]] = []
+        self.proxy_response = CodexProxyResponse(
+            status_code=207,
+            headers={
+                "content-type": "application/json",
+                "x-upstream-request-id": "upstream-1",
+                "set-cookie": "session=secret",
+                "content-length": "999",
+                "connection": "close",
+            },
+            body=b'{"proxied":true}',
+        )
+
+    async def proxy_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: bytes,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        self.proxy_requests.append(
+            {
+                "method": method,
+                "path": path,
+                "query": query,
+                "headers": headers,
+                "body": body,
+            }
+        )
+        return self.proxy_response
 
 
 class SlowConcurrencyBackend(RecordingBackend):
@@ -533,6 +582,120 @@ async def test_api_key_auth_accepts_matching_bearer_token() -> None:
         await http_client.aclose()
 
     assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_unknown_v1_endpoint_is_proxied_without_local_authorization() -> None:
+    backend = ProxyRecordingBackend()
+    app = create_app(backend=backend, api_key="local-secret")
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response = await http_client.post(
+            "/v1/tokenizer?model=gpt-5.4&input=one&input=two",
+            headers={
+                "Authorization": "Bearer local-secret",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "OpenAI-Beta": "responses=experimental",
+                "Cookie": "session=local",
+                "X-Should-Not-Forward": "nope",
+            },
+            content=b'{"input":"hello"}',
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 207
+    assert response.json() == {"proxied": True}
+    assert response.headers["x-openai-via-codex-proxy"] == "codex-http"
+    assert response.headers["x-upstream-request-id"] == "upstream-1"
+    assert "set-cookie" not in response.headers
+    assert response.headers.get("content-length") == str(len(b'{"proxied":true}'))
+    assert "connection" not in response.headers
+
+    assert len(backend.proxy_requests) == 1
+    proxied = backend.proxy_requests[0]
+    assert proxied["method"] == "POST"
+    assert proxied["path"] == "tokenizer"
+    assert proxied["query"] == b"model=gpt-5.4&input=one&input=two"
+    assert proxied["body"] == b'{"input":"hello"}'
+    assert proxied["headers"] == {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "openai-beta": "responses=experimental",
+    }
+
+
+@pytest.mark.asyncio
+async def test_unknown_v1_proxy_preserves_upstream_error_payload() -> None:
+    backend = ProxyRecordingBackend()
+    backend.proxy_response = CodexProxyResponse(
+        status_code=404,
+        headers={"content-type": "application/json"},
+        body=b'{"error":{"message":"missing upstream endpoint"}}',
+    )
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response = await http_client.get("/v1/unknown-feature")
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 404
+    assert response.json() == {"error": {"message": "missing upstream endpoint"}}
+    assert response.headers["x-openai-via-codex-proxy"] == "codex-http"
+
+
+@pytest.mark.asyncio
+async def test_new_openai_paths_that_overlap_existing_prefixes_are_proxied() -> None:
+    backend = ProxyRecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response = await http_client.post(
+            "/v1/responses/compact",
+            json={"model": "gpt-5.4"},
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 207
+    assert backend.proxy_requests[0]["method"] == "POST"
+    assert backend.proxy_requests[0]["path"] == "responses/compact"
+
+
+@pytest.mark.asyncio
+async def test_explicit_v1_routes_are_not_captured_by_proxy() -> None:
+    backend = ProxyRecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response = await http_client.get("/v1/models")
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 200
+    assert [model["id"] for model in response.json()["data"]] == [
+        "gpt-5.4",
+        "gpt-5.4-mini",
+    ]
+    assert backend.proxy_requests == []
 
 
 @pytest.mark.asyncio

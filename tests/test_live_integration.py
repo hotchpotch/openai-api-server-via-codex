@@ -133,6 +133,53 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
                 reasoning_effort="low",
             )
             assert image_chat.choices[0].message.content
+
+            async with httpx.AsyncClient(base_url=base_url, timeout=120.0) as direct:
+                proxy_attempts = [
+                    (
+                        "POST",
+                        "/v1/tokenizer",
+                        {"model": model, "input": "live proxy tokenizer marker"},
+                    ),
+                    (
+                        "POST",
+                        "/v1/responses/compact",
+                        {
+                            "model": model,
+                            "input": [
+                                {
+                                    "role": "user",
+                                    "content": "live proxy compact marker",
+                                }
+                            ],
+                        },
+                    ),
+                    (
+                        "POST",
+                        "/v1/embeddings",
+                        {"model": model, "input": "live proxy embedding marker"},
+                    ),
+                ]
+                for method, path, payload in proxy_attempts:
+                    proxied = await direct.request(
+                        method,
+                        path,
+                        headers={
+                            "Authorization": "Bearer test",
+                            "Content-Type": "application/json",
+                        },
+                        json=payload,
+                    )
+                    print(
+                        "live proxy "
+                        f"{method} {path} status={proxied.status_code} "
+                        f"content_type={proxied.headers.get('content-type')} "
+                        f"body={proxied.text[:240]!r}"
+                    )
+                    assert proxied.headers.get("x-openai-via-codex-proxy") == "codex-http"
+
+                healthz = await direct.get("/healthz")
+                assert healthz.status_code == 200
         finally:
             await client.close()
     finally:

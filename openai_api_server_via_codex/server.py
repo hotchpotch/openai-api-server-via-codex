@@ -29,6 +29,8 @@ from .backend import (
     CodexBackend,
     CodexBackendError,
     CodexHttpBackend,
+    _forward_proxy_request_headers,
+    _forward_proxy_response_headers,
 )
 from . import config as config_module
 from .compat import (
@@ -663,6 +665,76 @@ def create_app(
             messages = messages[:limit]
 
         return JSONResponse(_cursor_page(messages, has_more=has_more))
+
+    @app.api_route(
+        "/v1/{proxy_path:path}",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+        response_model=None,
+    )
+    async def proxy_unknown_v1_endpoint(
+        request: Request, proxy_path: str
+    ) -> Response | JSONResponse:
+        backend = _get_backend(request)
+        body = await request.body()
+        method = request.method.upper()
+        headers = _forward_proxy_request_headers(request.headers)
+        query = bytes(request.scope.get("query_string") or b"")
+        _log_verbose(
+            request,
+            "proxy.request method=%s path=/v1/%s query=%s bytes=%d backend=%s",
+            method,
+            proxy_path,
+            redact_sensitive_text(request.url.query),
+            len(body),
+            _backend_name(backend),
+        )
+        try:
+            async with _backend_slot(request):
+                upstream = await backend.proxy_request(
+                    method,
+                    proxy_path,
+                    query=query,
+                    headers=headers,
+                    body=body,
+                )
+        except CodexBackendError as exc:
+            message = redact_sensitive_text(str(exc))
+            _log_verbose(
+                request,
+                "proxy.request.error status=%s message=%s",
+                exc.status_code,
+                message,
+            )
+            return _openai_error(exc.status_code, message, error_type="api_error")
+        except Exception as exc:
+            LOGGER.error(
+                "proxy.request.unhandled_error method=%s path=/v1/%s type=%s message=%s",
+                method,
+                proxy_path,
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            return _openai_error(
+                500,
+                _unexpected_error_message(),
+                error_type="api_error",
+            )
+
+        response_headers = _forward_proxy_response_headers(upstream.headers)
+        response_headers["x-openai-via-codex-proxy"] = "codex-http"
+        _log_verbose(
+            request,
+            "proxy.request.done method=%s path=/v1/%s status=%s bytes=%d",
+            method,
+            proxy_path,
+            upstream.status_code,
+            len(upstream.body),
+        )
+        return Response(
+            content=upstream.body,
+            status_code=upstream.status_code,
+            headers=response_headers,
+        )
 
     return app
 
