@@ -132,6 +132,39 @@ def test_run_supervised_restarts_unexpected_child_exit(
     assert sleeps == [0.25]
 
 
+def test_run_supervised_reports_restart_limit_without_restarting(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    popen_calls: list[list[str]] = []
+    sleeps: list[float] = []
+
+    class FakeProcess:
+        pid = 1001
+
+        def wait(self, timeout: float | None = None) -> int:
+            return 7
+
+    def fake_popen(command: list[str], **kwargs: Any) -> FakeProcess:
+        popen_calls.append(command)
+        return FakeProcess()
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(daemon.time, "sleep", lambda delay: sleeps.append(delay))
+
+    result = daemon.run_supervised(
+        ["python", "-m", "fake"],
+        restart_delay=0.25,
+        restart_limit=0,
+    )
+
+    output = capsys.readouterr().out
+    assert result == 7
+    assert popen_calls == [["python", "-m", "fake"]]
+    assert sleeps == []
+    assert "restart limit reached" in output
+    assert "restarting" not in output
+
+
 def test_stop_background_terms_live_pid_and_removes_pid_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
