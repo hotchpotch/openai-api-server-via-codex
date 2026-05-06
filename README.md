@@ -45,9 +45,10 @@ The TOML config mirrors the CLI options:
 host = "127.0.0.1"
 port = 18080
 default_model = "gpt-5.4"
-timeout = 180.0
+timeout = 300.0
 verbose = false
 max_stored_items = 1000
+max_concurrent_requests = 10
 
 [codex]
 auth_json = "~/.codex/auth.json"
@@ -91,8 +92,10 @@ uv run openai-api-server-via-codex --verbose
 debug-level uvicorn logging plus application diagnostics. The server logs the
 resolved config/settings, request start/end status and latency, endpoint-level
 summaries for Responses and Chat Completions, model listing fallback reasons,
-and Codex HTTP stream/auth activity. Auth tokens are not logged; only auth file
-paths and whether a ChatGPT account id was present are reported.
+and Codex HTTP stream/auth activity. Raw auth tokens are not logged; token-like
+values in upstream errors or query strings are redacted to a short prefix plus
+`******`. Only auth file paths and whether a ChatGPT account id was present are
+reported.
 
 When using `start`, pass `--verbose` or set it in config/env to preserve the
 same diagnostics in the background server log file printed by `start`.
@@ -103,6 +106,13 @@ entries are evicted first; set `--max-stored-items`,
 `OPENAI_VIA_CODEX_MAX_STORED_ITEMS`, or `[server].max_stored_items` to tune the
 limit. Setting it to `0` disables these in-memory stores, which also disables
 local `previous_response_id` chaining and stored-object retrieval.
+
+Codex backend calls are limited by `max_concurrent_requests`, default `10`.
+This lets normal API clients issue parallel requests while preventing
+unbounded upstream fan-out. Set `--max-concurrent-requests`,
+`OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS`, or
+`[server].max_concurrent_requests` to tune the limit. Setting it to `0`
+removes this local concurrency cap.
 
 The server forwards OpenAI Responses-compatible payloads to the Codex HTTP
 backend using the borrowed Codex OAuth token. This route preserves normal

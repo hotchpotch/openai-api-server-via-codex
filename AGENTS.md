@@ -14,6 +14,7 @@ client API rather than only raw HTTP payloads.
 
 - Use Python 3.11.
 - Use `uv` for dependency management and command execution.
+- The default foreground server binds to `127.0.0.1:18080`.
 - Do not commit local virtualenv, cache, tox, pytest, or editor artifacts.
 - The live integration tests use the machine's existing Codex authentication.
   Do not add real tokens or copied auth files to the repository.
@@ -103,12 +104,20 @@ uv run openai-api-server-via-codex config-generate --stdout
   `max_stored_items` defaulting to 1000 and apply it consistently to
   `ResponseStore` and `ChatCompletionStore`. Evict oldest entries first; `0`
   means no in-memory storage.
+- Codex backend request concurrency is intentionally bounded. Keep
+  `max_concurrent_requests` defaulting to 10, expose it through CLI/env/config,
+  and hold a slot for the full duration of streaming responses. `0` means no
+  local concurrency cap.
+- Codex backend timeout defaults to 300 seconds. Keep CLI/env/config/default
+  fallback paths, config templates, README examples, and tests aligned when
+  changing that value.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
   debug-level uvicorn logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit
   application diagnostics for resolved config/settings, request lifecycle,
   endpoint summaries, model-list fallbacks, and Codex HTTP stream/auth behavior.
-  Never log raw auth tokens.
+  Never log raw auth tokens. Use the shared redaction helpers when logging
+  upstream errors, request query strings, or auth-related values.
 - For Chat Completions, translate Responses stream events into
   `chat.completion.chunk` events.
 - Prefer structured parsing and Pydantic/FastAPI/OpenAI SDK models over ad hoc
@@ -117,6 +126,10 @@ uv run openai-api-server-via-codex config-generate --stdout
 ## Testing Expectations
 
 - Add focused unit or contract tests under `tests/` for compatibility behavior.
+- Add or update redaction tests when changing auth, logging, upstream error
+  handling, or request logging code. Raw `access_token`, `refresh_token`,
+  `id_token`, bearer tokens, JWTs, and client `api_key` values must not appear
+  in logs or compatibility error responses.
 - Use fake backends for deterministic tests. Prefer tests that call through
   `AsyncOpenAI` or `OpenAI` instead of raw HTTP so SDK parsing, pagination, and
   stream handling are covered.

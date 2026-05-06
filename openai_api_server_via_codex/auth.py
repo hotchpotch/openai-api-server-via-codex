@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .redaction import redact_sensitive_text
+
 
 REFRESH_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -196,6 +198,9 @@ def _refresh(refresh_token: str) -> dict[str, Any]:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode(errors="replace")
-        raise BorrowKeyError(f"Token refresh failed (HTTP {exc.code}): {error_body}")
+        raise BorrowKeyError(
+            f"Token refresh failed (HTTP {exc.code}): "
+            f"{redact_sensitive_text(error_body)}"
+        )
     except urllib.error.URLError as exc:
         raise BorrowKeyError(f"Token refresh failed: {exc}") from exc

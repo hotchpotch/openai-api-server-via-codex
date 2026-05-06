@@ -13,7 +13,8 @@ APP_NAME = "openai-api-server-via-codex"
 CONFIG_ENV = "OPENAI_VIA_CODEX_CONFIG"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18080
-DEFAULT_TIMEOUT = 180.0
+DEFAULT_TIMEOUT = 300.0
+DEFAULT_MAX_CONCURRENT_REQUESTS = 10
 DEFAULT_CLIENT_VERSION = "1.0.0"
 DEFAULT_STOP_TIMEOUT = 10.0
 
@@ -55,6 +56,7 @@ default_model = "{DEFAULT_MODEL}"
 timeout = {DEFAULT_TIMEOUT}
 verbose = false
 max_stored_items = {DEFAULT_MAX_STORED_ITEMS}
+max_concurrent_requests = {DEFAULT_MAX_CONCURRENT_REQUESTS}
 
 [codex]
 auth_json = "~/.codex/auth.json"

@@ -4,6 +4,7 @@ import httpx
 from openai import APIStatusError
 
 from openai_api_server_via_codex.backend import (
+    CodexHttpBackend,
     DEFAULT_MODELS,
     _prepare_codex_payload,
     _status_error_message,
@@ -72,6 +73,10 @@ def test_default_models_match_codex_http_fallback_catalog() -> None:
     ]
 
 
+def test_codex_http_backend_default_timeout_is_300_seconds() -> None:
+    assert CodexHttpBackend().timeout == 300.0
+
+
 def test_normalize_codex_stream_event_maps_response_done_to_completed() -> None:
     event = {
         "type": "response.done",
@@ -119,3 +124,27 @@ def test_status_error_message_formats_chatgpt_usage_limit() -> None:
 
     assert "ChatGPT usage limit" in message
     assert "plus plan" in message
+
+
+def test_status_error_message_redacts_auth_values() -> None:
+    request = httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses")
+    response = httpx.Response(
+        500,
+        request=request,
+        json={
+            "error": {
+                "message": (
+                    "upstream failed with Authorization: Bearer "
+                    "abcdefghijklmnopqrstuvwxyz and access_token="
+                    "tok_abcdefghijklmnopqrstuvwxyz"
+                )
+            }
+        },
+    )
+    exc = APIStatusError("failed", response=response, body=response.json())
+
+    message = _status_error_message(exc)
+
+    assert "abcdefghijklmnopqrstuvwxyz" not in message
+    assert "Bearer abcdef******" in message
+    assert "access_token=tok_ab******" in message

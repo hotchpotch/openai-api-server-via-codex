@@ -107,11 +107,13 @@ def test_server_settings_prefer_cli_over_env(
 
 def test_server_settings_use_18080_as_default_port(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_VIA_CODEX_PORT", raising=False)
+    monkeypatch.delenv("OPENAI_VIA_CODEX_TIMEOUT", raising=False)
     args = server.parse_args(["serve"])
 
     settings = server.server_settings_from_args(args)
 
     assert settings.port == 18080
+    assert settings.timeout == 300.0
 
 
 def test_server_settings_read_config_file(tmp_path: Path) -> None:
@@ -126,6 +128,7 @@ default_model = "gpt-5.4-mini"
 timeout = 12.5
 verbose = true
 max_stored_items = 123
+max_concurrent_requests = 4
 
 [codex]
 auth_json = "{auth_json}"
@@ -145,6 +148,7 @@ client_version = "2.0.0"
     assert settings.timeout == 12.5
     assert settings.verbose is True
     assert settings.max_stored_items == 123
+    assert settings.max_concurrent_requests == 4
     assert settings.auth_json == auth_json.resolve()
     assert settings.backend_base_url == "https://example.test/codex"
     assert settings.client_version == "2.0.0"
@@ -172,6 +176,35 @@ port = 9009
 
     assert settings.host == "127.0.0.11"
     assert settings.port == 9010
+
+
+def test_server_settings_resolve_max_concurrent_requests_precedence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[server]
+max_concurrent_requests = 3
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS", "4")
+
+    env_args = server.parse_args(["serve", "--config", str(config_path)])
+    env_settings = server.server_settings_from_args(
+        env_args, server.load_config_for_args(env_args)
+    )
+
+    cli_args = server.parse_args(
+        ["serve", "--config", str(config_path), "--max-concurrent-requests", "5"]
+    )
+    cli_settings = server.server_settings_from_args(
+        cli_args, server.load_config_for_args(cli_args)
+    )
+
+    assert env_settings.max_concurrent_requests == 4
+    assert cli_settings.max_concurrent_requests == 5
 
 
 def test_daemon_paths_read_config_file(tmp_path: Path) -> None:
@@ -239,6 +272,8 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
             "12.5",
             "--max-stored-items",
             "222",
+            "--max-concurrent-requests",
+            "6",
         ]
     )
     settings = server.server_settings_from_args(args)
@@ -259,6 +294,8 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
     assert "12.5" in command
     assert "--max-stored-items" in command
     assert "222" in command
+    assert "--max-concurrent-requests" in command
+    assert "6" in command
 
 
 def test_serve_command_includes_verbose_flag_when_enabled(monkeypatch) -> None:
@@ -292,3 +329,10 @@ def test_create_app_uses_configured_max_stored_items() -> None:
     assert app.state.max_stored_items == 7
     assert app.state.response_store.max_entries == 7
     assert app.state.chat_completion_store.max_entries == 7
+
+
+def test_create_app_uses_configured_max_concurrent_requests() -> None:
+    app = server.create_app(max_concurrent_requests=7)
+
+    assert app.state.max_concurrent_requests == 7
+    assert app.state.backend_semaphore is not None

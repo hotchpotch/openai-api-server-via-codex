@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import time
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from email.message import Message
 from pathlib import Path
 from typing import Any
 
@@ -196,6 +199,28 @@ def test_concurrent_expired_token_refreshes_once(
 
     assert {account_id for _, account_id in results} == {"acct"}
     assert refresh_count == 1
+
+
+def test_refresh_error_redacts_auth_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_urlopen(request: object) -> object:
+        raise urllib.error.HTTPError(
+            url="https://auth.openai.com/oauth/token",
+            code=401,
+            msg="Unauthorized",
+            hdrs=Message(),
+            fp=io.BytesIO(
+                b'{"error":"invalid","access_token":"tok_abcdefghijklmnopqrstuvwxyz"}'
+            ),
+        )
+
+    monkeypatch.setattr(auth.urllib.request, "urlopen", fail_urlopen)
+
+    with pytest.raises(auth.BorrowKeyError) as exc_info:
+        auth._refresh("refresh_abcdefghijklmnopqrstuvwxyz")
+
+    message = str(exc_info.value)
+    assert "abcdefghijklmnopqrstuvwxyz" not in message
+    assert '"access_token":"tok_ab******"' in message
 
 
 def _auth_json(account_id: str, *, padding: str = "") -> str:

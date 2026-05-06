@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -110,6 +111,41 @@ class RecordingBackend:
 
     async def list_models(self) -> list[str]:
         return ["gpt-5.4", "gpt-5.4-mini"]
+
+
+class SlowConcurrencyBackend(RecordingBackend):
+    def __init__(self, *, delay: float = 0.05) -> None:
+        super().__init__()
+        self.delay = delay
+        self.active = 0
+        self.max_active = 0
+        self._lock = asyncio.Lock()
+
+    async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        await self._enter()
+        try:
+            await asyncio.sleep(self.delay)
+            return await super().create_response(payload)
+        finally:
+            await self._exit()
+
+    async def stream_response(self, payload: dict[str, Any]):
+        await self._enter()
+        try:
+            await asyncio.sleep(self.delay)
+            async for event in super().stream_response(payload):
+                yield event
+        finally:
+            await self._exit()
+
+    async def _enter(self) -> None:
+        async with self._lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+
+    async def _exit(self) -> None:
+        async with self._lock:
+            self.active -= 1
 
 
 class ToolCallStreamingBackend(RecordingBackend):
@@ -364,6 +400,91 @@ async def test_verbose_app_logs_request_and_response_summary(caplog):
     assert "responses.create model=gpt-5.4 stream=False input_items=1" in log_text
     assert "backend=RecordingBackend" in log_text
     assert "request.end method=POST path=/v1/responses status=200" in log_text
+
+
+@pytest.mark.asyncio
+async def test_verbose_app_logs_redact_sensitive_query_values(caplog):
+    backend = RecordingBackend()
+    app = create_app(backend=backend, verbose=True)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="openai_api_server_via_codex"):
+            response = await http_client.get(
+                "/healthz?api_key=abcdefghijklmnopqrstuvwxyz&safe=value"
+            )
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 200
+    log_text = caplog.text
+    assert "api_key=abcdefghijklmnopqrstuvwxyz" not in log_text
+    assert "api_key=abcdef******" in log_text
+    assert "safe=value" in log_text
+
+
+@pytest.mark.asyncio
+async def test_backend_concurrency_limit_caps_parallel_response_requests() -> None:
+    backend = SlowConcurrencyBackend()
+    app = create_app(backend=backend, max_concurrent_requests=2)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        responses = await asyncio.gather(
+            *(
+                client.responses.create(model="gpt-5.4", input=f"parallel {index}")
+                for index in range(5)
+            )
+        )
+    finally:
+        await http_client.aclose()
+
+    assert len(responses) == 5
+    assert len(backend.requests) == 5
+    assert backend.max_active == 2
+
+
+@pytest.mark.asyncio
+async def test_backend_concurrency_limit_holds_streaming_slots() -> None:
+    backend = SlowConcurrencyBackend()
+    app = create_app(backend=backend, max_concurrent_requests=1)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    async def consume_stream(index: int) -> None:
+        stream = await client.responses.create(
+            model="gpt-5.4",
+            input=f"stream parallel {index}",
+            stream=True,
+        )
+        async for _event in stream:
+            pass
+
+    try:
+        await asyncio.gather(*(consume_stream(index) for index in range(3)))
+    finally:
+        await http_client.aclose()
+
+    assert len(backend.requests) == 3
+    assert backend.max_active == 1
 
 
 @pytest.mark.asyncio

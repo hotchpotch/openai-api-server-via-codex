@@ -12,9 +12,11 @@ import httpx
 from openai import APIError, APIStatusError, AsyncOpenAI
 
 from .auth import BorrowKeyError, CodexAuthConfig, borrow_codex_key
+from .redaction import install_redacting_filter, redact_sensitive_text
 
 
 LOGGER = logging.getLogger("openai_api_server_via_codex.backend")
+install_redacting_filter(LOGGER)
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_BACKEND_HTTP = "codex-http"
 DEFAULT_MODELS = [
@@ -63,7 +65,7 @@ class CodexHttpBackend:
         *,
         base_url: str = CODEX_BASE_URL,
         client_version: str = "1.0.0",
-        timeout: float = 180.0,
+        timeout: float = 300.0,
         auth_config: CodexAuthConfig | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -114,17 +116,19 @@ class CodexHttpBackend:
                 )
                 yield dumped
         except APIStatusError as exc:
+            message = _status_error_message(exc)
             LOGGER.warning(
                 "codex-http.stream.status_error status=%s message=%s",
                 exc.status_code,
-                _status_error_message(exc),
+                message,
             )
             raise CodexBackendError(
-                _status_error_message(exc), status_code=exc.status_code
+                message, status_code=exc.status_code
             ) from exc
         except APIError as exc:
-            LOGGER.warning("codex-http.stream.api_error message=%s", str(exc))
-            raise CodexBackendError(str(exc)) from exc
+            message = redact_sensitive_text(str(exc))
+            LOGGER.warning("codex-http.stream.api_error message=%s", message)
+            raise CodexBackendError(message) from exc
         finally:
             LOGGER.info(
                 "codex-http.stream.end model=%s events=%d",
@@ -181,8 +185,9 @@ class CodexHttpBackend:
             )
             return token, account_id
         except BorrowKeyError as exc:
-            LOGGER.warning("codex-http.auth.error message=%s", str(exc))
-            raise CodexBackendError(str(exc), status_code=401) from exc
+            message = redact_sensitive_text(str(exc))
+            LOGGER.warning("codex-http.auth.error message=%s", message)
+            raise CodexBackendError(message, status_code=401) from exc
 
     @staticmethod
     def _headers(
@@ -333,7 +338,7 @@ def _status_error_message(exc: APIStatusError) -> str:
     try:
         body = exc.response.json()
     except Exception:
-        return exc.message
+        return redact_sensitive_text(exc.message)
     if isinstance(body, dict):
         error = body.get("error")
         if isinstance(error, dict):
@@ -346,8 +351,8 @@ def _status_error_message(exc: APIStatusError) -> str:
                 reset_text = _reset_time_text(error.get("resets_at"))
                 return f"You have hit your ChatGPT usage limit{plan_text}.{reset_text}"
             if error.get("message"):
-                return str(error["message"])
-    return exc.message
+                return redact_sensitive_text(str(error["message"]))
+    return redact_sensitive_text(exc.message)
 
 
 def _reset_time_text(value: Any) -> str:

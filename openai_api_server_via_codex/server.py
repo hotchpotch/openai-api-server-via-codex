@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import asyncio
 import copy
 import inspect
 import json
@@ -51,10 +52,17 @@ from .daemon import (
     start_background,
     stop_background,
 )
+from .redaction import (
+    install_redacting_filter,
+    redact_sensitive_data,
+    redact_sensitive_text,
+)
 
 
 LOGGER = logging.getLogger("openai_api_server_via_codex")
+install_redacting_filter(LOGGER)
 MAX_STORED_ITEMS_ENV = "OPENAI_VIA_CODEX_MAX_STORED_ITEMS"
+MAX_CONCURRENT_REQUESTS_ENV = "OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS"
 
 
 class OpenAICompatRequest(BaseModel):
@@ -73,6 +81,7 @@ class ServerSettings:
     timeout: float
     default_model: str
     max_stored_items: int
+    max_concurrent_requests: int
     verbose: bool = False
     auth_json: Path | None = None
 
@@ -96,6 +105,7 @@ def create_app(
     timeout: float | None = None,
     verbose: bool = False,
     max_stored_items: int | None = None,
+    max_concurrent_requests: int | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -109,12 +119,22 @@ def create_app(
     selected_timeout = (
         timeout
         if timeout is not None
-        else float(os.environ.get("OPENAI_VIA_CODEX_TIMEOUT", "180"))
+        else float(
+            os.environ.get("OPENAI_VIA_CODEX_TIMEOUT", str(config_module.DEFAULT_TIMEOUT))
+        )
     )
     selected_max_stored_items = _non_negative_int_value(
         max_stored_items
         if max_stored_items is not None
         else os.environ.get(MAX_STORED_ITEMS_ENV, DEFAULT_MAX_STORED_ITEMS)
+    )
+    selected_max_concurrent_requests = _non_negative_int_value(
+        max_concurrent_requests
+        if max_concurrent_requests is not None
+        else os.environ.get(
+            MAX_CONCURRENT_REQUESTS_ENV,
+            config_module.DEFAULT_MAX_CONCURRENT_REQUESTS,
+        )
     )
     selected_auth_config = CodexAuthConfig(
         auth_json=_resolve_optional_path(auth_json or os.environ.get(AUTH_JSON_ENV))
@@ -128,6 +148,12 @@ def create_app(
         auth_config=selected_auth_config,
     )
     app.state.max_stored_items = selected_max_stored_items
+    app.state.max_concurrent_requests = selected_max_concurrent_requests
+    app.state.backend_semaphore = (
+        asyncio.Semaphore(selected_max_concurrent_requests)
+        if selected_max_concurrent_requests > 0
+        else None
+    )
     app.state.response_store = ResponseStore(max_entries=selected_max_stored_items)
     app.state.chat_completion_store = ChatCompletionStore(
         max_entries=selected_max_stored_items
@@ -139,13 +165,14 @@ def create_app(
     if verbose:
         LOGGER.info(
             "server.create_app backend=codex-http default_model=%s timeout=%s max_stored_items=%s auth_json=%s "
-            "backend_base_url=%s",
+            "backend_base_url=%s max_concurrent_requests=%s",
             app.state.default_model,
             selected_timeout,
             selected_max_stored_items,
             selected_auth_config.auth_json,
             backend_base_url
             or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
+            selected_max_concurrent_requests,
         )
 
     @app.get("/healthz")
@@ -156,7 +183,8 @@ def create_app(
     async def list_models(request: Request) -> dict[str, Any]:
         backend = _get_backend(request)
         _log_verbose(request, "models.list backend=%s", _backend_name(backend))
-        model_ids = await backend.list_models()
+        async with _backend_slot(request):
+            model_ids = await backend.list_models()
         _log_verbose(request, "models.list.done count=%d", len(model_ids))
         return {
             "object": "list",
@@ -215,6 +243,7 @@ def create_app(
                     prepared=prepared,
                     backend_payload=backend_payload,
                     previous_response_id=previous_response_id,
+                    backend_semaphore=_get_backend_semaphore(request),
                 )
             )
 
@@ -222,15 +251,17 @@ def create_app(
             key: value for key, value in prepared.items() if key != "previous_response_id"
         }
         try:
-            response = await backend.create_response(backend_payload)
+            async with _backend_slot(request):
+                response = await backend.create_response(backend_payload)
         except CodexBackendError as exc:
+            message = redact_sensitive_text(str(exc))
             _log_verbose(
                 request,
                 "responses.create.error status=%s message=%s",
                 exc.status_code,
-                str(exc),
+                message,
             )
-            return _openai_error(exc.status_code, str(exc), error_type="api_error")
+            return _openai_error(exc.status_code, message, error_type="api_error")
         response = ensure_response_defaults(response, request_payload=prepared)
         if previous_response_id:
             response["previous_response_id"] = previous_response_id
@@ -441,19 +472,22 @@ def create_app(
                     chat_payload=payload,
                     legacy_functions=legacy_functions,
                     chat_store=_get_chat_completion_store(request),
+                    backend_semaphore=_get_backend_semaphore(request),
                 )
             )
 
         try:
-            response = await _get_backend(request).create_response(response_payload)
+            async with _backend_slot(request):
+                response = await _get_backend(request).create_response(response_payload)
         except CodexBackendError as exc:
+            message = redact_sensitive_text(str(exc))
             _log_verbose(
                 request,
                 "chat.completions.create.error status=%s message=%s",
                 exc.status_code,
-                str(exc),
+                message,
             )
-            return _openai_error(exc.status_code, str(exc), error_type="api_error")
+            return _openai_error(exc.status_code, message, error_type="api_error")
         response = ensure_response_defaults(response, request_payload=response_payload)
         chat_completion = response_to_chat_completion(
             response,
@@ -745,6 +779,15 @@ def server_settings_from_args(
             "max_stored_items",
             config_module.DEFAULT_MAX_STORED_ITEMS,
         ),
+        max_concurrent_requests=_arg_env_config_non_negative_int(
+            args,
+            "max_concurrent_requests",
+            MAX_CONCURRENT_REQUESTS_ENV,
+            config_data,
+            "server",
+            "max_concurrent_requests",
+            config_module.DEFAULT_MAX_CONCURRENT_REQUESTS,
+        ),
         auth_json=_resolve_optional_path(
             _arg_env_config_optional_str(
                 args, "auth_json", AUTH_JSON_ENV, config_data, "codex", "auth_json"
@@ -806,6 +849,8 @@ def serve_command(settings: ServerSettings) -> list[str]:
         str(settings.timeout),
         "--max-stored-items",
         str(settings.max_stored_items),
+        "--max-concurrent-requests",
+        str(settings.max_concurrent_requests),
         "--default-model",
         settings.default_model,
     ]
@@ -856,6 +901,7 @@ def _main(argv: list[str] | None = None) -> int:
                 timeout=settings.timeout,
                 verbose=settings.verbose,
                 max_stored_items=settings.max_stored_items,
+                max_concurrent_requests=settings.max_concurrent_requests,
             ),
             host=settings.host,
             port=settings.port,
@@ -937,6 +983,11 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
         "--max-stored-items",
         type=_non_negative_int_arg,
         help="maximum in-memory responses and chat completions",
+    )
+    parser.add_argument(
+        "--max-concurrent-requests",
+        type=_non_negative_int_arg,
+        help="maximum concurrent Codex backend requests; 0 means unlimited",
     )
     parser.add_argument("--default-model", help="default model when request omits model")
     parser.add_argument(
@@ -1157,6 +1208,9 @@ def _configure_logging(verbose: bool) -> None:
             level=level,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        install_redacting_filter(handler)
 
 
 def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
@@ -1169,13 +1223,14 @@ def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
     )
     LOGGER.info(
         "settings.resolved backend=codex-http host=%s port=%s default_model=%s "
-        "timeout=%s max_stored_items=%s auth_json=%s backend_base_url=%s "
-        "client_version=%s verbose=%s",
+        "timeout=%s max_stored_items=%s max_concurrent_requests=%s auth_json=%s "
+        "backend_base_url=%s client_version=%s verbose=%s",
         settings.host,
         settings.port,
         settings.default_model,
         settings.timeout,
         settings.max_stored_items,
+        settings.max_concurrent_requests,
         settings.auth_json,
         settings.backend_base_url,
         settings.client_version,
@@ -1194,7 +1249,7 @@ def _install_verbose_request_logging(app: FastAPI) -> None:
             "request.start method=%s path=%s query=%s client=%s",
             request.method,
             request.url.path,
-            request.url.query,
+            redact_sensitive_text(request.url.query),
             request.client.host if request.client else None,
         )
         try:
@@ -1219,7 +1274,7 @@ def _install_verbose_request_logging(app: FastAPI) -> None:
 
 def _log_verbose(request: Request, message: str, *args: Any) -> None:
     if bool(getattr(request.app.state, "verbose", False)):
-        LOGGER.info(message, *args)
+        LOGGER.info(message, *redact_sensitive_data(args))
 
 
 def _backend_name(backend: Any) -> str:
@@ -1228,6 +1283,29 @@ def _backend_name(backend: Any) -> str:
 
 def _get_backend(request: Request) -> CodexBackend:
     return request.app.state.backend
+
+
+def _get_backend_semaphore(request: Request) -> asyncio.Semaphore | None:
+    semaphore = getattr(request.app.state, "backend_semaphore", None)
+    return semaphore if isinstance(semaphore, asyncio.Semaphore) else None
+
+
+def _backend_slot(request: Request) -> Any:
+    return _backend_semaphore_slot(_get_backend_semaphore(request))
+
+
+@asynccontextmanager
+async def _backend_semaphore_slot(
+    semaphore: asyncio.Semaphore | None,
+) -> AsyncIterator[None]:
+    if semaphore is None:
+        yield
+        return
+    await semaphore.acquire()
+    try:
+        yield
+    finally:
+        semaphore.release()
 
 
 def _get_response_store(request: Request) -> ResponseStore:
@@ -1500,44 +1578,46 @@ async def _responses_event_stream(
     prepared: dict[str, Any],
     backend_payload: dict[str, Any],
     previous_response_id: Any,
+    backend_semaphore: asyncio.Semaphore | None,
 ) -> AsyncIterator[bytes]:
     output_items: list[dict[str, Any]] = []
     final_response_stored = False
     sequence_number = 0
 
     try:
-        async for raw_event in backend.stream_response(backend_payload):
-            event = _normalize_stream_event(raw_event)
-            sequence_number = int(event.get("sequence_number") or sequence_number)
-            event_type = event.get("type")
+        async with _backend_semaphore_slot(backend_semaphore):
+            async for raw_event in backend.stream_response(backend_payload):
+                event = _normalize_stream_event(raw_event)
+                sequence_number = int(event.get("sequence_number") or sequence_number)
+                event_type = event.get("type")
 
-            if event_type == "response.output_item.done":
-                item = event.get("item")
-                if isinstance(item, dict):
-                    output_items.append(item)
-            elif event_type in {
-                "response.completed",
-                "response.incomplete",
-                "response.failed",
-            }:
-                response = event.get("response")
-                if isinstance(response, dict):
-                    if output_items and not response.get("output"):
-                        response["output"] = output_items
-                    response = ensure_response_defaults(response, request_payload=prepared)
-                    if previous_response_id:
-                        response["previous_response_id"] = previous_response_id
-                    event["response"] = response
-                    if not final_response_stored:
-                        store.remember(
-                            str(response["id"]),
-                            effective_input=prepared["input"],
-                            response=response,
-                        )
-                        final_response_stored = True
+                if event_type == "response.output_item.done":
+                    item = event.get("item")
+                    if isinstance(item, dict):
+                        output_items.append(item)
+                elif event_type in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                }:
+                    response = event.get("response")
+                    if isinstance(response, dict):
+                        if output_items and not response.get("output"):
+                            response["output"] = output_items
+                        response = ensure_response_defaults(response, request_payload=prepared)
+                        if previous_response_id:
+                            response["previous_response_id"] = previous_response_id
+                        event["response"] = response
+                        if not final_response_stored:
+                            store.remember(
+                                str(response["id"]),
+                                effective_input=prepared["input"],
+                                response=response,
+                            )
+                            final_response_stored = True
 
-            yield _sse_data(event)
-            sequence_number += 1
+                yield _sse_data(event)
+                sequence_number += 1
     except CodexBackendError as exc:
         yield _sse_data(
             {
@@ -1597,6 +1677,7 @@ async def _chat_completion_event_stream(
     chat_payload: dict[str, Any],
     legacy_functions: bool = False,
     chat_store: ChatCompletionStore | None = None,
+    backend_semaphore: asyncio.Semaphore | None = None,
 ) -> AsyncIterator[bytes]:
     created = int(time.time())
     state = _ChatStreamState(
@@ -1613,133 +1694,134 @@ async def _chat_completion_event_stream(
     output_items: list[dict[str, Any]] = []
 
     try:
-        async for raw_event in backend.stream_response(response_payload):
-            event = _normalize_stream_event(raw_event)
-            event_type = event.get("type")
+        async with _backend_semaphore_slot(backend_semaphore):
+            async for raw_event in backend.stream_response(response_payload):
+                event = _normalize_stream_event(raw_event)
+                event_type = event.get("type")
 
-            if event_type == "response.created":
-                response = event.get("response")
-                if isinstance(response, dict):
-                    _update_chat_stream_state(state, response)
-                async for chunk in _ensure_chat_role_chunk(state):
-                    yield chunk
-                continue
+                if event_type == "response.created":
+                    response = event.get("response")
+                    if isinstance(response, dict):
+                        _update_chat_stream_state(state, response)
+                    async for chunk in _ensure_chat_role_chunk(state):
+                        yield chunk
+                    continue
 
-            if event_type == "response.output_text.delta":
-                async for chunk in _ensure_chat_role_chunk(state):
-                    yield chunk
-                delta = event.get("delta")
-                if isinstance(delta, str) and delta:
-                    state.saw_text_delta = True
-                    yield _sse_data(_chat_chunk(state, {"content": delta}))
-                continue
+                if event_type == "response.output_text.delta":
+                    async for chunk in _ensure_chat_role_chunk(state):
+                        yield chunk
+                    delta = event.get("delta")
+                    if isinstance(delta, str) and delta:
+                        state.saw_text_delta = True
+                        yield _sse_data(_chat_chunk(state, {"content": delta}))
+                    continue
 
-            if event_type == "response.output_item.added":
-                item = event.get("item")
-                if isinstance(item, dict) and item.get("type") == "function_call":
+                if event_type == "response.output_item.added":
+                    item = event.get("item")
+                    if isinstance(item, dict) and item.get("type") == "function_call":
+                        async for chunk in _ensure_chat_role_chunk(state):
+                            yield chunk
+                        output_index = int(event.get("output_index") or 0)
+                        emitted_tool_arguments.setdefault(output_index, "")
+                        if legacy_functions:
+                            delta = {
+                                "function_call": {
+                                    "name": item.get("name") or "",
+                                    "arguments": "",
+                                }
+                            }
+                        else:
+                            delta = {
+                                "tool_calls": [
+                                    _chat_tool_call_delta(
+                                        item,
+                                        index=output_index,
+                                        arguments="",
+                                        include_identity=True,
+                                    )
+                                ]
+                            }
+                        yield _sse_data(
+                            _chat_chunk(state, delta)
+                        )
+                    continue
+
+                if event_type == "response.function_call_arguments.delta":
                     async for chunk in _ensure_chat_role_chunk(state):
                         yield chunk
                     output_index = int(event.get("output_index") or 0)
-                    emitted_tool_arguments.setdefault(output_index, "")
+                    delta = str(event.get("delta") or "")
+                    emitted_tool_arguments[output_index] = (
+                        emitted_tool_arguments.get(output_index, "") + delta
+                    )
                     if legacy_functions:
-                        delta = {
-                            "function_call": {
-                                "name": item.get("name") or "",
-                                "arguments": "",
-                            }
-                        }
+                        chunk_delta = {"function_call": {"arguments": delta}}
                     else:
-                        delta = {
+                        chunk_delta = {
                             "tool_calls": [
-                                _chat_tool_call_delta(
-                                    item,
-                                    index=output_index,
-                                    arguments="",
-                                    include_identity=True,
-                                )
+                                {
+                                    "index": output_index,
+                                    "function": {"arguments": delta},
+                                }
                             ]
                         }
                     yield _sse_data(
-                        _chat_chunk(state, delta)
+                        _chat_chunk(state, chunk_delta)
                     )
-                continue
+                    continue
 
-            if event_type == "response.function_call_arguments.delta":
-                async for chunk in _ensure_chat_role_chunk(state):
-                    yield chunk
-                output_index = int(event.get("output_index") or 0)
-                delta = str(event.get("delta") or "")
-                emitted_tool_arguments[output_index] = (
-                    emitted_tool_arguments.get(output_index, "") + delta
-                )
-                if legacy_functions:
-                    chunk_delta = {"function_call": {"arguments": delta}}
-                else:
-                    chunk_delta = {
-                        "tool_calls": [
-                            {
-                                "index": output_index,
-                                "function": {"arguments": delta},
-                            }
-                        ]
-                    }
-                yield _sse_data(
-                    _chat_chunk(state, chunk_delta)
-                )
-                continue
+                if event_type == "response.output_item.done":
+                    item = event.get("item")
+                    if isinstance(item, dict):
+                        output_items.append(item)
+                        async for chunk in _chat_output_item_done_chunks(
+                            state,
+                            item,
+                            event,
+                            emitted_tool_arguments,
+                            legacy_functions=legacy_functions,
+                        ):
+                            yield chunk
+                    continue
 
-            if event_type == "response.output_item.done":
-                item = event.get("item")
-                if isinstance(item, dict):
-                    output_items.append(item)
-                    async for chunk in _chat_output_item_done_chunks(
-                        state,
-                        item,
-                        event,
-                        emitted_tool_arguments,
-                        legacy_functions=legacy_functions,
-                    ):
-                        yield chunk
-                continue
-
-            if event_type in {
-                "response.completed",
-                "response.incomplete",
-                "response.failed",
-            }:
-                response = event.get("response")
-                if isinstance(response, dict):
-                    if output_items and not response.get("output"):
-                        response["output"] = output_items
-                    response = ensure_response_defaults(
-                        response, request_payload=response_payload
-                    )
-                    _update_chat_stream_state(state, response)
-                    async for chunk in _ensure_chat_role_chunk(state):
-                        yield chunk
-                    completion = response_to_chat_completion(
-                        response,
-                        fallback_model=state.model,
-                        legacy_functions=legacy_functions,
-                        n=state.choice_count,
-                    )
-                    if chat_payload.get("metadata") is not None:
-                        completion["metadata"] = copy.deepcopy(chat_payload["metadata"])
-                    if chat_payload.get("store") is True and chat_store is not None:
-                        chat_store.remember(
-                            str(completion["id"]),
-                            completion=completion,
-                            metadata=chat_payload.get("metadata") or {},
+                if event_type in {
+                    "response.completed",
+                    "response.incomplete",
+                    "response.failed",
+                }:
+                    response = event.get("response")
+                    if isinstance(response, dict):
+                        if output_items and not response.get("output"):
+                            response["output"] = output_items
+                        response = ensure_response_defaults(
+                            response, request_payload=response_payload
                         )
-                    finish_reason = completion["choices"][0]["finish_reason"]
-                    yield _sse_data(
-                        _chat_chunk(state, {}, finish_reason=finish_reason)
-                    )
-                    if include_usage:
+                        _update_chat_stream_state(state, response)
+                        async for chunk in _ensure_chat_role_chunk(state):
+                            yield chunk
+                        completion = response_to_chat_completion(
+                            response,
+                            fallback_model=state.model,
+                            legacy_functions=legacy_functions,
+                            n=state.choice_count,
+                        )
+                        if chat_payload.get("metadata") is not None:
+                            completion["metadata"] = copy.deepcopy(chat_payload["metadata"])
+                        if chat_payload.get("store") is True and chat_store is not None:
+                            chat_store.remember(
+                                str(completion["id"]),
+                                completion=completion,
+                                metadata=chat_payload.get("metadata") or {},
+                            )
+                        finish_reason = completion["choices"][0]["finish_reason"]
                         yield _sse_data(
-                            _chat_chunk(state, {}, choices=[], usage=completion["usage"])
+                            _chat_chunk(state, {}, finish_reason=finish_reason)
                         )
-                continue
+                        if include_usage:
+                            yield _sse_data(
+                                _chat_chunk(state, {}, choices=[], usage=completion["usage"])
+                            )
+                    continue
     except CodexBackendError as exc:
         yield _sse_data(
             {
