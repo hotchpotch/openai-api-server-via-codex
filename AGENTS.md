@@ -27,6 +27,9 @@ Run the full local validation suite before committing behavior changes:
 uv run tox
 ```
 
+GitHub Actions runs the same validation suite for pushes to `main` and for pull
+requests through `.github/workflows/ci.yml`.
+
 Run focused compatibility tests while iterating on request/response behavior:
 
 ```bash
@@ -147,6 +150,9 @@ python scripts/release-notes.py vX.Y.Z
   `.github/workflows/release.yml` and the `pypi` GitHub environment. Do not add
   PyPI tokens to repository secrets unless a deliberate fallback release path is
   being used.
+- Keep `.github/workflows/ci.yml` aligned with the local required validation
+  command. It should run on pushes to `main`, pull requests, and manual
+  dispatch.
 - Incoming API key authentication is optional and disabled by default. When
   `--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` is configured,
   require `Authorization: Bearer <api_key>` for `/v1/...` routes only; keep
