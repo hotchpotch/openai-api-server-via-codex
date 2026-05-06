@@ -2,36 +2,40 @@
 
 OpenAI-compatible local API server backed by your logged-in Codex credentials.
 
-This project is useful when you already use Codex through a ChatGPT
-subscription and want a local OpenAI-compatible API endpoint for development.
-It exposes the Responses API (`/v1/responses`) and Chat Completions API
-(`/v1/chat/completions`), so tools that already speak to the OpenAI API through
-`openai-python` can point at this local server instead.
+This project exposes a local OpenAI-compatible API server that forwards requests
+through Codex using your existing `codex login` credentials. It supports the
+Responses API (`/v1/responses`) and Chat Completions API
+(`/v1/chat/completions`), so tools built on `openai-python` can point at a local
+`base_url` and keep using familiar OpenAI client APIs.
+
+## Why use this
+
+If you already use Codex through a ChatGPT subscription, this server gives you a
+convenient OpenAI-compatible API endpoint for local development. Instead of
+rewriting tools or prototypes around a different interface, you can keep using
+OpenAI client code such as `client.responses.create(...)` and
+`client.chat.completions.create(...)`.
 
 For developers who otherwise call the paid OpenAI Platform API directly, this
-can be convenient: if your ChatGPT subscription includes Codex access and your
-usage stays within the subscription's applicable limits, compatible API calls
-can be served through Codex using the subscription you already pay for.
+can also be useful from a cost and workflow perspective: if your ChatGPT
+subscription includes Codex access and your usage stays within the applicable
+subscription limits, compatible API calls can be served through Codex using the
+subscription you already pay for.
 
-If you already have `codex login` credentials on the machine, the server starts
-with one `uvx` command:
-
-```console
-$ uvx openai-api-server-via-codex
-Codex auth preflight OK: /home/you/.codex/auth.json (account_id_present=True)
-INFO:     Uvicorn running on http://127.0.0.1:18080 (Press CTRL+C to quit)
-```
+> [!IMPORTANT]
+> This is not the official OpenAI Platform API. Use it only with accounts and
+> subscriptions you are allowed to use, and follow OpenAI's terms and usage
+> policies.
 
 ## Usage
 
-Run the server in the foreground with `uvx`, uv's tool-run command:
+### Start with `uvx`
+
+If Codex is already logged in on the machine, start the server with one command:
 
 ```console
 $ uvx openai-api-server-via-codex
 Codex auth preflight OK: /home/you/.codex/auth.json (account_id_present=True)
-INFO:     Started server process [12345]
-INFO:     Waiting for application startup.
-INFO:     Application startup complete.
 INFO:     Uvicorn running on http://127.0.0.1:18080 (Press CTRL+C to quit)
 ```
 
@@ -39,18 +43,21 @@ The default server URL is `http://127.0.0.1:18080`. OpenAI-compatible API
 endpoints are served under `/v1`, for example
 `http://127.0.0.1:18080/v1/responses`.
 
+> [!TIP]
+> `uvx` is uv's tool-run command. If you do not have uv installed yet, follow
+> the official uv documentation: <https://docs.astral.sh/uv/>.
+>
+> To force `uvx` to use the latest published package instead of a cached copy,
+> run `uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex`.
+
 > [!NOTE]
 > This is a compatibility server for local or trusted environments. By default
 > it does not authenticate incoming requests. Set `--api-key` when binding to
 > anything other than localhost.
 
-> [!TIP]
-> To force `uvx` to use the latest published package instead of a cached copy,
-> run `uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex`.
-> If you do not have uv installed yet, follow the official uv documentation:
-> <https://docs.astral.sh/uv/>.
+### Call the Responses API
 
-Call it with `openai-python`:
+Point `openai-python` at the local server:
 
 ```python
 from openai import OpenAI
@@ -68,7 +75,7 @@ print(response.output_text)
 `api_key="dummy"` is only a placeholder required by the OpenAI SDK. The local
 server ignores incoming API keys unless you configure `--api-key`.
 
-Use Chat Completions:
+### Use chat completions
 
 ```python
 chat = client.chat.completions.create(
@@ -79,7 +86,7 @@ chat = client.chat.completions.create(
 print(chat.choices[0].message.content)
 ```
 
-Stream a response:
+### Stream a response
 
 ```python
 stream = client.responses.create(
@@ -94,7 +101,7 @@ for event in stream:
         print(event.delta, end="")
 ```
 
-Run as a background daemon:
+### Run as a background daemon
 
 ```console
 $ uvx openai-api-server-via-codex start
@@ -119,7 +126,7 @@ $ uvx openai-api-server-via-codex start \
 Then connect clients to `http://<server-host>:18080/v1` and pass
 `api_key="local-secret"` to the OpenAI client.
 
-## Install
+## Installation options
 
 Run without installing:
 
@@ -190,21 +197,23 @@ control layer, and follow OpenAI's
 [Terms of Use](https://openai.com/policies/terms-of-use/) and
 [Usage Policies](https://openai.com/policies/usage-policies/).
 
-## Endpoints
+## API endpoints
 
-- `GET /healthz`
-- `GET /v1/models`
-- `POST /v1/responses`
-- `GET /v1/responses/{response_id}`
-- `DELETE /v1/responses/{response_id}`
-- `POST /v1/responses/{response_id}/cancel`
-- `POST /v1/responses/input_tokens`
-- `POST /v1/chat/completions`
-- `GET /v1/chat/completions`
-- `GET /v1/chat/completions/{completion_id}`
-- `POST /v1/chat/completions/{completion_id}`
-- `DELETE /v1/chat/completions/{completion_id}`
-- `GET /v1/chat/completions/{completion_id}/messages`
+| Method | Path |
+| --- | --- |
+| `GET` | `/healthz` |
+| `GET` | `/v1/models` |
+| `POST` | `/v1/responses` |
+| `GET` | `/v1/responses/{response_id}` |
+| `DELETE` | `/v1/responses/{response_id}` |
+| `POST` | `/v1/responses/{response_id}/cancel` |
+| `POST` | `/v1/responses/input_tokens` |
+| `POST` | `/v1/chat/completions` |
+| `GET` | `/v1/chat/completions` |
+| `GET` | `/v1/chat/completions/{completion_id}` |
+| `POST` | `/v1/chat/completions/{completion_id}` |
+| `DELETE` | `/v1/chat/completions/{completion_id}` |
+| `GET` | `/v1/chat/completions/{completion_id}/messages` |
 
 ## Compatibility
 
