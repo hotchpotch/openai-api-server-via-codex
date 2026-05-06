@@ -448,6 +448,24 @@ def test_serve_command_includes_verbose_flag_when_enabled(monkeypatch) -> None:
     assert "--verbose" in command
 
 
+def test_daemon_run_command_wraps_selected_server_settings(monkeypatch) -> None:
+    monkeypatch.setattr(server.sys, "executable", "/tmp/python")
+    args = server.parse_args(["start", "--port", "8126", "--verbose"])
+    settings = server.server_settings_from_args(args)
+
+    command = server.daemon_run_command(settings)
+
+    assert command[:4] == [
+        "/tmp/python",
+        "-m",
+        "openai_api_server_via_codex.server",
+        "daemon-run",
+    ]
+    assert "--port" in command
+    assert "8126" in command
+    assert "--verbose" in command
+
+
 def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:
     run_calls: list[dict[str, Any]] = []
 
@@ -497,13 +515,15 @@ def test_start_prints_successful_auth_preflight_before_daemon_start(
 ) -> None:
     auth_json = tmp_path / "auth.json"
     call_order: list[str] = []
+    start_commands: list[list[str]] = []
 
     def fake_preflight(settings: server.ServerSettings) -> tuple[Path, bool]:
         call_order.append("preflight")
         return auth_json, False
 
-    def fake_start(*args, **kwargs) -> int:
+    def fake_start(command: list[str], *args, **kwargs) -> int:
         call_order.append("start")
+        start_commands.append(command)
         return 12345
 
     monkeypatch.setattr(server, "_preflight_codex_auth", fake_preflight)
@@ -521,6 +541,7 @@ def test_start_prints_successful_auth_preflight_before_daemon_start(
 
     assert result == 0
     assert call_order == ["preflight", "start"]
+    assert start_commands[0][3] == "daemon-run"
     captured = capsys.readouterr()
     assert f"Codex auth preflight OK: {auth_json}" in captured.out
     assert "account_id_present=False" in captured.out

@@ -148,6 +148,35 @@ class SlowConcurrencyBackend(RecordingBackend):
             self.active -= 1
 
 
+class UnexpectedErrorBackend(RecordingBackend):
+    async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.requests.append(payload)
+        raise RuntimeError(
+            "backend exploded with access_token=tok_abcdefghijklmnopqrstuvwxyz"
+        )
+
+    async def stream_response(self, payload: dict[str, Any]):
+        self.requests.append(payload)
+        yield {
+            "type": "response.created",
+            "sequence_number": 0,
+            "response": {
+                "id": "resp_error_1",
+                "object": "response",
+                "created_at": time.time(),
+                "status": "in_progress",
+                "model": payload["model"],
+                "output": [],
+                "parallel_tool_calls": True,
+                "tool_choice": "auto",
+                "tools": [],
+            },
+        }
+        raise RuntimeError(
+            "stream exploded with access_token=tok_abcdefghijklmnopqrstuvwxyz"
+        )
+
+
 class ToolCallStreamingBackend(RecordingBackend):
     async def stream_response(self, payload: dict[str, Any]):
         self.requests.append(payload)
@@ -369,6 +398,73 @@ async def test_responses_create_round_trips_with_openai_client(
     assert response.usage.input_tokens == 3
     assert backend.requests[0]["reasoning"] == {"effort": "low"}
     assert backend.requests[0]["store"] is False
+
+
+@pytest.mark.asyncio
+async def test_responses_create_unexpected_backend_error_returns_openai_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    backend = UnexpectedErrorBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="openai_api_server_via_codex"):
+            with pytest.raises(Exception) as exc_info:
+                await client.responses.create(
+                    model="gpt-5.4",
+                    input="Return an API error.",
+                )
+        healthz = await http_client.get("/healthz")
+    finally:
+        await http_client.aclose()
+
+    assert getattr(exc_info.value, "status_code", None) == 500
+    assert "tok_abcdefghijklmnopqrstuvwxyz" not in str(exc_info.value)
+    assert "tok_abcdefghijklmnopqrstuvwxyz" not in caplog.text
+    assert healthz.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_unexpected_backend_error_yields_error_event(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    backend = UnexpectedErrorBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        with caplog.at_level(logging.ERROR, logger="openai_api_server_via_codex"):
+            stream = await client.responses.create(
+                model="gpt-5.4",
+                input="Stream an API error.",
+                stream=True,
+            )
+            events = [event async for event in stream]
+        healthz = await http_client.get("/healthz")
+    finally:
+        await http_client.aclose()
+
+    assert [event.type for event in events] == ["response.created", "error"]
+    assert "tok_abcdefghijklmnopqrstuvwxyz" not in str(events[-1])
+    assert "tok_abcdefghijklmnopqrstuvwxyz" not in caplog.text
+    assert healthz.status_code == 200
 
 
 @pytest.mark.asyncio
