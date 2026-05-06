@@ -2,19 +2,21 @@
 
 OpenAI-compatible local API server backed by your logged-in Codex credentials.
 
-This project exposes a local OpenAI-compatible API server that forwards requests
-through Codex using your existing `codex login` credentials. It supports the
-Responses API (`/v1/responses`) and Chat Completions API
-(`/v1/chat/completions`), so tools built on `openai-python` can point at a local
-`base_url` and keep using familiar OpenAI client APIs.
+Start it with one command:
+
+```console
+$ uvx openai-api-server-via-codex
+```
+
+Turn your existing Codex login into a local `http://127.0.0.1:18080/v1`
+endpoint for `openai-python`, prototypes, agents, and tools that expect the
+OpenAI API. It supports the Responses API (`/v1/responses`) and Chat
+Completions API (`/v1/chat/completions`).
 
 ## Why use this
 
-If you already use Codex through a ChatGPT subscription, this server gives you a
-convenient OpenAI-compatible API endpoint for local development. Instead of
-rewriting tools or prototypes around a different interface, you can keep using
-OpenAI client code such as `client.responses.create(...)` and
-`client.chat.completions.create(...)`.
+If you already use Codex through a ChatGPT subscription, this gives you a local
+OpenAI-compatible API endpoint without rewriting your OpenAI client code.
 
 For developers who otherwise call the paid OpenAI Platform API directly, this
 can also be useful from a cost and workflow perspective: if your ChatGPT
