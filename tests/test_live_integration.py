@@ -178,6 +178,23 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
                     )
                     assert proxied.headers.get("x-openai-via-codex-proxy") == "codex-http"
 
+                traversal_probes = [
+                    "/v1/%2e%2e/auth/me",
+                    "/v1/foo/%2e%2e/%2e%2e/auth/me",
+                ]
+                for probe in traversal_probes:
+                    rejected = await direct.get(probe)
+                    print(
+                        "live proxy traversal "
+                        f"GET {probe} status={rejected.status_code} "
+                        f"body={rejected.text[:200]!r}"
+                    )
+                    assert rejected.status_code == 400
+                    assert (
+                        rejected.headers.get("x-openai-via-codex-proxy")
+                        is None
+                    )
+
                 healthz = await direct.get("/healthz")
                 assert healthz.status_code == 200
         finally:

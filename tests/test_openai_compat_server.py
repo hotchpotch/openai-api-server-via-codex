@@ -677,6 +677,46 @@ async def test_new_openai_paths_that_overlap_existing_prefixes_are_proxied() -> 
 
 
 @pytest.mark.asyncio
+async def test_proxy_rejects_dotdot_path_traversal() -> None:
+    backend = ProxyRecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response = await http_client.get("/v1/%2e%2e/auth/me")
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "api_error"
+    assert backend.proxy_requests == []
+
+
+@pytest.mark.asyncio
+async def test_proxy_rejects_nested_dotdot_path_traversal() -> None:
+    backend = ProxyRecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response = await http_client.post(
+            "/v1/foo/%2e%2e/%2e%2e/auth/me",
+            json={"input": "marker"},
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 400
+    assert backend.proxy_requests == []
+
+
+@pytest.mark.asyncio
 async def test_explicit_v1_routes_are_not_captured_by_proxy() -> None:
     backend = ProxyRecordingBackend()
     app = create_app(backend=backend)
