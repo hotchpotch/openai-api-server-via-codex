@@ -1,33 +1,31 @@
 # OpenAI API Server via Codex
 
-Use Codex from OpenAI-compatible clients, agents, and scripts.
-
-Run a local `/v1` server backed by your own Codex login:
+A local server that exposes the Codex backend from your ChatGPT subscription as
+an OpenAI-compatible API, so OpenAI-compatible client libraries such as
+`openai-python` work without code changes.
 
 ```console
 $ uvx openai-api-server-via-codex
 ```
 
-Point `openai-python` or other OpenAI-compatible tools at
-`http://127.0.0.1:18080/v1`. Supports Responses and Chat Completions, including
-streaming.
+Point your client's `OPENAI_BASE_URL` at `http://127.0.0.1:18080/v1`. Both
+Responses and Chat Completions are supported, including streaming.
 
-## Why use this
+## Use cases
 
-- reuse existing OpenAI SDK integrations with Codex
-- run local prototypes and agents without client-side rewrites
-- use your ChatGPT plan's Codex access in personal or trusted dev workflows
+- Run existing code or agents written with any OpenAI-compatible client
+  library (e.g. `openai-python`) through your ChatGPT subscription's Codex
+  instead of `api.openai.com`
+- Prototype locally or develop agents without rewriting any client code
+- Use your ChatGPT plan's Codex access in personal or trusted dev workflows
 
-This project is a compatibility layer, not a replacement for the official
-OpenAI Platform API. It does not bypass Codex or ChatGPT plan limits, and it is
-not intended for reselling access, powering third-party services, or exposing a
-public API backed by your ChatGPT account.
-
-> [!IMPORTANT]
-> This is not the official OpenAI Platform API. Use it only with accounts and
-> subscriptions you are allowed to use, and follow OpenAI's terms and usage
-> policies. Do not share your Codex credentials or use this server to provide
-> access to other people.
+This is **not** the official OpenAI Platform API or a replacement for it — it
+is a compatibility layer that forwards requests to the Codex backend used by
+your ChatGPT subscription. Use it only with accounts and subscriptions you are
+allowed to use, and follow OpenAI's terms and usage policies. It does not
+bypass Codex or ChatGPT plan limits. Do not share your Codex credentials,
+resell access, power third-party services, or expose a public API backed by
+your ChatGPT account.
 
 ## Usage
 
