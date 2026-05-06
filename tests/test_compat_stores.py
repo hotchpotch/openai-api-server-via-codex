@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from openai_api_server_via_codex.compat import ChatCompletionStore, ResponseStore
+from openai_api_server_via_codex.compat import (
+    ChatCompletionStore,
+    ResponseStore,
+    normalize_response_input,
+)
 
 
 def test_response_store_evicts_oldest_entry_when_max_entries_is_reached() -> None:
@@ -41,6 +45,59 @@ def test_response_store_max_entries_zero_disables_storage() -> None:
 
     assert store.get("resp_1") is None
     assert store.size == 0
+
+
+def test_normalize_response_input_preserves_reasoning_summary_with_encrypted_content() -> None:
+    normalized = normalize_response_input(
+        [
+            {
+                "type": "reasoning",
+                "encrypted_content": "ciphertext-abc",
+                "summary": [{"type": "summary_text", "text": "Plan steps."}],
+            }
+        ]
+    )
+
+    assert normalized == [
+        {
+            "type": "reasoning",
+            "encrypted_content": "ciphertext-abc",
+            "summary": [{"type": "summary_text", "text": "Plan steps."}],
+        }
+    ]
+
+
+def test_normalize_response_input_defaults_reasoning_summary_to_empty_list() -> None:
+    normalized = normalize_response_input(
+        [
+            {
+                "type": "reasoning",
+                "encrypted_content": "ciphertext-xyz",
+            }
+        ]
+    )
+
+    assert normalized == [
+        {
+            "type": "reasoning",
+            "encrypted_content": "ciphertext-xyz",
+            "summary": [],
+        }
+    ]
+
+
+def test_normalize_response_input_drops_reasoning_without_encrypted_content() -> None:
+    normalized = normalize_response_input(
+        [
+            {
+                "type": "reasoning",
+                "summary": [],
+            },
+            {"role": "user", "content": "hi"},
+        ]
+    )
+
+    assert normalized == [{"role": "user", "content": "hi"}]
 
 
 def test_chat_completion_store_evicts_oldest_entry_when_max_entries_is_reached() -> None:

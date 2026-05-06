@@ -199,7 +199,12 @@ def _normalize_response_input_item(item: Any) -> Any | None:
     if item_type == "reasoning":
         encrypted_content = item.get("encrypted_content")
         if isinstance(encrypted_content, str) and encrypted_content:
-            return {"type": "reasoning", "encrypted_content": encrypted_content}
+            summary = item.get("summary")
+            return {
+                "type": "reasoning",
+                "encrypted_content": encrypted_content,
+                "summary": summary if isinstance(summary, list) else [],
+            }
         return None
     if item_type == "message" and item.get("role") == "assistant":
         message: dict[str, Any] = {
