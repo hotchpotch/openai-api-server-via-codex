@@ -22,6 +22,7 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
+from . import __version__
 from .auth import AUTH_JSON_ENV, CodexAuthConfig
 from .backend import (
     CODEX_BASE_URL,
@@ -658,7 +659,9 @@ def _build_backend(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or (argv[0].startswith("-") and argv[0] not in {"-h", "--help"}):
+    if not argv or (
+        argv[0].startswith("-") and argv[0] not in {"-h", "--help", "--version"}
+    ):
         argv = ["serve", *argv]
 
     parser = argparse.ArgumentParser(
@@ -666,6 +669,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="OpenAI-compatible API server backed by Codex credentials.",
         allow_abbrev=False,
     )
+    parser.add_argument("--version", action="version", version=__version__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve = subparsers.add_parser(

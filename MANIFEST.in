@@ -1,0 +1,10 @@
+include LICENSE
+include README.md
+include pyproject.toml
+recursive-include openai_api_server_via_codex *.py
+exclude main.py
+recursive-exclude tests *
+recursive-exclude docs *
+recursive-exclude .github *
+global-exclude __pycache__
+global-exclude *.py[cod]

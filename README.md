@@ -85,6 +85,14 @@ Run directly with `uvx` after the package is installed or published:
 $ uvx openai-api-server-via-codex
 ```
 
+After the PyPI package is published, run the console command without cloning the
+repository:
+
+```console
+$ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --help
+$ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --version
+```
+
 ## Requirements
 
 - Python 3.11+
@@ -455,3 +463,12 @@ $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_comp
 
 The live tests use the machine's existing Codex credentials and make real model
 requests.
+
+## Publishing
+
+The package is prepared for PyPI release as version `0.0.1`. Use the secure
+release checklist in [docs/publishing.md](docs/publishing.md).
+
+The recommended production path is PyPI Trusted Publishing from GitHub Actions
+with the `pypi` environment. Local release work should build, inspect, and smoke
+test the artifacts before the tag is pushed.

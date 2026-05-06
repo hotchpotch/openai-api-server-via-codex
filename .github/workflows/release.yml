@@ -1,0 +1,105 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify distributions
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v6.2.0
+        with:
+          python-version-file: ".python-version"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --locked --dev
+
+      - name: Check release version
+        id: version
+        run: |
+          python - <<'PY'
+          import os
+          import pathlib
+          import re
+          import tomllib
+
+          root = pathlib.Path(".")
+          pyproject_version = tomllib.loads(root.joinpath("pyproject.toml").read_text())["project"]["version"]
+          init_text = root.joinpath("openai_api_server_via_codex", "__init__.py").read_text()
+          init_version = re.search(r'__version__ = "([^"]+)"', init_text).group(1)
+
+          if pyproject_version != init_version:
+              raise SystemExit(f"version mismatch: pyproject={pyproject_version} __init__={init_version}")
+
+          ref_type = os.environ.get("GITHUB_REF_TYPE")
+          ref_name = os.environ.get("GITHUB_REF_NAME")
+          if ref_type == "tag" and ref_name != f"v{pyproject_version}":
+              raise SystemExit(f"tag {ref_name!r} does not match package version {pyproject_version!r}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={pyproject_version}\n")
+          PY
+
+      - name: Run validation suite
+        run: uv run tox
+
+      - name: Build distributions
+        run: |
+          rm -rf dist
+          uv build --no-sources
+
+      - name: Check package metadata
+        run: uv run twine check --strict dist/*
+
+      - name: Smoke test packaged console command
+        run: |
+          wheel="$(ls dist/*.whl)"
+          uv run --with "$wheel" --no-project openai-api-server-via-codex --help
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openai-api-server-via-codex/${{ needs.build.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.9.0

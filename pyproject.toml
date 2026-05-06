@@ -1,11 +1,27 @@
 [project]
 name = "openai-api-server-via-codex"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.0.1"
+description = "OpenAI-compatible local API server backed by Codex credentials"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    { name = "hotchpotch" },
+]
+keywords = ["codex", "openai", "fastapi", "openai-compatible", "uvx"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
     "fastapi>=0.136.1",
+    "httpx>=0.28.1",
     "openai>=2.34.0",
     "pydantic>=2.13.3",
     "uvicorn>=0.46.0",
@@ -13,6 +29,11 @@ dependencies = [
 
 [project.scripts]
 openai-api-server-via-codex = "openai_api_server_via_codex.server:main"
+
+[project.urls]
+Homepage = "https://github.com/hotchpotch/openai-api-server-via-codex"
+Repository = "https://github.com/hotchpotch/openai-api-server-via-codex"
+Issues = "https://github.com/hotchpotch/openai-api-server-via-codex/issues"
 
 [build-system]
 requires = ["setuptools>=69"]
@@ -28,6 +49,7 @@ dev = [
     "ruff>=0.15.12",
     "tox>=4.53.1",
     "tox-uv>=1.35.1",
+    "twine>=6.2.0",
     "ty>=0.0.34",
 ]
 

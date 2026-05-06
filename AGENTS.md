@@ -67,6 +67,16 @@ uv run openai-api-server-via-codex config-generate
 uv run openai-api-server-via-codex config-generate --stdout
 ```
 
+Validate package artifacts before a PyPI release:
+
+```bash
+uv run tox
+rm -rf dist
+uv build --no-sources
+uv run twine check --strict dist/*
+uv run --with "$(ls dist/*.whl)" --no-project openai-api-server-via-codex --help
+```
+
 ## Implementation Notes
 
 - Keep the public API OpenAI-compatible for both sync-style and async-style
@@ -118,6 +128,13 @@ uv run openai-api-server-via-codex config-generate --stdout
   examples on `gpt-5.5` unless there is a deliberate model guidance change.
   Do not confuse README example models with the server's compatibility default;
   changing `DEFAULT_MODEL` requires tests and config-template updates.
+- Keep the package version in `pyproject.toml` and
+  `openai_api_server_via_codex/__init__.py` aligned. The GitHub Actions release
+  workflow expects release tags like `v0.0.1` to match that version exactly.
+- For PyPI releases, prefer Trusted Publishing through
+  `.github/workflows/release.yml` and the `pypi` GitHub environment. Do not add
+  PyPI tokens to repository secrets unless a deliberate fallback release path is
+  being used.
 - Incoming API key authentication is optional and disabled by default. When
   `--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` is configured,
   require `Authorization: Bearer <api_key>` for `/v1/...` routes only; keep
