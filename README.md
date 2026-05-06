@@ -1,33 +1,33 @@
 # OpenAI API Server via Codex
 
-OpenAI-compatible local API server backed by your logged-in Codex credentials.
+Use Codex from OpenAI-compatible clients, agents, and scripts.
 
-Start it with one command:
+Run a local `/v1` server backed by your own Codex login:
 
 ```console
 $ uvx openai-api-server-via-codex
 ```
 
-Turn your existing Codex login into a local `http://127.0.0.1:18080/v1`
-endpoint for `openai-python`, prototypes, agents, and tools that expect the
-OpenAI API. It supports the Responses API (`/v1/responses`) and Chat
-Completions API (`/v1/chat/completions`).
+Point `openai-python` or other OpenAI-compatible tools at
+`http://127.0.0.1:18080/v1`. Supports Responses and Chat Completions, including
+streaming.
 
 ## Why use this
 
-If you already use Codex through a ChatGPT subscription, this gives you a local
-OpenAI-compatible API endpoint without rewriting your OpenAI client code.
+- reuse existing OpenAI SDK integrations with Codex
+- run local prototypes and agents without client-side rewrites
+- use your ChatGPT plan's Codex access in personal or trusted dev workflows
 
-For developers who otherwise call the paid OpenAI Platform API directly, this
-can also be useful from a cost and workflow perspective: if your ChatGPT
-subscription includes Codex access and your usage stays within the applicable
-subscription limits, compatible API calls can be served through Codex using the
-subscription you already pay for.
+This project is a compatibility layer, not a replacement for the official
+OpenAI Platform API. It does not bypass Codex or ChatGPT plan limits, and it is
+not intended for reselling access, powering third-party services, or exposing a
+public API backed by your ChatGPT account.
 
 > [!IMPORTANT]
 > This is not the official OpenAI Platform API. Use it only with accounts and
 > subscriptions you are allowed to use, and follow OpenAI's terms and usage
-> policies.
+> policies. Do not share your Codex credentials or use this server to provide
+> access to other people.
 
 ## Usage
 
@@ -194,8 +194,9 @@ available through your own logged-in Codex credentials, and that backend may
 change without notice.
 
 Use this server only with accounts and subscriptions you are allowed to use. Do
-not expose it to untrusted networks without `--api-key` or another access
-control layer, and follow OpenAI's
+not use it to evade limits, share account access, resell access, or power
+third-party services. Do not expose it to untrusted networks without `--api-key`
+or another access control layer, and follow OpenAI's
 [Terms of Use](https://openai.com/policies/terms-of-use/) and
 [Usage Policies](https://openai.com/policies/usage-policies/).
 
