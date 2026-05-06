@@ -235,6 +235,7 @@ def _list_len(value: Any) -> int:
 
 def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
     codex_payload = copy.deepcopy(payload)
+    codex_payload.pop("max_output_tokens", None)
     codex_payload["stream"] = True
     codex_payload["store"] = False
     codex_payload.setdefault("tool_choice", "auto")

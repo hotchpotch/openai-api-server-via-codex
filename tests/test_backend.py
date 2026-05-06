@@ -18,6 +18,7 @@ def test_prepare_codex_payload_adds_codex_http_defaults_without_overwriting() ->
         "input": [{"role": "user", "content": "hello"}],
         "stream": False,
         "store": True,
+        "max_output_tokens": 20,
         "text": {"format": {"type": "json_object"}},
         "include": ["file_search_call.results"],
         "tool_choice": "none",
@@ -28,6 +29,7 @@ def test_prepare_codex_payload_adds_codex_http_defaults_without_overwriting() ->
 
     assert prepared["stream"] is True
     assert prepared["store"] is False
+    assert "max_output_tokens" not in prepared
     assert prepared["tool_choice"] == "none"
     assert prepared["parallel_tool_calls"] is False
     assert prepared["text"] == {
@@ -40,6 +42,7 @@ def test_prepare_codex_payload_adds_codex_http_defaults_without_overwriting() ->
     ]
     assert payload["stream"] is False
     assert payload["text"] == {"format": {"type": "json_object"}}
+    assert payload["max_output_tokens"] == 20
 
 
 def test_prepare_codex_payload_adds_missing_tool_and_reasoning_defaults() -> None:
