@@ -1,44 +1,179 @@
-OpenAI API Server via Codex
-===========================
+# OpenAI API Server via Codex
 
-FastAPI-based OpenAI-compatible API facade that forwards generation requests to
-the Codex HTTP backend using the local `codex login` credentials.
+OpenAI-compatible local API server backed by your logged-in Codex credentials.
 
-Supported endpoints:
+This server exposes the common OpenAI API surface used by `openai-python` and
+forwards generation work to the Codex HTTP backend using the local
+`codex login` auth file.
 
+> [!NOTE]
+> This is a compatibility server for local or trusted environments. By default
+> it does not authenticate incoming requests. Set `--api-key` when binding to
+> anything other than localhost.
+
+## Usage
+
+Run the server in the foreground:
+
+```console
+$ uv run openai-api-server-via-codex
+```
+
+Call it with `openai-python`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(api_key="local", base_url="http://127.0.0.1:18080/v1")
+
+response = client.responses.create(
+    model="gpt-5.4",
+    input="Reply in one sentence.",
+    reasoning={"effort": "low"},
+)
+print(response.output_text)
+```
+
+Use Chat Completions:
+
+```python
+chat = client.chat.completions.create(
+    model="gpt-5.4",
+    messages=[{"role": "user", "content": "Hello"}],
+    reasoning_effort="low",
+)
+print(chat.choices[0].message.content)
+```
+
+Stream a response:
+
+```python
+stream = client.responses.create(
+    model="gpt-5.4",
+    input="Stream a short reply.",
+    stream=True,
+    reasoning={"effort": "low"},
+)
+
+for event in stream:
+    if event.type == "response.output_text.delta":
+        print(event.delta, end="")
+```
+
+Run as a background daemon:
+
+```console
+$ uv run openai-api-server-via-codex start --host 127.0.0.1 --port 18080
+$ uv run openai-api-server-via-codex status --port 18080
+$ uv run openai-api-server-via-codex stop --port 18080
+```
+
+`start` prints the PID file and log file paths.
+
+## Install
+
+From this checkout:
+
+```console
+$ uv sync --dev
+$ uv run openai-api-server-via-codex --help
+```
+
+Run directly with `uvx` after the package is installed or published:
+
+```console
+$ uvx openai-api-server-via-codex
+```
+
+## Requirements
+
+- Python 3.11+
+- `uv`
+- A working Codex login, usually at `~/.codex/auth.json`
+
+Use an explicit Codex auth file when needed:
+
+```console
+$ uv run openai-api-server-via-codex --auth-json ~/.codex/auth.json
+$ OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uv run openai-api-server-via-codex
+```
+
+> [!NOTE]
+> The incoming OpenAI-compatible API key and the Codex auth file are separate.
+> `--api-key` protects this local server. `--auth-json` selects the Codex
+> credentials used by the server when it calls the Codex backend.
+
+## Endpoints
+
+- `GET /healthz`
 - `GET /v1/models`
 - `POST /v1/responses`
+- `GET /v1/responses/{response_id}`
+- `DELETE /v1/responses/{response_id}`
+- `POST /v1/responses/{response_id}/cancel`
+- `POST /v1/responses/input_tokens`
 - `POST /v1/chat/completions`
+- `GET /v1/chat/completions`
+- `GET /v1/chat/completions/{completion_id}`
+- `POST /v1/chat/completions/{completion_id}`
+- `DELETE /v1/chat/completions/{completion_id}`
+- `GET /v1/chat/completions/{completion_id}/messages`
 
-Run locally:
+## Compatibility
 
-```bash
-uv run openai-api-server-via-codex
-```
+The server supports both sync and async `openai-python` clients for the main
+OpenAI APIs:
 
-Use an explicit Codex auth file:
+- `client.responses.create(...)`
+- `client.chat.completions.create(...)`
 
-```bash
-uv run openai-api-server-via-codex --auth-json ~/.codex/auth.json
-# or
-OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uv run openai-api-server-via-codex
-```
+Supported behavior includes:
+
+- `stream=True` for Responses and Chat Completions
+- `previous_response_id` for Responses, backed by local in-memory context
+- standard Chat Completions multi-turn through the `messages` list
+- function and tool calling, including streaming tool-call arguments
+- JSON mode and structured outputs
+- URL and data URL image parts
+- reasoning effort fields where the selected model accepts them
+- stored Chat Completions compatibility APIs backed by local in-memory storage
+
+For Codex compatibility, backend requests are normalized to streaming
+Responses calls with `store=false`, low text verbosity by default, automatic
+tool choice defaults, and `reasoning.encrypted_content` included for reasoning
+context. Public `store=true` behavior is implemented locally.
+
+## Configuration
 
 Generate a default config file:
 
-```bash
-uv run openai-api-server-via-codex config-generate
-uv run openai-api-server-via-codex config-generate --stdout
-uv run openai-api-server-via-codex --config ~/.config/openai-api-server-via-codex/config.toml
+```console
+$ uv run openai-api-server-via-codex config-generate
+$ uv run openai-api-server-via-codex config-generate --stdout
 ```
 
-By default the config file path is
-`$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml`, or
-`~/.config/openai-api-server-via-codex/config.toml` when `XDG_CONFIG_HOME` is
-unset. You can also set `OPENAI_VIA_CODEX_CONFIG` or pass `--config` to
-`serve`, `start`, `stop`, and `status`.
+The default config path is:
 
-The TOML config mirrors the CLI options:
+```text
+$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml
+```
+
+If `XDG_CONFIG_HOME` is unset, this becomes:
+
+```text
+~/.config/openai-api-server-via-codex/config.toml
+```
+
+You can also set `OPENAI_VIA_CODEX_CONFIG` or pass `--config` to `serve`,
+`start`, `stop`, and `status`.
+
+Resolution order is:
+
+```text
+CLI flag -> environment variable -> config file -> default
+```
+
+Example config:
 
 ```toml
 [server]
@@ -63,143 +198,233 @@ state_dir = "~/.config/openai-api-server-via-codex/run"
 stop_timeout = 10.0
 ```
 
-Resolution order is CLI flag, environment variable, config file, then default.
+### `server.host`
 
-Run as a background server:
+Default: `127.0.0.1`
 
-```bash
-uv run openai-api-server-via-codex start --host 127.0.0.1 --port 18080
-uv run openai-api-server-via-codex status --host 127.0.0.1 --port 18080
-uv run openai-api-server-via-codex stop --host 127.0.0.1 --port 18080
+```console
+$ uv run openai-api-server-via-codex --host 0.0.0.0
 ```
 
-`start` prints the PID file and log file paths. By default they live under the
-config directory's `run/` subdirectory, for example
-`~/.config/openai-api-server-via-codex/run`.
-Override with `--state-dir`, `--pid-file`, `--log-file`, or the matching
-`OPENAI_VIA_CODEX_STATE_DIR`, `OPENAI_VIA_CODEX_PID_FILE`,
-`OPENAI_VIA_CODEX_LOG_FILE` environment variables, or with the `[daemon]`
-config table. Foreground mode remains the default, so
-`uvx openai-api-server-via-codex` starts the server in the current terminal.
-The default PID file is derived from `host` and `port`. If `stop` or `status`
-is run without an explicit `--host` and the exact default PID file is missing,
-the command looks for a single matching PID file for the selected port under
-the state directory. If multiple matches exist, it refuses to guess and asks
-for `--host` or `--pid-file`.
+> [!IMPORTANT]
+> If you bind to `0.0.0.0`, set `--api-key` or put the server behind another
+> trusted access-control layer. Otherwise anyone who can reach the port can use
+> your Codex credentials through this server.
 
-By default, this compatibility server does not authenticate incoming OpenAI
-client requests; any `Authorization` header is accepted and ignored. Set
-`--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` to require
-`Authorization: Bearer <api_key>` on `/v1/...` requests. `/healthz` remains
-unauthenticated. The incoming API key is only for this local compatibility
-server and is never forwarded to Codex. `start` passes it to the background
-`serve` process through the environment rather than as a child command-line
-argument.
+### `server.port`
 
-Codex HTTP backend:
+Default: `18080`
 
-```bash
-uv run openai-api-server-via-codex --port 18080
-uv run openai-api-server-via-codex --verbose
+```console
+$ uv run openai-api-server-via-codex --port 18080
 ```
 
-`--verbose`, `OPENAI_VIA_CODEX_VERBOSE=1`, or `[server].verbose = true` enables
-debug-level uvicorn logging plus application diagnostics. The server logs the
-resolved config/settings, request start/end status and latency, endpoint-level
-summaries for Responses and Chat Completions, model listing fallback reasons,
-and Codex HTTP stream/auth activity. Raw auth tokens are not logged; token-like
-values in upstream errors or query strings are redacted to a short prefix plus
-`******`. Only auth file paths and whether a ChatGPT account id was present are
-reported.
+### `server.api_key`
 
-When using `start`, pass `--verbose` or set it in config/env to preserve the
-same diagnostics in the background server log file printed by `start`.
-`stop --verbose` and `status --verbose` enable the same command diagnostics.
+Default: unset
 
-The in-memory compatibility stores are bounded by `max_stored_items`, default
-`1000`. This cap applies to stored Responses and stored Chat Completions. Older
-entries are evicted first; set `--max-stored-items`,
-`OPENAI_VIA_CODEX_MAX_STORED_ITEMS`, or `[server].max_stored_items` to tune the
-limit. Setting it to `0` disables these in-memory stores, which also disables
-local `previous_response_id` chaining and stored-object retrieval.
+When unset, incoming `Authorization` headers are accepted and ignored.
 
-Codex backend calls are limited by `max_concurrent_requests`, default `10`.
-This lets normal API clients issue parallel requests while preventing
-unbounded upstream fan-out. Set `--max-concurrent-requests`,
-`OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS`, or
-`[server].max_concurrent_requests` to tune the limit. Setting it to `0`
-removes this local concurrency cap.
+When set, `/v1/...` routes require:
 
-The server forwards OpenAI Responses-compatible payloads to the Codex HTTP
-backend using the borrowed Codex OAuth token. This route preserves normal
-OpenAI function-calling semantics where the API returns `function_call` /
-`tool_calls` and the client sends tool results in a later request.
-For Codex compatibility, backend requests are normalized to streaming
-Responses calls with `store = false`, low text verbosity by default, automatic
-tool choice defaults, and `reasoning.encrypted_content` included for reasoning
-context. Public `store=true` behavior remains local to this compatibility
-server's in-memory stores.
+```http
+Authorization: Bearer <api_key>
+```
 
-Use with `openai-python`:
+`/healthz` remains unauthenticated.
+
+```console
+$ uv run openai-api-server-via-codex --api-key local-secret
+$ OPENAI_VIA_CODEX_API_KEY=local-secret uv run openai-api-server-via-codex
+```
+
+`start` passes the API key to the background `serve` process through the child
+environment, not through the child command-line arguments.
+
+### `server.max_stored_items`
+
+Default: `1000`
+
+This bounds the in-memory stores used for Responses context and stored Chat
+Completions compatibility. Older entries are evicted first.
+
+Set `0` to disable these stores. That also disables local
+`previous_response_id` chaining and stored-object retrieval.
+
+### `server.max_concurrent_requests`
+
+Default: `10`
+
+This bounds concurrent Codex backend calls. Streaming responses hold a slot
+until the stream ends.
+
+Set `0` to remove the local concurrency cap.
+
+### `server.timeout`
+
+Default: `300.0`
+
+Timeout in seconds for Codex backend calls.
+
+### `server.verbose`
+
+Default: `false`
+
+Verbose mode enables debug-level uvicorn logs and application diagnostics:
+
+- resolved settings
+- request start/end status and latency
+- endpoint-level summaries
+- model-list fallback reasons
+- Codex HTTP stream/auth activity
+
+Raw auth tokens are not logged. Token-like values in upstream errors or query
+strings are redacted to a short prefix plus `******`.
+
+```console
+$ uv run openai-api-server-via-codex --verbose
+$ uv run openai-api-server-via-codex status --verbose
+$ uv run openai-api-server-via-codex stop --verbose
+```
+
+### `codex.auth_json`
+
+Default: `~/.codex/auth.json`
+
+Selects the Codex ChatGPT OAuth credentials that the server borrows when it
+calls the Codex backend.
+
+### `daemon.state_dir`
+
+Default:
+
+```text
+~/.config/openai-api-server-via-codex/run
+```
+
+`start`, `stop`, and `status` resolve PID and log paths from this directory by
+default. The default PID/log stem is derived from `host` and `port`.
+
+If `stop` or `status` is run without `--host` and the exact default PID file is
+missing, the command looks for a single PID file matching the selected port. If
+multiple matches exist, it refuses to guess and asks for `--host` or
+`--pid-file`.
+
+## Recipes
+
+### Require an API key
+
+```console
+$ uv run openai-api-server-via-codex --api-key local-secret
+```
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(api_key="local", base_url="http://127.0.0.1:18080/v1")
-
-response = client.responses.create(
-    model="gpt-5.4",
-    input="Reply in one sentence.",
-    reasoning={"effort": "low"},
+client = OpenAI(
+    api_key="local-secret",
+    base_url="http://127.0.0.1:18080/v1",
 )
-print(response.output_text)
+```
 
-chat = client.chat.completions.create(
-    model="gpt-5.4",
-    messages=[{"role": "user", "content": "Hello"}],
-    reasoning_effort="low",
-)
-print(chat.choices[0].message.content)
+### Start on all interfaces
 
-stream = client.responses.create(
-    model="gpt-5.4",
-    input="Stream a short reply.",
-    stream=True,
-    reasoning={"effort": "low"},
-)
-for event in stream:
-    if event.type == "response.output_text.delta":
-        print(event.delta, end="")
+```console
+$ uv run openai-api-server-via-codex start \
+  --host 0.0.0.0 \
+  --port 18080 \
+  --api-key local-secret \
+  --verbose
+```
 
-chat_stream = client.chat.completions.create(
+### Use a custom config
+
+```console
+$ uv run openai-api-server-via-codex config-generate --config ./config.toml
+$ uv run openai-api-server-via-codex --config ./config.toml
+```
+
+### Use Chat Completions streaming
+
+```python
+stream = client.chat.completions.create(
     model="gpt-5.4",
     messages=[{"role": "user", "content": "Stream a short reply."}],
     stream=True,
     reasoning_effort="low",
 )
-for chunk in chat_stream:
+
+for chunk in stream:
     if chunk.choices and chunk.choices[0].delta.content:
         print(chunk.choices[0].delta.content, end="")
 ```
 
-`previous_response_id` is supported locally by storing response context in
-memory and replaying it into the next Codex request. Chat Completions multi-turn
-works through the standard `messages` list.
+### Send image input
 
-Image input is supported for URL and data URL image parts, for example
-`{"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}`.
-
-Streaming is supported for both Responses and Chat Completions. Chat
-Completions streaming converts Codex Responses events into
-`chat.completion.chunk` deltas, including text, function tool-call arguments,
-finish reasons, and `stream_options={"include_usage": true}` usage chunks.
-
-Function calling is supported for both streaming and non-streaming Chat
-Completions.
-
-Live integration test:
-
-```bash
-RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q
-RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
+```python
+response = client.responses.create(
+    model="gpt-5.4",
+    input=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe this image."},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,...",
+                },
+            ],
+        }
+    ],
+)
 ```
+
+### Use tool calling
+
+```python
+response = client.chat.completions.create(
+    model="gpt-5.4",
+    messages=[{"role": "user", "content": "What is the weather in Tokyo?"}],
+    tools=[
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather for a city.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            },
+        }
+    ],
+)
+```
+
+## Development
+
+Run the full local validation suite:
+
+```console
+$ uv run tox
+```
+
+Run focused tests while changing request/response compatibility:
+
+```console
+$ uv run python -m pytest tests/test_openai_compat_server.py -q
+$ uv run ruff check .
+$ uv run ty check
+```
+
+Run live Codex integration tests only when real network/auth testing is
+intended:
+
+```console
+$ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q
+$ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
+```
+
+The live tests use the machine's existing Codex credentials and make real model
+requests.
