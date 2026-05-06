@@ -136,13 +136,17 @@ def run_supervised(
             if stop_requested:
                 return int(return_code or 0)
 
+            if restart_limit is not None and restarts >= restart_limit:
+                print(
+                    f"daemon supervisor child exited with status {return_code}; restart limit reached",
+                    flush=True,
+                )
+                return int(return_code or 0)
+            restarts += 1
             print(
                 f"daemon supervisor child exited with status {return_code}; restarting",
                 flush=True,
             )
-            if restart_limit is not None and restarts >= restart_limit:
-                return int(return_code or 0)
-            restarts += 1
 
             if restart_delay > 0:
                 time.sleep(restart_delay)
