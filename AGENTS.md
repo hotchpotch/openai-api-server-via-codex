@@ -114,6 +114,12 @@ uv run openai-api-server-via-codex config-generate --stdout
 - Codex backend timeout defaults to 300 seconds. Keep CLI/env/config/default
   fallback paths, config templates, README examples, and tests aligned when
   changing that value.
+- Incoming API key authentication is optional and disabled by default. When
+  `--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` is configured,
+  require `Authorization: Bearer <api_key>` for `/v1/...` routes only; keep
+  `/healthz` unauthenticated. Do not forward the incoming API key to Codex.
+  When `start` launches `serve`, propagate the API key through the child
+  environment, not the child command-line arguments.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
   debug-level uvicorn logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit

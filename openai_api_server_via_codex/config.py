@@ -57,6 +57,7 @@ timeout = {DEFAULT_TIMEOUT}
 verbose = false
 max_stored_items = {DEFAULT_MAX_STORED_ITEMS}
 max_concurrent_requests = {DEFAULT_MAX_CONCURRENT_REQUESTS}
+# api_key = "change-me"
 
 [codex]
 auth_json = "~/.codex/auth.json"

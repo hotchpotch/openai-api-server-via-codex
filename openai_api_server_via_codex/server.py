@@ -4,6 +4,7 @@ import argparse
 import ast
 import asyncio
 import copy
+import hmac
 import inspect
 import json
 import logging
@@ -64,6 +65,7 @@ LOGGER = logging.getLogger("openai_api_server_via_codex")
 install_redacting_filter(LOGGER)
 MAX_STORED_ITEMS_ENV = "OPENAI_VIA_CODEX_MAX_STORED_ITEMS"
 MAX_CONCURRENT_REQUESTS_ENV = "OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS"
+API_KEY_ENV = "OPENAI_VIA_CODEX_API_KEY"
 
 
 class OpenAICompatRequest(BaseModel):
@@ -83,6 +85,7 @@ class ServerSettings:
     default_model: str
     max_stored_items: int
     max_concurrent_requests: int
+    api_key: str | None = None
     verbose: bool = False
     auth_json: Path | None = None
 
@@ -113,6 +116,7 @@ def create_app(
     verbose: bool = False,
     max_stored_items: int | None = None,
     max_concurrent_requests: int | None = None,
+    api_key: str | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -146,6 +150,9 @@ def create_app(
     selected_auth_config = CodexAuthConfig(
         auth_json=_resolve_optional_path(auth_json or os.environ.get(AUTH_JSON_ENV))
     )
+    selected_api_key = _optional_secret_value(
+        api_key if api_key is not None else os.environ.get(API_KEY_ENV)
+    )
     app.state.backend = backend or _build_backend(
         backend_base_url=backend_base_url
         or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
@@ -168,11 +175,13 @@ def create_app(
     app.state.default_model = default_model or os.environ.get(
         "OPENAI_VIA_CODEX_DEFAULT_MODEL", DEFAULT_MODEL
     )
+    app.state.api_key = selected_api_key
+    _install_api_key_auth(app)
     _install_verbose_request_logging(app)
     if verbose:
         LOGGER.info(
             "server.create_app backend=codex-http default_model=%s timeout=%s max_stored_items=%s auth_json=%s "
-            "backend_base_url=%s max_concurrent_requests=%s",
+            "backend_base_url=%s max_concurrent_requests=%s api_key_configured=%s",
             app.state.default_model,
             selected_timeout,
             selected_max_stored_items,
@@ -180,6 +189,7 @@ def create_app(
             backend_base_url
             or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
             selected_max_concurrent_requests,
+            bool(selected_api_key),
         )
 
     @app.get("/healthz")
@@ -797,6 +807,11 @@ def server_settings_from_args(
             "max_concurrent_requests",
             config_module.DEFAULT_MAX_CONCURRENT_REQUESTS,
         ),
+        api_key=_optional_secret_value(
+            _arg_env_config_optional_str(
+                args, "api_key", API_KEY_ENV, config_data, "server", "api_key"
+            )
+        ),
         auth_json=_resolve_optional_path(
             _arg_env_config_optional_str(
                 args, "auth_json", AUTH_JSON_ENV, config_data, "codex", "auth_json"
@@ -895,6 +910,14 @@ def serve_command(settings: ServerSettings) -> list[str]:
     return command
 
 
+def serve_env(settings: ServerSettings) -> dict[str, str] | None:
+    if settings.api_key is None:
+        return None
+    env = os.environ.copy()
+    env[API_KEY_ENV] = settings.api_key
+    return env
+
+
 def main(argv: list[str] | None = None) -> None:
     raise SystemExit(_main(argv))
 
@@ -936,6 +959,7 @@ def _main(argv: list[str] | None = None) -> int:
                 verbose=settings.verbose,
                 max_stored_items=settings.max_stored_items,
                 max_concurrent_requests=settings.max_concurrent_requests,
+                api_key=settings.api_key,
             ),
             host=settings.host,
             port=settings.port,
@@ -963,7 +987,7 @@ def _main(argv: list[str] | None = None) -> int:
             serve_command(settings),
         )
         try:
-            pid = start_background(serve_command(settings), paths)
+            pid = start_background(serve_command(settings), paths, env=serve_env(settings))
         except DaemonError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -1014,6 +1038,7 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", help="server host")
     parser.add_argument("--port", type=int, help="server port")
     parser.add_argument("--auth-json", help="path to Codex auth.json")
+    parser.add_argument("--api-key", help="optional API key required by this server")
     parser.add_argument("--backend-base-url", help="Codex backend base URL")
     parser.add_argument("--client-version", help="Codex client_version parameter")
     parser.add_argument("--timeout", type=float, help="backend timeout in seconds")
@@ -1309,6 +1334,13 @@ def _non_negative_int_value(value: Any) -> int:
     return parsed
 
 
+def _optional_secret_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None
+
+
 def _configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.WARNING
     LOGGER.setLevel(level)
@@ -1333,7 +1365,7 @@ def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
     LOGGER.info(
         "settings.resolved backend=codex-http host=%s port=%s default_model=%s "
         "timeout=%s max_stored_items=%s max_concurrent_requests=%s auth_json=%s "
-        "backend_base_url=%s client_version=%s verbose=%s",
+        "backend_base_url=%s client_version=%s api_key_configured=%s verbose=%s",
         settings.host,
         settings.port,
         settings.default_model,
@@ -1343,8 +1375,36 @@ def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
         settings.auth_json,
         settings.backend_base_url,
         settings.client_version,
+        bool(settings.api_key),
         settings.verbose,
     )
+
+
+def _install_api_key_auth(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def _api_key_auth(request: Request, call_next: Any) -> Response:
+        api_key = getattr(request.app.state, "api_key", None)
+        if not api_key or not request.url.path.startswith("/v1/"):
+            return await call_next(request)
+        if _authorization_matches_api_key(
+            request.headers.get("authorization"), str(api_key)
+        ):
+            return await call_next(request)
+        return _openai_error(
+            401,
+            "Incorrect API key provided.",
+            error_type="invalid_api_key",
+            code="invalid_api_key",
+        )
+
+
+def _authorization_matches_api_key(authorization: str | None, api_key: str) -> bool:
+    if not authorization:
+        return False
+    scheme, _, token = authorization.strip().partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    return hmac.compare_digest(token.strip(), api_key)
 
 
 def _install_verbose_request_logging(app: FastAPI) -> None:
@@ -1644,6 +1704,7 @@ def _openai_error(
     *,
     param: str | None = None,
     error_type: str = "invalid_request_error",
+    code: str | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
@@ -1652,7 +1713,7 @@ def _openai_error(
                 "message": message,
                 "type": error_type,
                 "param": param,
-                "code": None,
+                "code": code,
             }
         },
     )

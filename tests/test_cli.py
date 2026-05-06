@@ -140,6 +140,7 @@ timeout = 12.5
 verbose = true
 max_stored_items = 123
 max_concurrent_requests = 4
+api_key = "config-secret"
 
 [codex]
 auth_json = "{auth_json}"
@@ -160,6 +161,7 @@ client_version = "2.0.0"
     assert settings.verbose is True
     assert settings.max_stored_items == 123
     assert settings.max_concurrent_requests == 4
+    assert settings.api_key == "config-secret"
     assert settings.auth_json == auth_json.resolve()
     assert settings.backend_base_url == "https://example.test/codex"
     assert settings.client_version == "2.0.0"
@@ -216,6 +218,35 @@ max_concurrent_requests = 3
 
     assert env_settings.max_concurrent_requests == 4
     assert cli_settings.max_concurrent_requests == 5
+
+
+def test_server_settings_resolve_api_key_precedence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[server]
+api_key = "config-secret"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENAI_VIA_CODEX_API_KEY", "env-secret")
+
+    env_args = server.parse_args(["serve", "--config", str(config_path)])
+    env_settings = server.server_settings_from_args(
+        env_args, server.load_config_for_args(env_args)
+    )
+
+    cli_args = server.parse_args(
+        ["serve", "--config", str(config_path), "--api-key", "cli-secret"]
+    )
+    cli_settings = server.server_settings_from_args(
+        cli_args, server.load_config_for_args(cli_args)
+    )
+
+    assert env_settings.api_key == "env-secret"
+    assert cli_settings.api_key == "cli-secret"
 
 
 def test_daemon_paths_read_config_file(tmp_path: Path) -> None:
@@ -376,11 +407,14 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
             "222",
             "--max-concurrent-requests",
             "6",
+            "--api-key",
+            "local-secret",
         ]
     )
     settings = server.server_settings_from_args(args)
 
     command = server.serve_command(settings)
+    env = server.serve_env(settings)
 
     assert command[:4] == [
         "/tmp/python",
@@ -398,6 +432,10 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
     assert "222" in command
     assert "--max-concurrent-requests" in command
     assert "6" in command
+    assert "--api-key" not in command
+    assert "local-secret" not in command
+    assert env is not None
+    assert env["OPENAI_VIA_CODEX_API_KEY"] == "local-secret"
 
 
 def test_serve_command_includes_verbose_flag_when_enabled(monkeypatch) -> None:

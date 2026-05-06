@@ -67,7 +67,9 @@ def find_daemon_pid_files(*, state_dir: str | Path, port: int) -> list[Path]:
     )
 
 
-def start_background(command: list[str], paths: DaemonPaths) -> int:
+def start_background(
+    command: list[str], paths: DaemonPaths, *, env: dict[str, str] | None = None
+) -> int:
     paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths.log_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths.pid_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -88,6 +90,7 @@ def start_background(command: list[str], paths: DaemonPaths) -> int:
             stderr=subprocess.STDOUT,
             start_new_session=True,
             close_fds=True,
+            env=env,
         )
 
     _write_pid(paths.pid_file, process.pid)

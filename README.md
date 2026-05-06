@@ -49,6 +49,7 @@ timeout = 300.0
 verbose = false
 max_stored_items = 1000
 max_concurrent_requests = 10
+# api_key = "change-me"
 
 [codex]
 auth_json = "~/.codex/auth.json"
@@ -85,6 +86,15 @@ is run without an explicit `--host` and the exact default PID file is missing,
 the command looks for a single matching PID file for the selected port under
 the state directory. If multiple matches exist, it refuses to guess and asks
 for `--host` or `--pid-file`.
+
+By default, this compatibility server does not authenticate incoming OpenAI
+client requests; any `Authorization` header is accepted and ignored. Set
+`--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` to require
+`Authorization: Bearer <api_key>` on `/v1/...` requests. `/healthz` remains
+unauthenticated. The incoming API key is only for this local compatibility
+server and is never forwarded to Codex. `start` passes it to the background
+`serve` process through the environment rather than as a child command-line
+argument.
 
 Codex HTTP backend:
 

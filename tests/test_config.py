@@ -37,6 +37,7 @@ def test_default_config_toml_documents_core_options() -> None:
     assert 'host = "127.0.0.1"' in text
     assert "port = 18080" in text
     assert "timeout = 300.0" in text
+    assert '# api_key = "change-me"' in text
     assert "max_stored_items = 1000" in text
     assert "max_concurrent_requests = 10" in text
     assert "[daemon]" in text

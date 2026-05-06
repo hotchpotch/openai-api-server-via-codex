@@ -372,6 +372,74 @@ async def test_responses_create_round_trips_with_openai_client(
 
 
 @pytest.mark.asyncio
+async def test_api_key_auth_is_disabled_by_default() -> None:
+    backend = RecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response_without_header = await http_client.get("/v1/models")
+        response_with_any_header = await http_client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer anything"},
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response_without_header.status_code == 200
+    assert response_with_any_header.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_api_key_auth_rejects_missing_or_wrong_bearer_token() -> None:
+    backend = RecordingBackend()
+    app = create_app(backend=backend, api_key="local-secret")
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        missing = await http_client.get("/v1/models")
+        wrong = await http_client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer wrong-secret"},
+        )
+        healthz = await http_client.get("/healthz")
+    finally:
+        await http_client.aclose()
+
+    assert missing.status_code == 401
+    assert missing.json()["error"]["type"] == "invalid_api_key"
+    assert wrong.status_code == 401
+    assert wrong.json()["error"]["type"] == "invalid_api_key"
+    assert healthz.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_api_key_auth_accepts_matching_bearer_token() -> None:
+    backend = RecordingBackend()
+    app = create_app(backend=backend, api_key="local-secret")
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    try:
+        response = await http_client.get(
+            "/v1/models",
+            headers={"Authorization": "Bearer local-secret"},
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_verbose_app_logs_request_and_response_summary(caplog):
     backend = RecordingBackend()
     app = create_app(backend=backend, verbose=True)
