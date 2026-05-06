@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import socket
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -15,6 +18,20 @@ def test_cli_start_status_stop_runs_background_server(tmp_path: Path) -> None:
     base_url = f"http://127.0.0.1:{port}"
     env = os.environ.copy()
     env["PYTHONPATH"] = str(Path.cwd())
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": _jwt({"exp": time.time() + 3600}),
+                    "account_id": "acct_test",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    env["OPENAI_VIA_CODEX_AUTH_JSON"] = str(auth_json)
 
     try:
         start = subprocess.run(
@@ -102,3 +119,19 @@ async def _wait_for_server(base_url: str) -> None:
                 pass
             await asyncio.sleep(0.1)
     raise AssertionError("background server did not become ready")
+
+
+def _jwt(payload: dict[str, object]) -> str:
+    header = {"alg": "none", "typ": "JWT"}
+    return ".".join(
+        _b64url(part)
+        for part in (
+            json.dumps(header).encode(),
+            json.dumps(payload).encode(),
+            b"",
+        )
+    )
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()

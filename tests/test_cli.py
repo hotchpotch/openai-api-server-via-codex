@@ -455,12 +455,57 @@ def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:
         run_calls.append(kwargs)
 
     monkeypatch.setattr(server.uvicorn, "run", fake_run)
+    monkeypatch.setattr(server, "_preflight_codex_auth", lambda settings: None)
 
     result = server._main(["serve", "--verbose"])
 
     assert result == 0
     assert run_calls[0]["log_level"] == "debug"
     assert run_calls[0]["app"].state.verbose is True
+
+
+def test_serve_fails_before_uvicorn_when_auth_preflight_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing_auth = tmp_path / "missing-auth.json"
+
+    def fail_run(*args, **kwargs) -> None:
+        raise AssertionError("uvicorn.run should not be called")
+
+    monkeypatch.setattr(server.uvicorn, "run", fail_run)
+
+    result = server._main(["serve", "--auth-json", str(missing_auth)])
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "Codex auth preflight failed:" in captured.err
+    assert str(missing_auth) in captured.err
+
+
+def test_start_fails_before_daemon_when_auth_preflight_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    missing_auth = tmp_path / "missing-auth.json"
+
+    def fail_start(*args, **kwargs) -> int:
+        raise AssertionError("start_background should not be called")
+
+    monkeypatch.setattr(server, "start_background", fail_start)
+
+    result = server._main(
+        [
+            "start",
+            "--auth-json",
+            str(missing_auth),
+            "--state-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+
+    assert result == 1
+    captured = capsys.readouterr()
+    assert "Codex auth preflight failed:" in captured.err
+    assert str(missing_auth) in captured.err
 
 
 def test_create_app_uses_configured_max_stored_items() -> None:

@@ -141,6 +141,11 @@ uv run --with "$(ls dist/*.whl)" --no-project openai-api-server-via-codex --help
   `/healthz` unauthenticated. Do not forward the incoming API key to Codex.
   When `start` launches `serve`, propagate the API key through the child
   environment, not the child command-line arguments.
+- `serve` and `start` perform a Codex auth preflight before binding the HTTP
+  port or spawning the daemon. Missing auth files, invalid JSON, wrong
+  `auth_mode`, missing access tokens, expired tokens without refresh tokens, or
+  refresh failures should fail the command with a redacted stderr message and
+  must not start uvicorn or the background daemon.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
   debug-level uvicorn logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit

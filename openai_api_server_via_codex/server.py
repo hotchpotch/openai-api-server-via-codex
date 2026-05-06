@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from . import __version__
-from .auth import AUTH_JSON_ENV, CodexAuthConfig
+from .auth import AUTH_JSON_ENV, BorrowKeyError, CodexAuthConfig, borrow_codex_key
 from .backend import (
     CODEX_BASE_URL,
     CodexBackend,
@@ -953,6 +953,8 @@ def _main(argv: list[str] | None = None) -> int:
         settings = server_settings_from_args(args, loaded_config)
         _configure_logging(settings.verbose)
         _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
+        if not _preflight_codex_auth_or_print(settings):
+            return 1
         uvicorn.run(
             app=create_app(
                 default_model=settings.default_model,
@@ -982,6 +984,8 @@ def _main(argv: list[str] | None = None) -> int:
     paths = selection.paths
 
     if args.command == "start":
+        if not _preflight_codex_auth_or_print(settings):
+            return 1
         LOGGER.info(
             "daemon.start host=%s port=%s pid_file=%s log_file=%s command=%s",
             settings.host,
@@ -1036,6 +1040,26 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     raise AssertionError(f"Unhandled command: {args.command}")
+
+
+def _preflight_codex_auth_or_print(settings: ServerSettings) -> bool:
+    try:
+        _preflight_codex_auth(settings)
+    except BorrowKeyError as exc:
+        message = redact_sensitive_text(str(exc))
+        LOGGER.error("codex.auth.preflight.failed message=%s", message)
+        print(f"Codex auth preflight failed: {message}", file=sys.stderr)
+        return False
+    return True
+
+
+def _preflight_codex_auth(settings: ServerSettings) -> None:
+    _, account_id = borrow_codex_key(settings.auth_json)
+    LOGGER.info(
+        "codex.auth.preflight.ok auth_json=%s account_id_present=%s",
+        settings.auth_json,
+        bool(account_id),
+    )
 
 
 def _add_server_options(parser: argparse.ArgumentParser) -> None:

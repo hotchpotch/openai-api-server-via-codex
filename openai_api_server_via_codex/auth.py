@@ -144,7 +144,12 @@ def _account_id(tokens: dict[str, Any]) -> str | None:
 
 
 def _read_auth(path: Path) -> dict[str, Any]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise BorrowKeyError(f"Invalid Codex auth JSON at {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise BorrowKeyError(f"Expected Codex auth JSON object at {path}.")
     if data.get("auth_mode") != "chatgpt":
         raise BorrowKeyError(
             f"Expected Codex auth_mode 'chatgpt', got {data.get('auth_mode')!r}."

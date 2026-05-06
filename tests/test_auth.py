@@ -136,6 +136,34 @@ def test_borrow_codex_key_reads_account_id_from_access_token_openai_auth_claim(
     assert account_id == "acct_from_access_token"
 
 
+def test_borrow_codex_key_reports_invalid_json_as_borrow_key_error(
+    tmp_path: Path,
+) -> None:
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text("{not-json", encoding="utf-8")
+    auth.clear_codex_auth_cache()
+
+    with pytest.raises(auth.BorrowKeyError) as exc_info:
+        auth.borrow_codex_key(auth_json=auth_json)
+
+    message = str(exc_info.value)
+    assert "Invalid Codex auth JSON" in message
+    assert str(auth_json) in message
+
+
+def test_borrow_codex_key_reports_non_object_json_as_borrow_key_error(
+    tmp_path: Path,
+) -> None:
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text("[]", encoding="utf-8")
+    auth.clear_codex_auth_cache()
+
+    with pytest.raises(auth.BorrowKeyError) as exc_info:
+        auth.borrow_codex_key(auth_json=auth_json)
+
+    assert "Expected Codex auth JSON object" in str(exc_info.value)
+
+
 def test_borrow_codex_key_caches_until_auth_file_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

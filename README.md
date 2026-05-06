@@ -139,6 +139,11 @@ $ uvx openai-api-server-via-codex --auth-json ~/.codex/auth.json
 $ OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uvx openai-api-server-via-codex
 ```
 
+`serve` and `start` validate the Codex auth file before starting. If the file is
+missing, not valid JSON, not a ChatGPT Codex auth file, missing tokens, expired
+without a refresh token, or fails token refresh, the server exits before it
+binds the HTTP port.
+
 > [!NOTE]
 > The incoming OpenAI-compatible API key and the Codex auth file are separate.
 > `--api-key` protects this local server. `--auth-json` selects the Codex
