@@ -8,6 +8,7 @@ import time
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
+from urllib.parse import unquote
 
 import httpx
 from openai import APIError, APIStatusError, AsyncOpenAI
@@ -238,6 +239,7 @@ class CodexHttpBackend:
             self.base_url,
             self.timeout,
         )
+        url = _resolve_proxy_url(self.base_url, path, query)
         token, account_id = await self._borrow_key()
         upstream_headers = self._headers(
             account_id,
@@ -245,7 +247,6 @@ class CodexHttpBackend:
         )
         upstream_headers.update(headers)
         upstream_headers["Authorization"] = f"Bearer {token}"
-        url = _resolve_proxy_url(self.base_url, path, query)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.request(
@@ -326,9 +327,10 @@ class CodexHttpBackend:
 
 
 def _validate_proxy_path(path: str) -> str:
-    segments = [segment for segment in path.split("/") if segment and segment != "."]
-    if any(segment == ".." for segment in segments):
+    decoded = unquote(path)
+    if any(segment == ".." for segment in decoded.split("/")):
         raise CodexBackendError("Invalid proxy path.", status_code=400)
+    segments = [segment for segment in path.split("/") if segment and segment != "."]
     return "/".join(segments)
 
 

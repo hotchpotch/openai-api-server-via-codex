@@ -163,6 +163,55 @@ def test_resolve_proxy_url_rejects_dotdot_terminal_segment() -> None:
     assert excinfo.value.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        "%2e%2e/auth/me",
+        "x/%2e%2e/auth",
+        "%2E%2E/auth",
+        "x%2f..%2fy",
+        "x%2f%2e%2e%2fy",
+        "%2e./auth",
+        ".%2e/auth",
+    ],
+)
+def test_resolve_proxy_url_rejects_percent_encoded_traversal(encoded: str) -> None:
+    with pytest.raises(CodexBackendError) as excinfo:
+        _resolve_proxy_url(
+            "https://chatgpt.com/backend-api/codex",
+            encoded,
+            b"",
+        )
+
+    assert excinfo.value.status_code == 400
+
+
+def test_proxy_request_rejects_invalid_path_before_borrowing_codex_key(
+    monkeypatch,
+) -> None:
+    import asyncio
+
+    backend = CodexHttpBackend()
+
+    async def _should_not_borrow() -> tuple[str, str | None]:
+        raise AssertionError("_borrow_key must not run for invalid proxy paths")
+
+    monkeypatch.setattr(backend, "_borrow_key", _should_not_borrow)
+
+    with pytest.raises(CodexBackendError) as excinfo:
+        asyncio.run(
+            backend.proxy_request(
+                "GET",
+                "%2e%2e/auth/me",
+                query=b"",
+                headers={},
+                body=b"",
+            )
+        )
+
+    assert excinfo.value.status_code == 400
+
+
 def test_forward_proxy_response_headers_drops_hop_by_hop_and_cookie_headers() -> None:
     headers = {
         "content-type": "application/json",

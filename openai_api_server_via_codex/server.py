@@ -676,8 +676,21 @@ def create_app(
         request: Request, proxy_path: str
     ) -> Response | JSONResponse:
         backend = _get_backend(request)
-        body = await request.body()
         method = request.method.upper()
+        try:
+            _validate_proxy_path(proxy_path)
+        except CodexBackendError as exc:
+            message = redact_sensitive_text(str(exc))
+            _log_verbose(
+                request,
+                "proxy.request.rejected method=%s path=/v1/%s status=%s message=%s",
+                method,
+                proxy_path,
+                exc.status_code,
+                message,
+            )
+            return _openai_error(exc.status_code, message, error_type="api_error")
+        body = await request.body()
         headers = _forward_proxy_request_headers(request.headers)
         query = bytes(request.scope.get("query_string") or b"")
         _log_verbose(
@@ -689,17 +702,6 @@ def create_app(
             len(body),
             _backend_name(backend),
         )
-        try:
-            _validate_proxy_path(proxy_path)
-        except CodexBackendError as exc:
-            message = redact_sensitive_text(str(exc))
-            _log_verbose(
-                request,
-                "proxy.request.rejected status=%s message=%s",
-                exc.status_code,
-                message,
-            )
-            return _openai_error(exc.status_code, message, error_type="api_error")
         try:
             async with _backend_slot(request):
                 upstream = await backend.proxy_request(
