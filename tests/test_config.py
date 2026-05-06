@@ -35,6 +35,7 @@ def test_default_config_toml_documents_core_options() -> None:
     assert "[server]" in text
     assert "backend =" not in text
     assert 'host = "127.0.0.1"' in text
+    assert "port = 18080" in text
     assert "max_stored_items = 1000" in text
     assert "[daemon]" in text
     assert "state_dir" in text

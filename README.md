@@ -43,7 +43,7 @@ The TOML config mirrors the CLI options:
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8000
+port = 18080
 default_model = "gpt-5.4"
 timeout = 180.0
 verbose = false
@@ -66,9 +66,9 @@ Resolution order is CLI flag, environment variable, config file, then default.
 Run as a background server:
 
 ```bash
-uv run openai-api-server-via-codex start --host 127.0.0.1 --port 8000
-uv run openai-api-server-via-codex status --host 127.0.0.1 --port 8000
-uv run openai-api-server-via-codex stop --host 127.0.0.1 --port 8000
+uv run openai-api-server-via-codex start --host 127.0.0.1 --port 18080
+uv run openai-api-server-via-codex status --host 127.0.0.1 --port 18080
+uv run openai-api-server-via-codex stop --host 127.0.0.1 --port 18080
 ```
 
 `start` prints the PID file and log file paths. By default they live under the
@@ -83,7 +83,7 @@ config table. Foreground mode remains the default, so
 Codex HTTP backend:
 
 ```bash
-uv run openai-api-server-via-codex --port 8000
+uv run openai-api-server-via-codex --port 18080
 uv run openai-api-server-via-codex --verbose
 ```
 
@@ -119,7 +119,7 @@ Use with `openai-python`:
 ```python
 from openai import OpenAI
 
-client = OpenAI(api_key="local", base_url="http://127.0.0.1:8000/v1")
+client = OpenAI(api_key="local", base_url="http://127.0.0.1:18080/v1")
 
 response = client.responses.create(
     model="gpt-5.4",

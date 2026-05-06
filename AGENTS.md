@@ -54,7 +54,7 @@ Run the server locally:
 
 ```bash
 uv run openai-api-server-via-codex
-uv run openai-api-server-via-codex --port 8000
+uv run openai-api-server-via-codex --port 18080
 uv run openai-api-server-via-codex --verbose
 uv run openai-api-server-via-codex --config ~/.config/openai-api-server-via-codex/config.toml
 ```

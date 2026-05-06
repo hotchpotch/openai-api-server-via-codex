@@ -105,6 +105,15 @@ def test_server_settings_prefer_cli_over_env(
     assert settings.auth_json == cli_auth.resolve()
 
 
+def test_server_settings_use_18080_as_default_port(monkeypatch) -> None:
+    monkeypatch.delenv("OPENAI_VIA_CODEX_PORT", raising=False)
+    args = server.parse_args(["serve"])
+
+    settings = server.server_settings_from_args(args)
+
+    assert settings.port == 18080
+
+
 def test_server_settings_read_config_file(tmp_path: Path) -> None:
     auth_json = tmp_path / "auth.json"
     config_path = tmp_path / "config.toml"
