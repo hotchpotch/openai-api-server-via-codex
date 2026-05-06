@@ -5,7 +5,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from .backend import CODEX_BACKEND_HTTP, CODEX_BASE_URL
+from .backend import CODEX_BASE_URL
 from .compat import DEFAULT_MAX_STORED_ITEMS, DEFAULT_MODEL
 
 
@@ -49,7 +49,6 @@ def default_config_toml() -> str:
 # values in this file.
 
 [server]
-backend = "{CODEX_BACKEND_HTTP}"
 host = "{DEFAULT_HOST}"
 port = {DEFAULT_PORT}
 default_model = "{DEFAULT_MODEL}"
@@ -61,8 +60,6 @@ max_stored_items = {DEFAULT_MAX_STORED_ITEMS}
 auth_json = "~/.codex/auth.json"
 backend_base_url = "{CODEX_BASE_URL}"
 client_version = "{DEFAULT_CLIENT_VERSION}"
-codex_bin = "codex"
-# app_server_cwd = "/path/to/codex/workspace"
 
 [daemon]
 state_dir = {state_dir}

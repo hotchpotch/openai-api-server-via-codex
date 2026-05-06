@@ -42,7 +42,6 @@ The TOML config mirrors the CLI options:
 
 ```toml
 [server]
-backend = "codex-http"
 host = "127.0.0.1"
 port = 8000
 default_model = "gpt-5.4"
@@ -54,8 +53,6 @@ max_stored_items = 1000
 auth_json = "~/.codex/auth.json"
 backend_base_url = "https://chatgpt.com/backend-api/codex"
 client_version = "1.0.0"
-codex_bin = "codex"
-# app_server_cwd = "/path/to/codex/workspace"
 
 [daemon]
 state_dir = "~/.config/openai-api-server-via-codex/run"
@@ -83,14 +80,10 @@ Override with `--state-dir`, `--pid-file`, `--log-file`, or the matching
 config table. Foreground mode remains the default, so
 `uvx openai-api-server-via-codex` starts the server in the current terminal.
 
-Backend selection:
+Codex HTTP backend:
 
 ```bash
-# Default Codex HTTP backend
-uv run openai-api-server-via-codex --backend codex-http --port 8000
-
-# Experimental native Codex app-server backend
-uv run openai-api-server-via-codex --backend codex-app-server --port 8001
+uv run openai-api-server-via-codex --port 8000
 uv run openai-api-server-via-codex --verbose
 ```
 
@@ -98,42 +91,23 @@ uv run openai-api-server-via-codex --verbose
 debug-level uvicorn logging plus application diagnostics. The server logs the
 resolved config/settings, request start/end status and latency, endpoint-level
 summaries for Responses and Chat Completions, model listing fallback reasons,
-Codex HTTP stream events, and Codex app-server process, JSON-RPC, thread, turn,
-auth refresh, and dynamic-tool activity. Auth tokens are not logged; only auth
-file paths and whether a ChatGPT account id was present are reported.
+and Codex HTTP stream/auth activity. Auth tokens are not logged; only auth file
+paths and whether a ChatGPT account id was present are reported.
 
 When using `start`, pass `--verbose` or set it in config/env to preserve the
 same diagnostics in the background server log file printed by `start`.
 
 The in-memory compatibility stores are bounded by `max_stored_items`, default
-`1000`. This cap applies to stored Responses, stored Chat Completions, and
-`codex-app-server` response/thread bindings. Older entries are evicted first;
-set `--max-stored-items`, `OPENAI_VIA_CODEX_MAX_STORED_ITEMS`, or
-`[server].max_stored_items` to tune the limit. Setting it to `0` disables these
-in-memory stores, which also disables local `previous_response_id` chaining and
-stored-object retrieval.
+`1000`. This cap applies to stored Responses and stored Chat Completions. Older
+entries are evicted first; set `--max-stored-items`,
+`OPENAI_VIA_CODEX_MAX_STORED_ITEMS`, or `[server].max_stored_items` to tune the
+limit. Setting it to `0` disables these in-memory stores, which also disables
+local `previous_response_id` chaining and stored-object retrieval.
 
-The two backends intentionally map to the two Codex integration routes:
-
-- `codex-http` forwards OpenAI Responses-compatible payloads to the Codex HTTP
-  backend using the borrowed Codex OAuth token. This is the best route when you
-  want normal OpenAI function-calling semantics where the API returns
-  `function_call` / `tool_calls` and the client sends tool results in a later
-  request.
-- `codex-app-server` starts the native `codex app-server --listen stdio://`
-  runtime and speaks its JSON-RPC thread/turn protocol. OpenAI function tools
-  are exposed to Codex as app-server `dynamicTools`, and app-server dynamic tool
-  call notifications are projected back as Responses `function_call` items and
-  Chat Completions `tool_calls`.
-
-The app-server backend starts `codex app-server --listen stdio://`, logs in with
-the configured Codex `auth.json` tokens, and keeps native Codex threads in
-memory so `previous_response_id` can continue a thread without replaying the
-full local response context. Use `--codex-bin` or `OPENAI_VIA_CODEX_CODEX_BIN`
-to select a Codex binary, and `--app-server-cwd` or
-`OPENAI_VIA_CODEX_APP_SERVER_CWD` to set the Codex thread working directory.
-The default backend remains `codex-http`; select `codex-app-server`
-explicitly because the app-server protocol is still experimental.
+The server forwards OpenAI Responses-compatible payloads to the Codex HTTP
+backend using the borrowed Codex OAuth token. This route preserves normal
+OpenAI function-calling semantics where the API returns `function_call` /
+`tool_calls` and the client sends tool results in a later request.
 
 Use with `openai-python`:
 
@@ -190,17 +164,11 @@ Completions streaming converts Codex Responses events into
 finish reasons, and `stream_options={"include_usage": true}` usage chunks.
 
 Function calling is supported for both streaming and non-streaming Chat
-Completions on the `codex-http` route. For `codex-app-server`, function
-schemas are passed as Codex dynamic tools and dynamic tool calls are surfaced as
-OpenAI-compatible tool calls. Because native app-server dynamic tools are
-normally executed by the app-server client, the adapter returns a safe failed
-dynamic-tool result to Codex after surfacing the call to the OpenAI-compatible
-client; subsequent `function_call_output` inputs are bridged back as textual
-turn context.
+Completions.
 
 Live integration test:
 
 ```bash
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q
-RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_dual_backend_integration.py -q -s
+RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
 ```

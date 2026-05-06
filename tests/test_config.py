@@ -33,7 +33,7 @@ def test_default_config_toml_documents_core_options() -> None:
     text = config.default_config_toml()
 
     assert "[server]" in text
-    assert 'backend = "codex-http"' in text
+    assert "backend =" not in text
     assert 'host = "127.0.0.1"' in text
     assert "max_stored_items = 1000" in text
     assert "[daemon]" in text

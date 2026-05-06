@@ -40,22 +40,21 @@ requests:
 
 ```bash
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q -s
-RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_dual_backend_integration.py -q -s
+RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
 ```
 
-Run the broad dual-backend OpenAI client compatibility matrix by itself when
+Run the broad Codex HTTP OpenAI client compatibility matrix by itself when
 investigating API surface regressions:
 
 ```bash
-RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_dual_backend_integration.py::test_live_dual_backends_handle_openai_client_compatibility_matrix -q -s
+RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py::test_live_codex_http_handles_openai_client_compatibility_matrix -q -s
 ```
 
 Run the server locally:
 
 ```bash
 uv run openai-api-server-via-codex
-uv run openai-api-server-via-codex --backend codex-http --port 8000
-uv run openai-api-server-via-codex --backend codex-app-server --port 8001
+uv run openai-api-server-via-codex --port 8000
 uv run openai-api-server-via-codex --verbose
 uv run openai-api-server-via-codex --config ~/.config/openai-api-server-via-codex/config.toml
 ```
@@ -84,8 +83,9 @@ uv run openai-api-server-via-codex config-generate --stdout
   `client.responses.retrieve(..., stream=True)`,
   `client.responses.input_tokens.count`, `client.responses.delete`, and
   `client.responses.cancel` call shapes.
-- The default backend is `codex-http`. Keep `codex-app-server` explicitly
-  selectable because Codex app-server JSON-RPC is experimental.
+- The only backend is `codex-http`. The previous native Codex app-server
+  backend was removed because it was unstable; do not keep compatibility paths
+  for it unless it is deliberately reimplemented later.
 - Config is loaded from `--config`, `OPENAI_VIA_CODEX_CONFIG`, or the XDG path
   `$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml`, falling back to
   `~/.config/openai-api-server-via-codex/config.toml`. Setting precedence is
@@ -95,23 +95,14 @@ uv run openai-api-server-via-codex config-generate --stdout
   config-backed daemon paths.
 - In-memory compatibility stores are intentionally bounded. Keep
   `max_stored_items` defaulting to 1000 and apply it consistently to
-  `ResponseStore`, `ChatCompletionStore`, and `codex-app-server` response/thread
-  bindings. Evict oldest entries first; `0` means no in-memory storage.
+  `ResponseStore` and `ChatCompletionStore`. Evict oldest entries first; `0`
+  means no in-memory storage.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
   debug-level uvicorn logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit
   application diagnostics for resolved config/settings, request lifecycle,
-  endpoint summaries, model-list fallbacks, Codex HTTP stream/auth behavior, and
-  Codex app-server process, JSON-RPC, thread, turn, auth refresh, and dynamic
-  tool activity. Never log raw auth tokens.
-- Treat `codex-http` and `codex-app-server` as separate adapter contracts:
-  `codex-http` preserves normal Responses API function-calling semantics,
-  while `codex-app-server` maps OpenAI function schemas to Codex
-  `dynamicTools` and projects app-server dynamic tool notifications back into
-  OpenAI-compatible `function_call` / `tool_calls` items.
-- The native app-server backend owns Codex thread bindings internally, so the
-  FastAPI layer should forward `previous_response_id` to backends that declare
-  native session support instead of replaying local context into the request.
+  endpoint summaries, model-list fallbacks, and Codex HTTP stream/auth behavior.
+  Never log raw auth tokens.
 - For Chat Completions, translate Responses stream events into
   `chat.completion.chunk` events.
 - Prefer structured parsing and Pydantic/FastAPI/OpenAI SDK models over ad hoc
@@ -127,17 +118,15 @@ uv run openai-api-server-via-codex config-generate --stdout
 - Before committing behavior changes, run `uv run tox`.
 - For changes that affect real Codex request/response handling, also run the
   live integration test when credentials and network access are available.
-- For broad compatibility work, run the dual-backend live matrix against both
-  `codex-http` and `codex-app-server`. It covers Responses, Chat Completions,
-  streaming, stored Chat lifecycle, JSON mode, structured outputs, tool calling,
-  images, multi-turn context, long plain-text conversations, and sync/async
-  OpenAI clients.
+- For broad compatibility work, run the Codex HTTP live matrix. It covers
+  Responses, Chat Completions, streaming, stored Chat lifecycle, JSON mode,
+  structured outputs, tool calling, images, multi-turn context, long plain-text
+  conversations, and sync/async OpenAI clients.
 - After every live run, manually inspect the `-s` output. Confirm that marker
   strings are preserved, JSON/structured outputs parse to the expected objects,
   tool calls use the expected names and arguments, streaming event sequences end
   in completion events, stored Chat retrieve/list/messages/delete behavior is
-  coherent, and both backends produce semantically equivalent results even when
-  wording differs.
+  coherent, and outputs are semantically appropriate even when wording differs.
 - When a live test failure reveals a real backend difference, update the
   contract to match official `openai-python` behavior and add a deterministic
   fake-backend regression test before relying on the live test alone.

@@ -29,16 +29,9 @@ def test_parse_args_keeps_top_level_help(capsys) -> None:
     assert "config-generate" in output
 
 
-def test_server_settings_default_backend_is_codex_http() -> None:
-    args = server.parse_args(["serve"])
-    settings = server.server_settings_from_args(args)
-
-    assert settings.backend == "codex-http"
-
-
-def test_parse_args_rejects_removed_chatgpt_http_backend() -> None:
+def test_parse_args_rejects_removed_backend_option() -> None:
     with pytest.raises(SystemExit) as exc_info:
-        server.parse_args(["serve", "--backend", "chatgpt-http"])
+        server.parse_args(["serve", "--backend", "codex-http"])
 
     assert exc_info.value.code == 2
 
@@ -58,7 +51,7 @@ def test_config_generate_writes_template(tmp_path: Path, capsys) -> None:
     assert result == 0
     text = config_path.read_text(encoding="utf-8")
     assert "[server]" in text
-    assert 'backend = "codex-http"' in text
+    assert "backend =" not in text
     assert "Wrote config:" in capsys.readouterr().out
 
 
@@ -112,25 +105,12 @@ def test_server_settings_prefer_cli_over_env(
     assert settings.auth_json == cli_auth.resolve()
 
 
-def test_server_settings_select_app_server_backend(monkeypatch) -> None:
-    monkeypatch.setenv("OPENAI_VIA_CODEX_BACKEND", "codex-app-server")
-    monkeypatch.setenv("OPENAI_VIA_CODEX_CODEX_BIN", "/tmp/codex")
-
-    args = server.parse_args(["serve"])
-    settings = server.server_settings_from_args(args)
-
-    assert settings.backend == "codex-app-server"
-    assert settings.codex_bin == "/tmp/codex"
-
-
 def test_server_settings_read_config_file(tmp_path: Path) -> None:
     auth_json = tmp_path / "auth.json"
-    app_cwd = tmp_path / "app-server-cwd"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f"""
 [server]
-backend = "codex-app-server"
 host = "127.0.0.9"
 port = 9009
 default_model = "gpt-5.4-mini"
@@ -142,8 +122,6 @@ max_stored_items = 123
 auth_json = "{auth_json}"
 backend_base_url = "https://example.test/codex"
 client_version = "2.0.0"
-codex_bin = "/tmp/codex-bin"
-app_server_cwd = "{app_cwd}"
 """,
         encoding="utf-8",
     )
@@ -152,7 +130,6 @@ app_server_cwd = "{app_cwd}"
     loaded_config = server.load_config_for_args(args)
     settings = server.server_settings_from_args(args, loaded_config)
 
-    assert settings.backend == "codex-app-server"
     assert settings.host == "127.0.0.9"
     assert settings.port == 9009
     assert settings.default_model == "gpt-5.4-mini"
@@ -162,8 +139,6 @@ app_server_cwd = "{app_cwd}"
     assert settings.auth_json == auth_json.resolve()
     assert settings.backend_base_url == "https://example.test/codex"
     assert settings.client_version == "2.0.0"
-    assert settings.codex_bin == "/tmp/codex-bin"
-    assert settings.app_server_cwd == app_cwd.resolve()
 
 
 def test_server_settings_precedence_is_cli_then_env_then_config(
@@ -255,10 +230,6 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
             "12.5",
             "--max-stored-items",
             "222",
-            "--backend",
-            "codex-app-server",
-            "--codex-bin",
-            "/tmp/codex-bin",
         ]
     )
     settings = server.server_settings_from_args(args)
@@ -279,10 +250,6 @@ def test_serve_command_uses_current_python_module_and_selected_settings(
     assert "12.5" in command
     assert "--max-stored-items" in command
     assert "222" in command
-    assert "--backend" in command
-    assert "codex-app-server" in command
-    assert "--codex-bin" in command
-    assert "/tmp/codex-bin" in command
 
 
 def test_serve_command_includes_verbose_flag_when_enabled(monkeypatch) -> None:

@@ -20,16 +20,8 @@ from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
-from .app_server import (
-    CODEX_APP_SERVER_CWD_ENV,
-    CODEX_BACKEND_APP_SERVER,
-    CODEX_BIN_ENV,
-    CodexAppServerBackend,
-    CodexAppServerConfig,
-)
 from .auth import AUTH_JSON_ENV, CodexAuthConfig
 from .backend import (
-    CODEX_BACKEND_HTTP,
     CODEX_BASE_URL,
     CodexBackend,
     CodexBackendError,
@@ -74,7 +66,6 @@ class OpenAICompatRequest(BaseModel):
 
 @dataclass(frozen=True)
 class ServerSettings:
-    backend: str
     host: str
     port: int
     backend_base_url: str
@@ -83,8 +74,6 @@ class ServerSettings:
     default_model: str
     max_stored_items: int
     verbose: bool = False
-    codex_bin: str | None = None
-    app_server_cwd: Path | None = None
     auth_json: Path | None = None
 
 
@@ -101,13 +90,10 @@ def create_app(
     *,
     backend: CodexBackend | None = None,
     default_model: str | None = None,
-    backend_name: str | None = None,
     auth_json: str | Path | None = None,
     backend_base_url: str | None = None,
     client_version: str | None = None,
     timeout: float | None = None,
-    codex_bin: str | None = None,
-    app_server_cwd: str | Path | None = None,
     verbose: bool = False,
     max_stored_items: int | None = None,
 ) -> FastAPI:
@@ -120,9 +106,6 @@ def create_app(
 
     app = FastAPI(title="OpenAI API Server via Codex", lifespan=lifespan)
     app.state.verbose = verbose
-    selected_backend = backend_name or os.environ.get(
-        "OPENAI_VIA_CODEX_BACKEND", CODEX_BACKEND_HTTP
-    )
     selected_timeout = (
         timeout
         if timeout is not None
@@ -137,16 +120,12 @@ def create_app(
         auth_json=_resolve_optional_path(auth_json or os.environ.get(AUTH_JSON_ENV))
     )
     app.state.backend = backend or _build_backend(
-        backend=selected_backend,
         backend_base_url=backend_base_url
         or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
         client_version=client_version
         or os.environ.get("OPENAI_VIA_CODEX_CLIENT_VERSION", "1.0.0"),
         timeout=selected_timeout,
         auth_config=selected_auth_config,
-        codex_bin=codex_bin or os.environ.get(CODEX_BIN_ENV),
-        app_server_cwd=app_server_cwd or os.environ.get(CODEX_APP_SERVER_CWD_ENV),
-        max_stored_items=selected_max_stored_items,
     )
     app.state.max_stored_items = selected_max_stored_items
     app.state.response_store = ResponseStore(max_entries=selected_max_stored_items)
@@ -159,17 +138,14 @@ def create_app(
     _install_verbose_request_logging(app)
     if verbose:
         LOGGER.info(
-            "server.create_app backend=%s default_model=%s timeout=%s max_stored_items=%s auth_json=%s "
-            "backend_base_url=%s codex_bin=%s app_server_cwd=%s",
-            selected_backend,
+            "server.create_app backend=codex-http default_model=%s timeout=%s max_stored_items=%s auth_json=%s "
+            "backend_base_url=%s",
             app.state.default_model,
             selected_timeout,
             selected_max_stored_items,
             selected_auth_config.auth_json,
             backend_base_url
             or os.environ.get("OPENAI_VIA_CODEX_BACKEND_BASE_URL", CODEX_BASE_URL),
-            codex_bin or os.environ.get(CODEX_BIN_ENV),
-            app_server_cwd or os.environ.get(CODEX_APP_SERVER_CWD_ENV),
         )
 
     @app.get("/healthz")
@@ -206,21 +182,19 @@ def create_app(
         )
         store = _get_response_store(request)
         backend = _get_backend(request)
-        native_sessions = _backend_supports_native_sessions(backend)
         previous_response_id = prepared.get("previous_response_id")
         _log_verbose(
             request,
             "responses.create model=%s stream=%s input_items=%d "
-            "previous_response_id=%s tools=%d backend=%s native_sessions=%s",
+            "previous_response_id=%s tools=%d backend=%s",
             prepared.get("model"),
             bool(payload.get("stream")),
             len(prepared.get("input") or []),
             bool(previous_response_id),
             len(prepared.get("tools") or []),
             _backend_name(backend),
-            native_sessions,
         )
-        if previous_response_id and not native_sessions:
+        if previous_response_id:
             stored = store.get(str(previous_response_id))
             if stored is None:
                 return _openai_error(
@@ -232,9 +206,7 @@ def create_app(
 
         if payload.get("stream"):
             backend_payload = {
-                key: value
-                for key, value in prepared.items()
-                if native_sessions or key != "previous_response_id"
+                key: value for key, value in prepared.items() if key != "previous_response_id"
             }
             return _sse_response(
                 _responses_event_stream(
@@ -247,9 +219,7 @@ def create_app(
             )
 
         backend_payload = {
-            key: value
-            for key, value in prepared.items()
-            if native_sessions or key != "previous_response_id"
+            key: value for key, value in prepared.items() if key != "previous_response_id"
         }
         try:
             response = await backend.create_response(backend_payload)
@@ -294,9 +264,7 @@ def create_app(
             len(prepared.get("tools") or []),
         )
         previous_response_id = prepared.get("previous_response_id")
-        if previous_response_id and not _backend_supports_native_sessions(
-            _get_backend(request)
-        ):
+        if previous_response_id:
             stored = _get_response_store(request).get(str(previous_response_id))
             if stored is None:
                 return _openai_error(
@@ -625,29 +593,11 @@ def create_app(
 
 def _build_backend(
     *,
-    backend: str,
     backend_base_url: str,
     client_version: str,
     timeout: float,
     auth_config: CodexAuthConfig,
-    codex_bin: str | None,
-    app_server_cwd: str | Path | None,
-    max_stored_items: int,
 ) -> CodexBackend:
-    if backend == CODEX_BACKEND_APP_SERVER:
-        return CodexAppServerBackend(
-            config=CodexAppServerConfig(
-                codex_bin=codex_bin or "codex",
-                cwd=_resolve_optional_path(app_server_cwd),
-                timeout=timeout,
-                auth_config=auth_config,
-                max_thread_bindings=max_stored_items,
-            )
-        )
-    if backend != CODEX_BACKEND_HTTP:
-        raise ValueError(
-            "OPENAI_VIA_CODEX_BACKEND must be 'codex-http' or 'codex-app-server'."
-        )
     return CodexHttpBackend(
         base_url=backend_base_url,
         client_version=client_version,
@@ -663,19 +613,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="openai-api-server-via-codex",
         description="OpenAI-compatible API server backed by Codex credentials.",
+        allow_abbrev=False,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    serve = subparsers.add_parser("serve", help="run the server in the foreground")
+    serve = subparsers.add_parser(
+        "serve", help="run the server in the foreground", allow_abbrev=False
+    )
     _add_config_option(serve)
     _add_server_options(serve)
 
-    start = subparsers.add_parser("start", help="run the server in the background")
+    start = subparsers.add_parser(
+        "start", help="run the server in the background", allow_abbrev=False
+    )
     _add_config_option(start)
     _add_server_options(start)
     _add_daemon_options(start)
 
-    stop = subparsers.add_parser("stop", help="stop the background server")
+    stop = subparsers.add_parser(
+        "stop", help="stop the background server", allow_abbrev=False
+    )
     _add_config_option(stop)
     _add_daemon_selector_options(stop)
     stop.add_argument(
@@ -685,12 +642,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="seconds to wait after SIGTERM before SIGKILL",
     )
 
-    status = subparsers.add_parser("status", help="show background server status")
+    status = subparsers.add_parser(
+        "status", help="show background server status", allow_abbrev=False
+    )
     _add_config_option(status)
     _add_daemon_selector_options(status)
 
     config_generate = subparsers.add_parser(
-        "config-generate", help="write a default TOML configuration"
+        "config-generate",
+        help="write a default TOML configuration",
+        allow_abbrev=False,
     )
     config_generate.add_argument("--config", help="config file path")
     config_generate.add_argument(
@@ -712,15 +673,6 @@ def server_settings_from_args(
 ) -> ServerSettings:
     config_data = loaded_config or {}
     return ServerSettings(
-        backend=_arg_env_config_str(
-            args,
-            "backend",
-            "OPENAI_VIA_CODEX_BACKEND",
-            config_data,
-            "server",
-            "backend",
-            CODEX_BACKEND_HTTP,
-        ),
         host=_arg_env_config_str(
             args,
             "host",
@@ -793,19 +745,6 @@ def server_settings_from_args(
             "max_stored_items",
             config_module.DEFAULT_MAX_STORED_ITEMS,
         ),
-        codex_bin=_arg_env_config_optional_str(
-            args, "codex_bin", CODEX_BIN_ENV, config_data, "codex", "codex_bin"
-        ),
-        app_server_cwd=_resolve_optional_path(
-            _arg_env_config_optional_str(
-                args,
-                "app_server_cwd",
-                CODEX_APP_SERVER_CWD_ENV,
-                config_data,
-                "codex",
-                "app_server_cwd",
-            )
-        ),
         auth_json=_resolve_optional_path(
             _arg_env_config_optional_str(
                 args, "auth_json", AUTH_JSON_ENV, config_data, "codex", "auth_json"
@@ -855,8 +794,6 @@ def serve_command(settings: ServerSettings) -> list[str]:
         "-m",
         "openai_api_server_via_codex.server",
         "serve",
-        "--backend",
-        settings.backend,
         "--host",
         settings.host,
         "--port",
@@ -872,10 +809,6 @@ def serve_command(settings: ServerSettings) -> list[str]:
         "--default-model",
         settings.default_model,
     ]
-    if settings.codex_bin is not None:
-        command.extend(["--codex-bin", settings.codex_bin])
-    if settings.app_server_cwd is not None:
-        command.extend(["--app-server-cwd", str(settings.app_server_cwd)])
     if settings.auth_json is not None:
         command.extend(["--auth-json", str(settings.auth_json)])
     if settings.verbose:
@@ -917,13 +850,10 @@ def _main(argv: list[str] | None = None) -> int:
         uvicorn.run(
             app=create_app(
                 default_model=settings.default_model,
-                backend_name=settings.backend,
                 auth_json=settings.auth_json,
                 backend_base_url=settings.backend_base_url,
                 client_version=settings.client_version,
                 timeout=settings.timeout,
-                codex_bin=settings.codex_bin,
-                app_server_cwd=settings.app_server_cwd,
                 verbose=settings.verbose,
                 max_stored_items=settings.max_stored_items,
             ),
@@ -997,11 +927,6 @@ def _main(argv: list[str] | None = None) -> int:
 
 
 def _add_server_options(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--backend",
-        choices=(CODEX_BACKEND_HTTP, CODEX_BACKEND_APP_SERVER),
-        help="backend implementation",
-    )
     parser.add_argument("--host", help="server host")
     parser.add_argument("--port", type=int, help="server port")
     parser.add_argument("--auth-json", help="path to Codex auth.json")
@@ -1011,7 +936,7 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--max-stored-items",
         type=_non_negative_int_arg,
-        help="maximum in-memory responses, chat completions, and app-server bindings",
+        help="maximum in-memory responses and chat completions",
     )
     parser.add_argument("--default-model", help="default model when request omits model")
     parser.add_argument(
@@ -1020,12 +945,6 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="enable verbose server logs",
     )
-    parser.add_argument("--codex-bin", help="codex binary used by app-server backend")
-    parser.add_argument(
-        "--app-server-cwd",
-        help="working directory used by the Codex app-server backend",
-    )
-
 
 def _add_config_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", help="path to config.toml")
@@ -1249,10 +1168,9 @@ def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
         config_path.exists(),
     )
     LOGGER.info(
-        "settings.resolved backend=%s host=%s port=%s default_model=%s timeout=%s max_stored_items=%s "
-        "auth_json=%s backend_base_url=%s client_version=%s codex_bin=%s "
-        "app_server_cwd=%s verbose=%s",
-        settings.backend,
+        "settings.resolved backend=codex-http host=%s port=%s default_model=%s "
+        "timeout=%s max_stored_items=%s auth_json=%s backend_base_url=%s "
+        "client_version=%s verbose=%s",
         settings.host,
         settings.port,
         settings.default_model,
@@ -1261,8 +1179,6 @@ def _log_settings(settings: ServerSettings, *, config_path: Path) -> None:
         settings.auth_json,
         settings.backend_base_url,
         settings.client_version,
-        settings.codex_bin,
-        settings.app_server_cwd,
         settings.verbose,
     )
 
@@ -1320,10 +1236,6 @@ def _get_response_store(request: Request) -> ResponseStore:
 
 def _get_chat_completion_store(request: Request) -> ChatCompletionStore:
     return request.app.state.chat_completion_store
-
-
-def _backend_supports_native_sessions(backend: CodexBackend) -> bool:
-    return bool(getattr(backend, "supports_native_sessions", False))
 
 
 def _positive_int(value: Any) -> int | None:

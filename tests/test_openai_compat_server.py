@@ -265,10 +265,6 @@ class MixedTextToolCallResponseBackend(RecordingBackend):
         }
 
 
-class NativeSessionRecordingBackend(RecordingBackend):
-    supports_native_sessions = True
-
-
 def _flatten_input_text(input_value: Any) -> str:
     if isinstance(input_value, str):
         return input_value
@@ -696,37 +692,6 @@ async def test_responses_retrieve_unknown_id_returns_openai_error(
         await client.responses.retrieve("resp_missing")
 
     assert getattr(exc_info.value, "status_code", None) == 404
-
-
-@pytest.mark.asyncio
-async def test_responses_previous_response_id_is_forwarded_to_native_session_backend():
-    backend = NativeSessionRecordingBackend()
-    app = create_app(backend=backend)
-    http_client = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://testserver",
-    )
-    client = AsyncOpenAI(
-        api_key="test",
-        base_url="http://testserver/v1",
-        http_client=http_client,
-    )
-
-    try:
-        first = await client.responses.create(model="gpt-5.4", input="My name is Ada.")
-        second = await client.responses.create(
-            model="gpt-5.4",
-            input="What name did I give?",
-            previous_response_id=first.id,
-        )
-    finally:
-        await http_client.aclose()
-
-    assert second.previous_response_id == first.id
-    assert backend.requests[1]["previous_response_id"] == first.id
-    assert backend.requests[1]["input"] == [
-        {"role": "user", "content": "What name did I give?"}
-    ]
 
 
 @pytest.mark.asyncio

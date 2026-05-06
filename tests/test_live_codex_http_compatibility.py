@@ -6,7 +6,6 @@ import os
 import socket
 import subprocess
 import sys
-from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import httpx
@@ -28,281 +27,243 @@ LIVE_LONG_TEST_MODEL = "gpt-5.4-mini"
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
-    reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
+    reason="Set RUN_CODEX_LIVE_TESTS=1 to call the real Codex HTTP backend.",
 )
-async def test_live_http_and_app_server_backends_support_same_openai_calls() -> None:
-    http_server = await _start_server("codex-http")
-    app_server = await _start_server("codex-app-server")
+async def test_live_codex_http_supports_openai_calls() -> None:
+    server = await _start_server()
     try:
-        http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
-        app_client = AsyncOpenAI(api_key="test", base_url=f"{app_server.base_url}/v1")
+        client = AsyncOpenAI(api_key="test", base_url=f"{server.base_url}/v1")
         try:
-            http_models = await http_client.models.list()
-            app_models = await app_client.models.list()
-            model = _select_model(
-                [model.id for model in http_models.data],
-                [model.id for model in app_models.data],
+            models = await client.models.list()
+            model = _select_model([model.id for model in models.data])
+
+            first = await client.responses.create(
+                model=model,
+                input="Reply with exactly: codex-http-ok",
+                reasoning={"effort": "low"},
             )
+            assert first.output_text.strip()
 
-            async for client in _clients(http_client, app_client):
-                first = await client.responses.create(
-                    model=model,
-                    input="Reply with exactly: dual-backend-ok",
-                    reasoning={"effort": "low"},
-                )
-                assert first.output_text.strip()
+            followup = await client.responses.create(
+                model=model,
+                input="What exact token did you just output?",
+                previous_response_id=first.id,
+                reasoning={"effort": "low"},
+            )
+            assert followup.output_text.strip()
 
-                followup = await client.responses.create(
-                    model=model,
-                    input="What exact token did you just output?",
-                    previous_response_id=first.id,
-                    reasoning={"effort": "low"},
-                )
-                assert followup.output_text.strip()
+            response_stream = await client.responses.create(
+                model=model,
+                input="Stream a short reply with the token: codex-http-stream-ok",
+                stream=True,
+                reasoning={"effort": "low"},
+            )
+            response_stream_text: list[str] = []
+            async for event in response_stream:
+                if event.type == "response.output_text.delta":
+                    response_stream_text.append(str(getattr(event, "delta")))
+            assert "".join(response_stream_text).strip()
 
-                response_stream = await client.responses.create(
-                    model=model,
-                    input="Stream a short reply with the token: dual-stream-ok",
-                    stream=True,
-                    reasoning={"effort": "low"},
-                )
-                response_stream_text: list[str] = []
-                async for event in response_stream:
-                    if event.type == "response.output_text.delta":
-                        response_stream_text.append(str(getattr(event, "delta")))
-                assert "".join(response_stream_text).strip()
+            chat = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": "Answer with concise text only."},
+                    {"role": "user", "content": "Reply with exactly: codex-http-chat-ok"},
+                ],
+                reasoning_effort="low",
+            )
+            assert chat.choices[0].message.content
 
-                chat = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": "Answer with concise text only."},
-                        {"role": "user", "content": "Reply with exactly: dual-chat-ok"},
-                    ],
-                    reasoning_effort="low",
-                )
-                assert chat.choices[0].message.content
-
-                image_chat = await client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": "Look at this image and answer with one short sentence.",
+            image_chat = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Look at this image and answer with one short "
+                                    "sentence."
+                                ),
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": ONE_PIXEL_PNG_DATA_URL,
+                                    "detail": "low",
                                 },
-                                {
-                                    "type": "image_url",
-                                    "image_url": {
-                                        "url": ONE_PIXEL_PNG_DATA_URL,
-                                        "detail": "low",
-                                    },
-                                },
-                            ],
-                        }
-                    ],
-                    reasoning_effort="low",
-                )
-                assert image_chat.choices[0].message.content
-        finally:
-            await http_client.close()
-            await app_client.close()
-    finally:
-        await http_server.stop()
-        await app_server.stop()
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(
-    os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
-    reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
-)
-async def test_live_dual_backends_handle_images_multi_turn_and_reasoning() -> None:
-    http_server = await _start_server("codex-http")
-    app_server = await _start_server("codex-app-server")
-    try:
-        http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
-        app_client = AsyncOpenAI(api_key="test", base_url=f"{app_server.base_url}/v1")
-        try:
-            http_models = await http_client.models.list()
-            app_models = await app_client.models.list()
-            model = _select_model(
-                [model.id for model in http_models.data],
-                [model.id for model in app_models.data],
+                            },
+                        ],
+                    }
+                ],
+                reasoning_effort="low",
             )
-
-            async for backend_name, client in _named_clients(http_client, app_client):
-                await _assert_responses_multi_turn_with_reasoning(
-                    client, model, backend_name
-                )
-                await _assert_chat_multi_turn_with_reasoning(
-                    client, model, backend_name
-                )
-                await _assert_image_inputs(client, model, backend_name)
+            assert image_chat.choices[0].message.content
         finally:
-            await http_client.close()
-            await app_client.close()
+            await client.close()
     finally:
-        await http_server.stop()
-        await app_server.stop()
+        await server.stop()
 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
-    reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
+    reason="Set RUN_CODEX_LIVE_TESTS=1 to call the real Codex HTTP backend.",
 )
-async def test_live_dual_backends_handle_long_multi_turn_tool_and_text_flows() -> None:
-    http_server = await _start_server("codex-http")
-    app_server = await _start_server("codex-app-server")
+async def test_live_codex_http_handles_images_multi_turn_and_reasoning() -> None:
+    server = await _start_server()
     try:
-        http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
-        app_client = AsyncOpenAI(api_key="test", base_url=f"{app_server.base_url}/v1")
+        client = AsyncOpenAI(api_key="test", base_url=f"{server.base_url}/v1")
         try:
-            await _assert_model_list_contains(
-                http_client,
-                app_client,
+            models = await client.models.list()
+            model = _select_model([model.id for model in models.data])
+            backend_name = "codex-http"
+
+            await _assert_responses_multi_turn_with_reasoning(
+                client, model, backend_name
+            )
+            await _assert_chat_multi_turn_with_reasoning(client, model, backend_name)
+            await _assert_image_inputs(client, model, backend_name)
+        finally:
+            await client.close()
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
+    reason="Set RUN_CODEX_LIVE_TESTS=1 to call the real Codex HTTP backend.",
+)
+async def test_live_codex_http_handles_long_multi_turn_tool_and_text_flows() -> None:
+    server = await _start_server()
+    try:
+        client = AsyncOpenAI(api_key="test", base_url=f"{server.base_url}/v1")
+        try:
+            await _assert_model_list_contains(client, LIVE_LONG_TEST_MODEL)
+            backend_name = "codex-http"
+
+            await _assert_responses_multi_turn_tool_calling(
+                client,
                 LIVE_LONG_TEST_MODEL,
+                backend_name,
             )
-
-            async for backend_name, client in _named_clients(http_client, app_client):
-                await _assert_responses_multi_turn_tool_calling(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_multi_turn_tool_calling(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_long_plain_text_responses_conversation(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
+            await _assert_chat_multi_turn_tool_calling(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_long_plain_text_responses_conversation(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
         finally:
-            await http_client.close()
-            await app_client.close()
+            await client.close()
     finally:
-        await http_server.stop()
-        await app_server.stop()
+        await server.stop()
 
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
-    reason="Set RUN_CODEX_LIVE_TESTS=1 to call real Codex backends.",
+    reason="Set RUN_CODEX_LIVE_TESTS=1 to call the real Codex HTTP backend.",
 )
-async def test_live_dual_backends_handle_openai_client_compatibility_matrix() -> None:
-    http_server = await _start_server("codex-http")
-    app_server = await _start_server("codex-app-server")
+async def test_live_codex_http_handles_openai_client_compatibility_matrix() -> None:
+    server = await _start_server()
     try:
-        http_client = AsyncOpenAI(api_key="test", base_url=f"{http_server.base_url}/v1")
-        app_client = AsyncOpenAI(api_key="test", base_url=f"{app_server.base_url}/v1")
+        client = AsyncOpenAI(api_key="test", base_url=f"{server.base_url}/v1")
         try:
-            await _assert_model_list_contains(
-                http_client,
-                app_client,
-                LIVE_LONG_TEST_MODEL,
-            )
+            await _assert_model_list_contains(client, LIVE_LONG_TEST_MODEL)
+            backend_name = "codex-http"
 
-            async for backend_name, client in _named_clients(http_client, app_client):
-                await _assert_responses_retrieve_and_input_items(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_responses_auxiliary_sdk_methods(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_responses_manual_context_without_previous_response_id(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_responses_json_object_format(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_responses_structured_outputs(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_multiple_choices(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_stored_completion_lifecycle(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_json_object_format(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_structured_outputs(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_tool_choice_none_text_only(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_legacy_functions(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_stream_multiple_choices(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_stream_include_usage(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_responses_streaming_tool_call(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
-                await _assert_chat_streaming_tool_call(
-                    client,
-                    LIVE_LONG_TEST_MODEL,
-                    backend_name,
-                )
+            await _assert_responses_retrieve_and_input_items(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_responses_auxiliary_sdk_methods(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_responses_manual_context_without_previous_response_id(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_responses_json_object_format(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_responses_structured_outputs(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_multiple_choices(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_stored_completion_lifecycle(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_json_object_format(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_structured_outputs(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_tool_choice_none_text_only(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_legacy_functions(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_stream_multiple_choices(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_stream_include_usage(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_responses_streaming_tool_call(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_streaming_tool_call(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
 
             await asyncio.to_thread(
                 _assert_sync_client_smoke,
-                http_server.base_url,
+                server.base_url,
                 LIVE_LONG_TEST_MODEL,
-                "codex-http",
-            )
-            await asyncio.to_thread(
-                _assert_sync_client_smoke,
-                app_server.base_url,
-                LIVE_LONG_TEST_MODEL,
-                "codex-app-server",
+                backend_name,
             )
         finally:
-            await http_client.close()
-            await app_client.close()
+            await client.close()
     finally:
-        await http_server.stop()
-        await app_server.stop()
+        await server.stop()
 
 
 class _RunningServer:
@@ -319,7 +280,7 @@ class _RunningServer:
             self.process.wait(timeout=10)
 
 
-async def _start_server(backend: str) -> _RunningServer:
+async def _start_server() -> _RunningServer:
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
     env = os.environ.copy()
@@ -329,8 +290,6 @@ async def _start_server(backend: str) -> _RunningServer:
             "-m",
             "openai_api_server_via_codex.server",
             "serve",
-            "--backend",
-            backend,
             "--host",
             "127.0.0.1",
             "--port",
@@ -348,20 +307,6 @@ async def _start_server(backend: str) -> _RunningServer:
         await server.stop()
         raise
     return server
-
-
-async def _clients(
-    http_client: AsyncOpenAI, app_client: AsyncOpenAI
-) -> AsyncIterator[AsyncOpenAI]:
-    yield http_client
-    yield app_client
-
-
-async def _named_clients(
-    http_client: AsyncOpenAI, app_client: AsyncOpenAI
-) -> AsyncIterator[tuple[str, AsyncOpenAI]]:
-    yield "codex-http", http_client
-    yield "codex-app-server", app_client
 
 
 async def _assert_responses_multi_turn_with_reasoning(
@@ -1638,20 +1583,12 @@ def _assert_sync_client_smoke(
         client.close()
 
 
-async def _assert_model_list_contains(
-    http_client: AsyncOpenAI, app_client: AsyncOpenAI, model: str
-) -> None:
-    http_models = await http_client.models.list()
-    app_models = await app_client.models.list()
-    assert model in [item.id for item in http_models.data], (
+async def _assert_model_list_contains(client: AsyncOpenAI, model: str) -> None:
+    models = await client.models.list()
+    assert model in [item.id for item in models.data], (
         "codex-http",
         model,
-        [item.id for item in http_models.data],
-    )
-    assert model in [item.id for item in app_models.data], (
-        "codex-app-server",
-        model,
-        [item.id for item in app_models.data],
+        [item.id for item in models.data],
     )
 
 
@@ -1789,15 +1726,14 @@ def _mentions_red(text: str) -> bool:
     return "RED" in normalized or "赤" in text
 
 
-def _select_model(http_models: list[str], app_models: list[str]) -> str:
+def _select_model(models: list[str]) -> str:
     requested = os.environ.get("OPENAI_VIA_CODEX_TEST_MODEL")
     if requested:
         return requested
     for preferred in ("gpt-5.4-mini", "gpt-5.4", "gpt-5.5"):
-        if preferred in http_models and preferred in app_models:
+        if preferred in models:
             return preferred
-    common = [model for model in http_models if model in app_models]
-    return common[0] if common else (http_models[0] if http_models else "gpt-5.4")
+    return models[0] if models else "gpt-5.4"
 
 
 def _free_port() -> int:
