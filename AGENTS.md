@@ -114,6 +114,10 @@ uv run openai-api-server-via-codex config-generate --stdout
 - Codex backend timeout defaults to 300 seconds. Keep CLI/env/config/default
   fallback paths, config templates, README examples, and tests aligned when
   changing that value.
+- README examples should use the current preferred documented model. Keep the
+  examples on `gpt-5.5` unless there is a deliberate model guidance change.
+  Do not confuse README example models with the server's compatibility default;
+  changing `DEFAULT_MODEL` requires tests and config-template updates.
 - Incoming API key authentication is optional and disabled by default. When
   `--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` is configured,
   require `Authorization: Bearer <api_key>` for `/v1/...` routes only; keep

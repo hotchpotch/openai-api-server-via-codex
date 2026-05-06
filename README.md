@@ -27,7 +27,7 @@ from openai import OpenAI
 client = OpenAI(api_key="local", base_url="http://127.0.0.1:18080/v1")
 
 response = client.responses.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     input="Reply in one sentence.",
     reasoning={"effort": "low"},
 )
@@ -38,7 +38,7 @@ Use Chat Completions:
 
 ```python
 chat = client.chat.completions.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     messages=[{"role": "user", "content": "Hello"}],
     reasoning_effort="low",
 )
@@ -49,7 +49,7 @@ Stream a response:
 
 ```python
 stream = client.responses.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     input="Stream a short reply.",
     stream=True,
     reasoning={"effort": "low"},
@@ -103,6 +103,25 @@ $ OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uv run openai-api-server-via-cod
 > `--api-key` protects this local server. `--auth-json` selects the Codex
 > credentials used by the server when it calls the Codex backend.
 
+## Disclaimer
+
+Use this project at your own risk. It is not the official OpenAI Platform API
+and is not endorsed or supported by OpenAI. It forwards requests to the Codex
+HTTP backend used by the Codex CLI and ChatGPT subscription flow instead of
+`api.openai.com`.
+
+For reference, Simon Willison describes this route as a
+[semi-official OpenAI Codex backdoor API](https://simonwillison.net/2026/Apr/23/gpt-5-5/).
+That matches this project's practical model: it uses the ChatGPT/Codex backend
+available through your own logged-in Codex credentials, and that backend may
+change without notice.
+
+Use this server only with accounts and subscriptions you are allowed to use. Do
+not expose it to untrusted networks without `--api-key` or another access
+control layer, and follow OpenAI's
+[Terms of Use](https://openai.com/policies/terms-of-use/) and
+[Usage Policies](https://openai.com/policies/usage-policies/).
+
 ## Endpoints
 
 - `GET /healthz`
@@ -143,6 +162,14 @@ Responses calls with `store=false`, low text verbosity by default, automatic
 tool choice defaults, and `reasoning.encrypted_content` included for reasoning
 context. Public `store=true` behavior is implemented locally.
 
+> [!NOTE]
+> Model listing is best-effort because the upstream Codex HTTP model catalog can
+> differ from the models that a subscription can actually run. As of
+> 2026-05-06, with a ChatGPT Pro subscription, `gpt-5.3-codex-spark` did not
+> appear in `GET /v1/models` in our live test, but direct requests using
+> `model="gpt-5.3-codex-spark"` succeeded. OpenAI also describes
+> GPT-5.3-Codex-Spark as a research preview for ChatGPT Pro users.
+
 ## Configuration
 
 Generate a default config file:
@@ -179,7 +206,7 @@ Example config:
 [server]
 host = "127.0.0.1"
 port = 18080
-default_model = "gpt-5.4"
+default_model = "gpt-5.5"
 timeout = 300.0
 verbose = false
 max_stored_items = 1000
@@ -348,7 +375,7 @@ $ uv run openai-api-server-via-codex --config ./config.toml
 
 ```python
 stream = client.chat.completions.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     messages=[{"role": "user", "content": "Stream a short reply."}],
     stream=True,
     reasoning_effort="low",
@@ -363,7 +390,7 @@ for chunk in stream:
 
 ```python
 response = client.responses.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     input=[
         {
             "role": "user",
@@ -383,7 +410,7 @@ response = client.responses.create(
 
 ```python
 response = client.chat.completions.create(
-    model="gpt-5.4",
+    model="gpt-5.5",
     messages=[{"role": "user", "content": "What is the weather in Tokyo?"}],
     tools=[
         {
