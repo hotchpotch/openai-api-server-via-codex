@@ -506,10 +506,10 @@ $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_comp
 The live tests use the machine's existing Codex credentials and make real model
 requests.
 
-## Publishing
+## Release
 
-The package is prepared for PyPI release as version `0.0.2`. Use the secure
-release checklist in [docs/publishing.md](docs/publishing.md).
+The package is released to PyPI through GitHub Actions Trusted Publishing. Use
+the release checklist in [docs/release.md](docs/release.md).
 
 The recommended production path is PyPI Trusted Publishing from GitHub Actions
 with the `pypi` environment. Local release work should build, inspect, and smoke
