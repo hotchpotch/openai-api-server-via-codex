@@ -18,7 +18,7 @@ from openai_api_server_via_codex import server
 def test_package_version_metadata_is_consistent() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
 
-    assert pyproject["project"]["version"] == "0.0.5"
+    assert pyproject["project"]["version"] == "0.1.0"
     assert __version__ == pyproject["project"]["version"]
 
 
@@ -36,4 +36,4 @@ def test_top_level_version_option(capsys: pytest.CaptureFixture[str]) -> None:
         server.parse_args(["--version"])
 
     assert exc_info.value.code == 0
-    assert re.fullmatch(r"0\.0\.5\n", capsys.readouterr().out)
+    assert re.fullmatch(r"0\.1\.0\n", capsys.readouterr().out)
