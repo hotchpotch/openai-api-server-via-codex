@@ -508,7 +508,7 @@ requests.
 
 ## Publishing
 
-The package is prepared for PyPI release as version `0.0.1`. Use the secure
+The package is prepared for PyPI release as version `0.0.2`. Use the secure
 release checklist in [docs/publishing.md](docs/publishing.md).
 
 The recommended production path is PyPI Trusted Publishing from GitHub Actions

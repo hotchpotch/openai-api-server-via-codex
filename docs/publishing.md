@@ -6,7 +6,7 @@ This project is intended to be installable as:
 $ uvx openai-api-server-via-codex --help
 ```
 
-The first public release version is `0.0.1`.
+The current Trusted Publishing release target is `0.0.2`.
 
 ## Secure Publishing Model
 
@@ -34,18 +34,18 @@ $ uv run --with "$(ls dist/*.whl)" --no-project openai-api-server-via-codex --he
 Inspect the distribution contents before upload:
 
 ```console
-$ tar -tzf dist/openai_api_server_via_codex-0.0.1.tar.gz
-$ python -m zipfile -l dist/openai_api_server_via_codex-0.0.1-py3-none-any.whl
+$ tar -tzf dist/openai_api_server_via_codex-0.0.2.tar.gz
+$ python -m zipfile -l dist/openai_api_server_via_codex-0.0.2-py3-none-any.whl
 ```
 
 The package should contain the `openai_api_server_via_codex` package,
 `README.md`, `LICENSE`, and metadata only. It must not contain `.codex`,
 `auth.json`, `.env`, `.venv`, `.tox`, caches, logs, or generated reports.
 
-## Recommended First PyPI Release
+## Recommended PyPI Release
 
-Use a pending Trusted Publisher so the first release can create the PyPI project
-without a local upload token.
+Use PyPI Trusted Publishing so the release workflow can publish without a
+long-lived local upload token.
 
 Configure PyPI:
 
@@ -66,9 +66,9 @@ Create and push the release tag:
 
 ```console
 $ git status -sb
-$ git tag -a v0.0.1 -m "Release v0.0.1"
+$ git tag -a v0.0.2 -m "Release v0.0.2"
 $ git push origin main
-$ git push origin v0.0.1
+$ git push origin v0.0.2
 ```
 
 The release workflow checks that the git tag matches the version in
