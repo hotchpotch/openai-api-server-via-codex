@@ -455,13 +455,76 @@ def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:
         run_calls.append(kwargs)
 
     monkeypatch.setattr(server.uvicorn, "run", fake_run)
-    monkeypatch.setattr(server, "_preflight_codex_auth", lambda settings: None)
+    monkeypatch.setattr(
+        server,
+        "_preflight_codex_auth",
+        lambda settings: (Path("/tmp/auth.json"), True),
+    )
 
     result = server._main(["serve", "--verbose"])
 
     assert result == 0
     assert run_calls[0]["log_level"] == "debug"
     assert run_calls[0]["app"].state.verbose is True
+
+
+def test_serve_prints_successful_auth_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    run_calls: list[dict[str, Any]] = []
+    auth_json = tmp_path / "auth.json"
+
+    def fake_run(*args, **kwargs) -> None:
+        run_calls.append(kwargs)
+
+    def fake_preflight(settings: server.ServerSettings) -> tuple[Path, bool]:
+        return auth_json, True
+
+    monkeypatch.setattr(server.uvicorn, "run", fake_run)
+    monkeypatch.setattr(server, "_preflight_codex_auth", fake_preflight)
+
+    result = server._main(["serve", "--auth-json", str(auth_json)])
+
+    assert result == 0
+    assert len(run_calls) == 1
+    captured = capsys.readouterr()
+    assert f"Codex auth preflight OK: {auth_json}" in captured.out
+    assert "account_id_present=True" in captured.out
+
+
+def test_start_prints_successful_auth_preflight_before_daemon_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    auth_json = tmp_path / "auth.json"
+    call_order: list[str] = []
+
+    def fake_preflight(settings: server.ServerSettings) -> tuple[Path, bool]:
+        call_order.append("preflight")
+        return auth_json, False
+
+    def fake_start(*args, **kwargs) -> int:
+        call_order.append("start")
+        return 12345
+
+    monkeypatch.setattr(server, "_preflight_codex_auth", fake_preflight)
+    monkeypatch.setattr(server, "start_background", fake_start)
+
+    result = server._main(
+        [
+            "start",
+            "--auth-json",
+            str(auth_json),
+            "--state-dir",
+            str(tmp_path / "run"),
+        ]
+    )
+
+    assert result == 0
+    assert call_order == ["preflight", "start"]
+    captured = capsys.readouterr()
+    assert f"Codex auth preflight OK: {auth_json}" in captured.out
+    assert "account_id_present=False" in captured.out
+    assert "Started openai-api-server-via-codex" in captured.out
 
 
 def test_serve_fails_before_uvicorn_when_auth_preflight_fails(

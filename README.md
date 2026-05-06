@@ -17,6 +17,7 @@ Run the server in the foreground with `uvx`:
 
 ```console
 $ uvx openai-api-server-via-codex
+Codex auth preflight OK: /home/you/.codex/auth.json (account_id_present=True)
 INFO:     Started server process [12345]
 INFO:     Waiting for application startup.
 INFO:     Application startup complete.
@@ -79,6 +80,9 @@ Run as a background daemon:
 
 ```console
 $ uvx openai-api-server-via-codex start
+Codex auth preflight OK: /home/you/.codex/auth.json (account_id_present=True)
+Started openai-api-server-via-codex on 127.0.0.1:18080
+PID: 12345
 PID file: /home/you/.config/openai-api-server-via-codex/run/server-127.0.0.1-18080.pid
 Log file: /home/you/.config/openai-api-server-via-codex/run/server-127.0.0.1-18080.log
 

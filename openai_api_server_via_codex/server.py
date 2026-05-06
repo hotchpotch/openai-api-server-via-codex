@@ -1044,22 +1044,29 @@ def _main(argv: list[str] | None = None) -> int:
 
 def _preflight_codex_auth_or_print(settings: ServerSettings) -> bool:
     try:
-        _preflight_codex_auth(settings)
+        auth_path, account_id_present = _preflight_codex_auth(settings)
     except BorrowKeyError as exc:
         message = redact_sensitive_text(str(exc))
         LOGGER.error("codex.auth.preflight.failed message=%s", message)
         print(f"Codex auth preflight failed: {message}", file=sys.stderr)
         return False
+    print(
+        "Codex auth preflight OK: "
+        f"{auth_path} (account_id_present={account_id_present})"
+    )
     return True
 
 
-def _preflight_codex_auth(settings: ServerSettings) -> None:
+def _preflight_codex_auth(settings: ServerSettings) -> tuple[Path, bool]:
     _, account_id = borrow_codex_key(settings.auth_json)
+    auth_path = settings.auth_json or Path(os.environ.get("CODEX_HOME", "~/.codex")) / "auth.json"
+    auth_path = auth_path.expanduser().resolve()
     LOGGER.info(
         "codex.auth.preflight.ok auth_json=%s account_id_present=%s",
-        settings.auth_json,
+        auth_path,
         bool(account_id),
     )
+    return auth_path, bool(account_id)
 
 
 def _add_server_options(parser: argparse.ArgumentParser) -> None:
