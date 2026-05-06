@@ -359,7 +359,7 @@ def _status_error_message(exc: APIStatusError) -> str:
 def _reset_time_text(value: Any) -> str:
     if not isinstance(value, int | float):
         return ""
-    minutes = max(0, round((float(value) * 1000 - time.time() * 1000) / 60000))
+    minutes = max(0, round((float(value) - time.time()) / 60))
     return f" Try again in ~{minutes} min."
 
 
