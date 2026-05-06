@@ -2,18 +2,29 @@
 
 OpenAI-compatible local API server backed by your logged-in Codex credentials.
 
-This server exposes the common OpenAI API surface used by `openai-python` and
-forwards generation work to the Codex HTTP backend using the local
-`codex login` auth file.
+This project is useful when you already use Codex through a ChatGPT
+subscription and want a local OpenAI-compatible API endpoint for development.
+It exposes the Responses API (`/v1/responses`) and Chat Completions API
+(`/v1/chat/completions`), so tools that already speak to the OpenAI API through
+`openai-python` can point at this local server instead.
 
-> [!NOTE]
-> This is a compatibility server for local or trusted environments. By default
-> it does not authenticate incoming requests. Set `--api-key` when binding to
-> anything other than localhost.
+For developers who otherwise call the paid OpenAI Platform API directly, this
+can be convenient: if your ChatGPT subscription includes Codex access and your
+usage stays within the subscription's applicable limits, compatible API calls
+can be served through Codex using the subscription you already pay for.
+
+If you already have `codex login` credentials on the machine, the server starts
+with one `uvx` command:
+
+```console
+$ uvx openai-api-server-via-codex
+Codex auth preflight OK: /home/you/.codex/auth.json (account_id_present=True)
+INFO:     Uvicorn running on http://127.0.0.1:18080 (Press CTRL+C to quit)
+```
 
 ## Usage
 
-Run the server in the foreground with `uvx`:
+Run the server in the foreground with `uvx`, uv's tool-run command:
 
 ```console
 $ uvx openai-api-server-via-codex
@@ -28,9 +39,16 @@ The default server URL is `http://127.0.0.1:18080`. OpenAI-compatible API
 endpoints are served under `/v1`, for example
 `http://127.0.0.1:18080/v1/responses`.
 
+> [!NOTE]
+> This is a compatibility server for local or trusted environments. By default
+> it does not authenticate incoming requests. Set `--api-key` when binding to
+> anything other than localhost.
+
 > [!TIP]
 > To force `uvx` to use the latest published package instead of a cached copy,
 > run `uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex`.
+> If you do not have uv installed yet, follow the official uv documentation:
+> <https://docs.astral.sh/uv/>.
 
 Call it with `openai-python`:
 
@@ -523,7 +541,9 @@ Apache License 2.0. See [LICENSE](LICENSE).
 
 - Simon Willison's article,
   [A pelican for GPT-5.5 via the semi-official Codex backdoor API](https://simonwillison.net/2026/Apr/23/gpt-5-5/),
-  helped document the nature of the Codex HTTP backend used by this project.
+  and the implementation described there were the key references for this
+  project. Without that article, this approach likely would not have been
+  implemented here. Thank you to Simon for documenting the route clearly.
 - [OpenClaw](https://github.com/openclaw/openclaw) was a useful reference for
   understanding Codex backend integration patterns.
 - [Pi Monorepo](https://github.com/badlogic/pi-mono) was a useful reference for
