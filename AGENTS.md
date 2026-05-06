@@ -27,6 +27,9 @@ Run the full local validation suite before committing behavior changes:
 uv run tox
 ```
 
+GitHub Actions runs the same validation suite for pushes to `main` and for pull
+requests through `.github/workflows/ci.yml`.
+
 Run focused compatibility tests while iterating on request/response behavior:
 
 ```bash
@@ -75,6 +78,12 @@ rm -rf dist
 uv build --no-sources
 uv run twine check --strict dist/*
 uv run --with "$(ls dist/*.whl)" --no-project openai-api-server-via-codex --help
+```
+
+Generate release note text from the draft or finalized release notes:
+
+```bash
+python scripts/release-notes.py vX.Y.Z
 ```
 
 ## Implementation Notes
@@ -131,10 +140,19 @@ uv run --with "$(ls dist/*.whl)" --no-project openai-api-server-via-codex --help
 - Keep the package version in `pyproject.toml` and
   `openai_api_server_via_codex/__init__.py` aligned. The GitHub Actions release
   workflow expects release tags like `v0.0.1` to match that version exactly.
+- Keep user-visible release notes under `docs/releases/`. Add draft entries to
+  `docs/releases/HEAD.md` while developing, move them to
+  `docs/releases/vX.Y.Z.md` for a release, and use
+  `python scripts/release-notes.py vX.Y.Z` to generate the GitHub Release body.
+  Keep `tests/test_release_notes.py` aligned with the release-note file
+  selection rules.
 - For PyPI releases, prefer Trusted Publishing through
   `.github/workflows/release.yml` and the `pypi` GitHub environment. Do not add
   PyPI tokens to repository secrets unless a deliberate fallback release path is
   being used.
+- Keep `.github/workflows/ci.yml` aligned with the local required validation
+  command. It should run on pushes to `main`, pull requests, and manual
+  dispatch.
 - Incoming API key authentication is optional and disabled by default. When
   `--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` is configured,
   require `Authorization: Bearer <api_key>` for `/v1/...` routes only; keep
