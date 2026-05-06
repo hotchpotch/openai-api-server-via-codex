@@ -53,9 +53,11 @@ endpoints are served under `/v1`, for example
 > run `uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex`.
 
 > [!NOTE]
-> This is a compatibility server for local or trusted environments. By default
-> it does not authenticate incoming requests. Set `--api-key` when binding to
-> anything other than localhost.
+> This is a compatibility server for local or trusted environments. By default,
+> it accepts any incoming OpenAI API key value because `openai-python` requires
+> one even when this server does not. Set `--api-key` if you want the server to
+> authenticate incoming requests, especially when binding to anything other than
+> localhost.
 
 ### Call the Responses API
 
@@ -80,8 +82,8 @@ response = client.responses.create(
 print(response.output_text)
 ```
 
-`OPENAI_API_KEY=dummy` is only a placeholder required by the OpenAI SDK. The
-local server ignores incoming API keys unless you configure `--api-key`.
+`OPENAI_API_KEY=dummy` is only a placeholder required by the OpenAI SDK. Unless
+you configure `--api-key`, the local server accepts any incoming API key value.
 
 ### Use chat completions
 
