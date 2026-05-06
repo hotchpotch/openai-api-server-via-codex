@@ -80,6 +80,11 @@ Override with `--state-dir`, `--pid-file`, `--log-file`, or the matching
 `OPENAI_VIA_CODEX_LOG_FILE` environment variables, or with the `[daemon]`
 config table. Foreground mode remains the default, so
 `uvx openai-api-server-via-codex` starts the server in the current terminal.
+The default PID file is derived from `host` and `port`. If `stop` or `status`
+is run without an explicit `--host` and the exact default PID file is missing,
+the command looks for a single matching PID file for the selected port under
+the state directory. If multiple matches exist, it refuses to guess and asks
+for `--host` or `--pid-file`.
 
 Codex HTTP backend:
 
@@ -99,6 +104,7 @@ reported.
 
 When using `start`, pass `--verbose` or set it in config/env to preserve the
 same diagnostics in the background server log file printed by `start`.
+`stop --verbose` and `status --verbose` enable the same command diagnostics.
 
 The in-memory compatibility stores are bounded by `max_stored_items`, default
 `1000`. This cap applies to stored Responses and stored Chat Completions. Older

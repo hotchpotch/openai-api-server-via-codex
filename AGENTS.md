@@ -99,7 +99,10 @@ uv run openai-api-server-via-codex config-generate --stdout
   CLI flag, environment variable, config file, default.
 - Daemon PID and log files default under the config directory's `run/`
   subdirectory. `start`, `stop`, and `status` should all resolve the same
-  config-backed daemon paths.
+  config-backed daemon paths. `stop` and `status` should accept `--verbose`.
+  When host is omitted and the exact default PID file is absent, they may
+  discover a single PID file for the selected port; if multiple PID files
+  match, they must refuse to guess and ask for `--host` or `--pid-file`.
 - In-memory compatibility stores are intentionally bounded. Keep
   `max_stored_items` defaulting to 1000 and apply it consistently to
   `ResponseStore` and `ChatCompletionStore`. Evict oldest entries first; `0`

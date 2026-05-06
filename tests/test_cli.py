@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from openai_api_server_via_codex import server
+from openai_api_server_via_codex.daemon import DaemonStatus, StopResult
 
 
 def test_parse_args_defaults_to_foreground_serve() -> None:
@@ -41,6 +42,16 @@ def test_parse_args_rejects_negative_max_stored_items() -> None:
         server.parse_args(["serve", "--max-stored-items", "-1"])
 
     assert exc_info.value.code == 2
+
+
+def test_parse_args_accepts_verbose_for_stop_and_status() -> None:
+    stop_args = server.parse_args(["stop", "--host", "0.0.0.0", "--verbose"])
+    status_args = server.parse_args(["status", "--host", "0.0.0.0", "--verbose"])
+
+    assert stop_args.command == "stop"
+    assert stop_args.verbose is True
+    assert status_args.command == "status"
+    assert status_args.verbose is True
 
 
 def test_config_generate_writes_template(tmp_path: Path, capsys) -> None:
@@ -234,6 +245,97 @@ log_file = "{log_file}"
     assert paths.state_dir == state_dir.resolve()
     assert paths.pid_file == pid_file.resolve()
     assert paths.log_file == log_file.resolve()
+
+
+def test_status_discovers_single_pid_file_when_host_is_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    discovered_pid_file = state_dir / "server-0.0.0.0-18080.pid"
+    discovered_pid_file.write_text("123\n")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[daemon]
+state_dir = "{state_dir}"
+""",
+        encoding="utf-8",
+    )
+    captured_paths = []
+
+    def fake_daemon_status(paths):
+        captured_paths.append(paths)
+        return DaemonStatus(
+            state="running",
+            pid=123,
+            pid_file=paths.pid_file,
+            log_file=paths.log_file,
+        )
+
+    monkeypatch.setattr(server, "daemon_status", fake_daemon_status)
+
+    result = server._main(["status", "--config", str(config_path)])
+
+    assert result == 0
+    assert captured_paths[0].pid_file == discovered_pid_file.resolve()
+    assert captured_paths[0].log_file == discovered_pid_file.with_suffix(".log").resolve()
+    assert "running: PID 123" in capsys.readouterr().out
+
+
+def test_stop_discovers_single_pid_file_when_host_is_omitted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    discovered_pid_file = state_dir / "server-0.0.0.0-18080.pid"
+    discovered_pid_file.write_text("123\n")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[daemon]
+state_dir = "{state_dir}"
+""",
+        encoding="utf-8",
+    )
+    captured_paths = []
+
+    def fake_stop_background(paths, *, timeout: float):
+        captured_paths.append(paths)
+        return StopResult(state="stopped", pid=123, pid_file=paths.pid_file)
+
+    monkeypatch.setattr(server, "stop_background", fake_stop_background)
+
+    result = server._main(["stop", "--config", str(config_path)])
+
+    assert result == 0
+    assert captured_paths[0].pid_file == discovered_pid_file.resolve()
+    assert "Stopped PID 123" in capsys.readouterr().out
+
+
+def test_status_reports_ambiguous_pid_files_when_host_is_omitted(
+    tmp_path: Path, capsys
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    (state_dir / "server-0.0.0.0-18080.pid").write_text("123\n")
+    (state_dir / "server-127.0.0.2-18080.pid").write_text("456\n")
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        f"""
+[daemon]
+state_dir = "{state_dir}"
+""",
+        encoding="utf-8",
+    )
+
+    result = server._main(["status", "--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    assert result == 1
+    assert "Multiple PID files match port 18080" in captured.err
+    assert "server-0.0.0.0-18080.pid" in captured.err
+    assert "server-127.0.0.2-18080.pid" in captured.err
 
 
 def test_stop_timeout_reads_config_file(tmp_path: Path) -> None:

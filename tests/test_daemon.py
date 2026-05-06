@@ -35,6 +35,19 @@ def test_resolve_daemon_paths_defaults_under_xdg_config_home(
     assert paths.log_file.parent == paths.state_dir
 
 
+def test_find_daemon_pid_files_lists_matching_port(tmp_path: Path) -> None:
+    (tmp_path / "server-0.0.0.0-18080.pid").write_text("123\n")
+    (tmp_path / "server-127.0.0.1-18080.pid").write_text("456\n")
+    (tmp_path / "server-0.0.0.0-18081.pid").write_text("789\n")
+
+    pid_files = daemon.find_daemon_pid_files(state_dir=tmp_path, port=18080)
+
+    assert pid_files == [
+        (tmp_path / "server-0.0.0.0-18080.pid").resolve(),
+        (tmp_path / "server-127.0.0.1-18080.pid").resolve(),
+    ]
+
+
 def test_start_background_refuses_live_pid(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

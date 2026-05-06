@@ -48,6 +48,7 @@ from .daemon import (
     PID_FILE_ENV,
     STATE_DIR_ENV,
     daemon_status,
+    find_daemon_pid_files,
     resolve_daemon_paths,
     start_background,
     stop_background,
@@ -87,6 +88,12 @@ class ServerSettings:
 
 
 ConfigData = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class DaemonPathSelection:
+    paths: DaemonPaths
+    ambiguous_pid_files: tuple[Path, ...] = ()
 
 
 def _resolve_optional_path(value: str | Path | None) -> Path | None:
@@ -669,6 +676,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     _add_config_option(stop)
     _add_daemon_selector_options(stop)
+    _add_verbose_option(stop)
     stop.add_argument(
         "--stop-timeout",
         type=float,
@@ -681,6 +689,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     _add_config_option(status)
     _add_daemon_selector_options(status)
+    _add_verbose_option(status)
 
     config_generate = subparsers.add_parser(
         "config-generate",
@@ -817,6 +826,31 @@ def daemon_paths_from_args(
     )
 
 
+def select_daemon_paths_from_args(
+    args: argparse.Namespace,
+    settings: ServerSettings,
+    loaded_config: ConfigData | None = None,
+) -> DaemonPathSelection:
+    config_data = loaded_config or {}
+    paths = daemon_paths_from_args(args, settings, config_data)
+    if not _should_discover_daemon_pid_file(args, config_data):
+        return DaemonPathSelection(paths=paths)
+    if paths.pid_file.exists():
+        return DaemonPathSelection(paths=paths)
+
+    candidates = find_daemon_pid_files(
+        state_dir=paths.state_dir,
+        port=settings.port,
+    )
+    if len(candidates) == 1:
+        return DaemonPathSelection(
+            paths=_paths_for_discovered_pid_file(args, config_data, paths, candidates[0])
+        )
+    if len(candidates) > 1:
+        return DaemonPathSelection(paths=paths, ambiguous_pid_files=tuple(candidates))
+    return DaemonPathSelection(paths=paths)
+
+
 def stop_timeout_from_args(
     args: argparse.Namespace, loaded_config: ConfigData | None = None
 ) -> float:
@@ -913,7 +947,11 @@ def _main(argv: list[str] | None = None) -> int:
     settings = server_settings_from_args(args, loaded_config)
     _configure_logging(settings.verbose)
     _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
-    paths = daemon_paths_from_args(args, settings, loaded_config)
+    selection = select_daemon_paths_from_args(args, settings, loaded_config)
+    if selection.ambiguous_pid_files:
+        _print_ambiguous_daemon_pid_files(settings, selection.ambiguous_pid_files)
+        return 1
+    paths = selection.paths
 
     if args.command == "start":
         LOGGER.info(
@@ -997,6 +1035,16 @@ def _add_server_options(parser: argparse.ArgumentParser) -> None:
         help="enable verbose server logs",
     )
 
+
+def _add_verbose_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=None,
+        help="enable verbose command logs",
+    )
+
+
 def _add_config_option(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", help="path to config.toml")
 
@@ -1011,6 +1059,67 @@ def _add_daemon_selector_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", help="server host used to derive default PID file")
     parser.add_argument("--port", type=int, help="server port used to derive default PID file")
     _add_daemon_options(parser)
+
+
+def _should_discover_daemon_pid_file(
+    args: argparse.Namespace, config_data: ConfigData
+) -> bool:
+    return not (
+        _selector_is_explicit(args, "host", "OPENAI_VIA_CODEX_HOST", config_data, "server", "host")
+        or _selector_is_explicit(args, "pid_file", PID_FILE_ENV, config_data, "daemon", "pid_file")
+    )
+
+
+def _selector_is_explicit(
+    args: argparse.Namespace,
+    arg_name: str,
+    env_name: str,
+    config_data: ConfigData,
+    section: str,
+    key: str,
+) -> bool:
+    return (
+        getattr(args, arg_name, None) is not None
+        or os.environ.get(env_name) is not None
+        or _config_value(config_data, section, key) is not None
+    )
+
+
+def _paths_for_discovered_pid_file(
+    args: argparse.Namespace,
+    config_data: ConfigData,
+    paths: DaemonPaths,
+    pid_file: Path,
+) -> DaemonPaths:
+    if _selector_is_explicit(
+        args,
+        "log_file",
+        LOG_FILE_ENV,
+        config_data,
+        "daemon",
+        "log_file",
+    ):
+        log_file = paths.log_file
+    else:
+        log_file = pid_file.with_suffix(".log")
+    return DaemonPaths(
+        state_dir=paths.state_dir,
+        pid_file=pid_file.expanduser().resolve(),
+        log_file=log_file.expanduser().resolve(),
+    )
+
+
+def _print_ambiguous_daemon_pid_files(
+    settings: ServerSettings,
+    pid_files: tuple[Path, ...],
+) -> None:
+    print(
+        f"Multiple PID files match port {settings.port}. "
+        "Use --host or --pid-file to choose one:",
+        file=sys.stderr,
+    )
+    for pid_file in pid_files:
+        print(f"  {pid_file}", file=sys.stderr)
 
 
 def _arg_env_str(

@@ -56,6 +56,17 @@ def resolve_daemon_paths(
     return DaemonPaths(state_dir=state, pid_file=pid, log_file=log)
 
 
+def find_daemon_pid_files(*, state_dir: str | Path, port: int) -> list[Path]:
+    state = Path(state_dir).expanduser().resolve()
+    if not state.exists():
+        return []
+    return sorted(
+        path.resolve()
+        for path in state.glob(f"server-*-{port}.pid")
+        if path.is_file()
+    )
+
+
 def start_background(command: list[str], paths: DaemonPaths) -> int:
     paths.state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     paths.log_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
