@@ -6,6 +6,8 @@ from openai import APIStatusError
 from openai_api_server_via_codex.backend import (
     CodexHttpBackend,
     DEFAULT_MODELS,
+    _forward_proxy_request_headers,
+    _forward_proxy_response_headers,
     _prepare_codex_payload,
     _status_error_message,
     _normalize_codex_stream_event,
@@ -78,6 +80,48 @@ def test_default_models_match_codex_http_fallback_catalog() -> None:
 
 def test_codex_http_backend_default_timeout_is_300_seconds() -> None:
     assert CodexHttpBackend().timeout == 300.0
+
+
+def test_forward_proxy_request_headers_keeps_only_safe_openai_headers() -> None:
+    headers = {
+        "Authorization": "Bearer local-secret",
+        "Cookie": "session=local",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "OpenAI-Beta": "responses=experimental",
+        "Idempotency-Key": "idem-1",
+        "X-Should-Not-Forward": "nope",
+        "Host": "127.0.0.1:18080",
+        "Content-Length": "17",
+    }
+
+    forwarded = _forward_proxy_request_headers(headers)
+
+    assert forwarded == {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "openai-beta": "responses=experimental",
+        "idempotency-key": "idem-1",
+    }
+
+
+def test_forward_proxy_response_headers_drops_hop_by_hop_and_cookie_headers() -> None:
+    headers = {
+        "content-type": "application/json",
+        "x-request-id": "upstream-1",
+        "set-cookie": "session=secret",
+        "content-length": "999",
+        "content-encoding": "gzip",
+        "transfer-encoding": "chunked",
+        "connection": "close",
+    }
+
+    forwarded = _forward_proxy_response_headers(headers)
+
+    assert forwarded == {
+        "content-type": "application/json",
+        "x-request-id": "upstream-1",
+    }
 
 
 def test_normalize_codex_stream_event_maps_response_done_to_completed() -> None:

@@ -208,6 +208,11 @@ or another access control layer, and follow OpenAI's
 
 ## API endpoints
 
+The endpoints below are implemented locally for OpenAI-compatible behavior.
+They normalize Codex HTTP requests, translate streaming events, and maintain
+the in-memory compatibility stores used by Responses and stored Chat
+Completions.
+
 | Method | Path |
 | --- | --- |
 | `GET` | `/healthz` |
@@ -223,6 +228,19 @@ or another access control layer, and follow OpenAI's
 | `POST` | `/v1/chat/completions/{completion_id}` |
 | `DELETE` | `/v1/chat/completions/{completion_id}` |
 | `GET` | `/v1/chat/completions/{completion_id}/messages` |
+
+For any other `/v1/...` request, the server falls back to a best-effort proxy:
+it forwards the method, path, query string, safe OpenAI-style request headers,
+and raw request body to the Codex HTTP backend, then returns the upstream status,
+body, and safe response headers. This allows endpoints that are not implemented
+locally, including Codex-specific or newly added OpenAI-style paths, to be tried
+without adding a compatibility shim for each endpoint.
+
+The fallback proxy uses the local Codex credentials selected by this server. It
+does not forward the incoming `Authorization` header, local `--api-key`, or
+cookies to Codex HTTP. Successful behavior still depends on what the upstream
+Codex HTTP backend accepts for that path; unsupported upstream paths may return
+Codex HTTP errors such as `400`, `403`, or `404`.
 
 ## Compatibility
 

@@ -5,7 +5,8 @@ import copy
 import logging
 import platform
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
@@ -40,6 +41,36 @@ CODEX_RESPONSE_STATUSES = {
     "queued",
     "in_progress",
 }
+PROXY_REQUEST_HEADER_ALLOWLIST = {
+    "accept",
+    "content-type",
+    "idempotency-key",
+    "openai-beta",
+    "openai-organization",
+    "openai-project",
+    "openai-version",
+}
+PROXY_RESPONSE_HEADER_BLOCKLIST = {
+    "connection",
+    "content-encoding",
+    "content-length",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "set-cookie",
+    "set-cookie2",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
+
+
+@dataclass(frozen=True)
+class CodexProxyResponse:
+    status_code: int
+    headers: dict[str, str]
+    body: bytes
 
 
 class CodexBackend(Protocol):
@@ -51,6 +82,17 @@ class CodexBackend(Protocol):
 
     async def list_models(self) -> list[str]:
         """Return model ids exposed by Codex."""
+
+    async def proxy_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: bytes,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        """Forward an otherwise unsupported /v1 request to Codex HTTP."""
 
 
 class CodexBackendError(Exception):
@@ -180,6 +222,69 @@ class CodexHttpBackend:
         LOGGER.info("codex-http.models.loaded count=%d", len(models))
         return models
 
+    async def proxy_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: bytes,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        LOGGER.info(
+            "codex-http.proxy.start method=%s path=%s base_url=%s timeout=%s",
+            method,
+            path,
+            self.base_url,
+            self.timeout,
+        )
+        token, account_id = await self._borrow_key()
+        upstream_headers = self._headers(
+            account_id,
+            client_version=self.client_version,
+        )
+        upstream_headers.update(headers)
+        upstream_headers["Authorization"] = f"Bearer {token}"
+        url = httpx.URL(f"{self.base_url}/{path.lstrip('/')}").copy_with(query=query)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=upstream_headers,
+                    content=body,
+                )
+        except httpx.RequestError as exc:
+            LOGGER.warning(
+                "codex-http.proxy.request_error method=%s path=%s message=%s",
+                method,
+                path,
+                redact_sensitive_text(str(exc)),
+            )
+            raise CodexBackendError("Codex backend proxy request failed.") from exc
+        except Exception as exc:
+            LOGGER.error(
+                "codex-http.proxy.unhandled_error method=%s path=%s type=%s message=%s",
+                method,
+                path,
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            raise CodexBackendError("Codex backend proxy request failed.") from exc
+
+        LOGGER.info(
+            "codex-http.proxy.end method=%s path=%s status=%s bytes=%d",
+            method,
+            path,
+            response.status_code,
+            len(response.content),
+        )
+        return CodexProxyResponse(
+            status_code=response.status_code,
+            headers=_forward_proxy_response_headers(response.headers),
+            body=response.content,
+        )
+
     async def _borrow_key(self) -> tuple[str, str | None]:
         try:
             token, account_id = await asyncio.to_thread(
@@ -218,6 +323,22 @@ class CodexHttpBackend:
             headers["session_id"] = request_id
             headers["x-client-request-id"] = request_id
         return headers
+
+
+def _forward_proxy_request_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        name.lower(): value
+        for name, value in headers.items()
+        if name.lower() in PROXY_REQUEST_HEADER_ALLOWLIST
+    }
+
+
+def _forward_proxy_response_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        name.lower(): value
+        for name, value in headers.items()
+        if name.lower() not in PROXY_RESPONSE_HEADER_BLOCKLIST
+    }
 
 
 def _dump_openai_model(value: Any) -> dict[str, Any]:
