@@ -122,9 +122,21 @@ def _account_id(tokens: dict[str, Any]) -> str | None:
     if account_id:
         return str(account_id)
     id_token = tokens.get("id_token")
-    if not isinstance(id_token, str):
+    if isinstance(id_token, str):
+        payload = _jwt_payload(id_token)
+        account_id = payload.get("chatgpt_account_id")
+        if account_id:
+            return str(account_id)
+
+    access_token = tokens.get("access_token")
+    if not isinstance(access_token, str):
         return None
-    payload = _jwt_payload(id_token)
+    payload = _jwt_payload(access_token)
+    openai_auth = payload.get("https://api.openai.com/auth")
+    if isinstance(openai_auth, dict):
+        account_id = openai_auth.get("chatgpt_account_id")
+        if account_id:
+            return str(account_id)
     account_id = payload.get("chatgpt_account_id")
     return str(account_id) if account_id else None
 

@@ -86,6 +86,12 @@ uv run openai-api-server-via-codex config-generate --stdout
 - The only backend is `codex-http`. The previous native Codex app-server
   backend was removed because it was unstable; do not keep compatibility paths
   for it unless it is deliberately reimplemented later.
+- Normalize Codex HTTP backend requests at the backend boundary: force the
+  downstream Codex call to `stream=true` and `store=false`, default text
+  verbosity to `low`, default `tool_choice`/`parallel_tool_calls`, include
+  `reasoning.encrypted_content`, and add Codex-compatible stream headers.
+  Public `store=true` compatibility is handled by local in-memory stores, not
+  by forwarding `store=true` to ChatGPT Codex.
 - Config is loaded from `--config`, `OPENAI_VIA_CODEX_CONFIG`, or the XDG path
   `$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml`, falling back to
   `~/.config/openai-api-server-via-codex/config.toml`. Setting precedence is

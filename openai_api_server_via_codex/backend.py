@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
+import platform
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
@@ -15,7 +17,27 @@ from .auth import BorrowKeyError, CodexAuthConfig, borrow_codex_key
 LOGGER = logging.getLogger("openai_api_server_via_codex.backend")
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_BACKEND_HTTP = "codex-http"
-DEFAULT_MODELS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano"]
+DEFAULT_MODELS = [
+    "gpt-5.1",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+    "gpt-5.2",
+    "gpt-5.2-codex",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.5",
+]
+CODEX_REASONING_INCLUDE = "reasoning.encrypted_content"
+CODEX_RESPONSE_STATUSES = {
+    "completed",
+    "incomplete",
+    "failed",
+    "cancelled",
+    "queued",
+    "in_progress",
+}
 
 
 class CodexBackend(Protocol):
@@ -65,20 +87,25 @@ class CodexHttpBackend:
             self.timeout,
         )
         token, account_id = await self._borrow_key()
-        headers = self._headers(account_id)
+        codex_payload = _prepare_codex_payload(payload)
+        request_id = codex_payload.get("prompt_cache_key")
+        headers = self._headers(
+            account_id,
+            client_version=self.client_version,
+            request_id=request_id if isinstance(request_id, str) else None,
+            event_stream=True,
+        )
         client = AsyncOpenAI(
             api_key=token,
             base_url=self.base_url,
             default_headers=headers,
             timeout=self.timeout,
         )
-        codex_payload = dict(payload)
-        codex_payload["stream"] = True
         event_count = 0
         try:
             stream = await client.responses.create(**codex_payload)
             async for event in stream:
-                dumped = _dump_openai_model(event)
+                dumped = _normalize_codex_stream_event(_dump_openai_model(event))
                 event_count += 1
                 LOGGER.debug(
                     "codex-http.stream.event type=%s sequence_number=%s",
@@ -113,7 +140,7 @@ class CodexHttpBackend:
             LOGGER.info("codex-http.models.fallback reason=auth_unavailable")
             return DEFAULT_MODELS
 
-        headers = self._headers(account_id)
+        headers = self._headers(account_id, client_version=self.client_version)
         headers["Authorization"] = f"Bearer {token}"
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -158,10 +185,27 @@ class CodexHttpBackend:
             raise CodexBackendError(str(exc), status_code=401) from exc
 
     @staticmethod
-    def _headers(account_id: str | None) -> dict[str, str]:
-        if not account_id:
-            return {}
-        return {"ChatGPT-Account-ID": account_id}
+    def _headers(
+        account_id: str | None,
+        *,
+        client_version: str,
+        request_id: str | None = None,
+        event_stream: bool = False,
+    ) -> dict[str, str]:
+        headers = {
+            "originator": "openai-api-server-via-codex",
+            "User-Agent": _user_agent(client_version),
+        }
+        if event_stream:
+            headers["OpenAI-Beta"] = "responses=experimental"
+            headers["Accept"] = "text/event-stream"
+            headers["Content-Type"] = "application/json"
+        if account_id:
+            headers["ChatGPT-Account-ID"] = account_id
+        if request_id:
+            headers["session_id"] = request_id
+            headers["x-client-request-id"] = request_id
+        return headers
 
 
 def _dump_openai_model(value: Any) -> dict[str, Any]:
@@ -184,6 +228,39 @@ def _list_len(value: Any) -> int:
     return len(value) if isinstance(value, list) else 0
 
 
+def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    codex_payload = copy.deepcopy(payload)
+    codex_payload["stream"] = True
+    codex_payload["store"] = False
+    codex_payload.setdefault("tool_choice", "auto")
+    codex_payload.setdefault("parallel_tool_calls", True)
+
+    text = codex_payload.get("text")
+    text_config = dict(text) if isinstance(text, dict) else {}
+    text_config.setdefault("verbosity", "low")
+    codex_payload["text"] = text_config
+
+    include = codex_payload.get("include")
+    include_values = list(include) if isinstance(include, list) else []
+    if CODEX_REASONING_INCLUDE not in include_values:
+        include_values.append(CODEX_REASONING_INCLUDE)
+    codex_payload["include"] = include_values
+    return codex_payload
+
+
+def _normalize_codex_stream_event(event: dict[str, Any]) -> dict[str, Any]:
+    normalized = copy.deepcopy(event)
+    if normalized.get("type") == "response.done":
+        normalized["type"] = "response.completed"
+
+    response = normalized.get("response")
+    if isinstance(response, dict):
+        status = response.get("status")
+        if isinstance(status, str) and status not in CODEX_RESPONSE_STATUSES:
+            response.pop("status", None)
+    return normalized
+
+
 async def _collect_streamed_response(
     stream: Any, payload: dict[str, Any]
 ) -> dict[str, Any]:
@@ -193,22 +270,27 @@ async def _collect_streamed_response(
     last_response_id: str | None = None
 
     async for event in stream:
-        event_type = _event_value(event, "type")
+        normalized = (
+            _normalize_codex_stream_event(event)
+            if isinstance(event, dict)
+            else _normalize_codex_stream_event(_dump_openai_model(event))
+        )
+        event_type = _event_value(normalized, "type")
         if event_type == "response.created":
-            response = _event_value(event, "response")
+            response = _event_value(normalized, "response")
             if response is not None:
                 dumped = _dump_openai_model(response)
                 last_response_id = str(dumped.get("id") or last_response_id or "")
         elif event_type == "response.output_text.delta":
-            delta = _event_value(event, "delta")
+            delta = _event_value(normalized, "delta")
             if isinstance(delta, str):
                 text_parts.append(delta)
         elif event_type == "response.output_item.done":
-            item = _event_value(event, "item")
+            item = _event_value(normalized, "item")
             if item is not None:
                 output_items.append(_dump_openai_model(item))
-        elif event_type == "response.completed":
-            response = _event_value(event, "response")
+        elif event_type in {"response.completed", "response.incomplete"}:
+            response = _event_value(normalized, "response")
             if response is not None:
                 completed_response = _dump_openai_model(response)
 
@@ -254,6 +336,29 @@ def _status_error_message(exc: APIStatusError) -> str:
         return exc.message
     if isinstance(body, dict):
         error = body.get("error")
-        if isinstance(error, dict) and error.get("message"):
-            return str(error["message"])
+        if isinstance(error, dict):
+            code = str(error.get("code") or error.get("type") or "")
+            if exc.status_code == 429 or (
+                "usage_limit" in code or "rate_limit" in code
+            ):
+                plan = str(error.get("plan_type") or "").lower()
+                plan_text = f" ({plan} plan)" if plan else ""
+                reset_text = _reset_time_text(error.get("resets_at"))
+                return f"You have hit your ChatGPT usage limit{plan_text}.{reset_text}"
+            if error.get("message"):
+                return str(error["message"])
     return exc.message
+
+
+def _reset_time_text(value: Any) -> str:
+    if not isinstance(value, int | float):
+        return ""
+    minutes = max(0, round((float(value) * 1000 - time.time() * 1000) / 60000))
+    return f" Try again in ~{minutes} min."
+
+
+def _user_agent(client_version: str) -> str:
+    return (
+        f"openai-api-server-via-codex/{client_version} "
+        f"({platform.system().lower()} {platform.release()}; {platform.machine()})"
+    )

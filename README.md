@@ -108,6 +108,11 @@ The server forwards OpenAI Responses-compatible payloads to the Codex HTTP
 backend using the borrowed Codex OAuth token. This route preserves normal
 OpenAI function-calling semantics where the API returns `function_call` /
 `tool_calls` and the client sends tool results in a later request.
+For Codex compatibility, backend requests are normalized to streaming
+Responses calls with `store = false`, low text verbosity by default, automatic
+tool choice defaults, and `reasoning.encrypted_content` included for reasoning
+context. Public `store=true` behavior remains local to this compatibility
+server's in-memory stores.
 
 Use with `openai-python`:
 

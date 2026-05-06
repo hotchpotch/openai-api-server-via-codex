@@ -105,6 +105,34 @@ def test_borrow_codex_key_reads_account_id_from_id_token_when_needed(
     assert account_id == "acct_from_id_token"
 
 
+def test_borrow_codex_key_reads_account_id_from_access_token_openai_auth_claim(
+    tmp_path: Path,
+) -> None:
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": _jwt(
+                        {
+                            "exp": time.time() + 3600,
+                            "https://api.openai.com/auth": {
+                                "chatgpt_account_id": "acct_from_access_token"
+                            },
+                        }
+                    ),
+                },
+            }
+        )
+    )
+    auth.clear_codex_auth_cache()
+
+    _, account_id = auth.borrow_codex_key(auth_json=auth_json)
+
+    assert account_id == "acct_from_access_token"
+
+
 def test_borrow_codex_key_caches_until_auth_file_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
