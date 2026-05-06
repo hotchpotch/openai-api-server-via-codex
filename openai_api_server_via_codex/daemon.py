@@ -6,6 +6,7 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .config import default_daemon_state_dir
 
@@ -97,6 +98,63 @@ def start_background(
     return int(process.pid)
 
 
+def run_supervised(
+    command: list[str],
+    *,
+    env: dict[str, str] | None = None,
+    restart_delay: float = 1.0,
+    restart_limit: int | None = None,
+    terminate_timeout: float = 10.0,
+) -> int:
+    stop_requested = False
+    child: subprocess.Popen[bytes] | None = None
+    previous_handlers: dict[int, Any] = {}
+
+    def request_stop(signum: int, _frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+        if child is not None and _process_is_running(child):
+            child.terminate()
+
+    for signum in (signal.SIGTERM, signal.SIGINT):
+        previous_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, request_stop)
+
+    restarts = 0
+    try:
+        while True:
+            print(
+                f"daemon supervisor starting child: {' '.join(command)}",
+                flush=True,
+            )
+            child = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                env=env,
+            )
+            return_code = child.wait()
+            if stop_requested:
+                return int(return_code or 0)
+
+            print(
+                f"daemon supervisor child exited with status {return_code}; restarting",
+                flush=True,
+            )
+            if restart_limit is not None and restarts >= restart_limit:
+                return int(return_code or 0)
+            restarts += 1
+
+            if restart_delay > 0:
+                time.sleep(restart_delay)
+            if stop_requested:
+                return 0
+    finally:
+        if child is not None and _process_is_running(child):
+            _terminate_process(child, timeout=terminate_timeout)
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
+
+
 def stop_background(paths: DaemonPaths, *, timeout: float = 10.0) -> StopResult:
     pid = _read_pid(paths.pid_file)
     if pid is None:
@@ -158,6 +216,20 @@ def _wait_for_pid_exit(pid: int, timeout: float) -> bool:
             return True
         time.sleep(0.05)
     return not is_pid_alive(pid)
+
+
+def _process_is_running(process: subprocess.Popen[bytes]) -> bool:
+    poll = getattr(process, "poll", None)
+    return bool(callable(poll) and poll() is None)
+
+
+def _terminate_process(process: subprocess.Popen[bytes], *, timeout: float) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=5.0)
 
 
 def _default_state_dir() -> Path:

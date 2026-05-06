@@ -129,6 +129,13 @@ class CodexHttpBackend:
             message = redact_sensitive_text(str(exc))
             LOGGER.warning("codex-http.stream.api_error message=%s", message)
             raise CodexBackendError(message) from exc
+        except Exception as exc:
+            LOGGER.error(
+                "codex-http.stream.unhandled_error type=%s message=%s",
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            raise CodexBackendError("Codex backend request failed.") from exc
         finally:
             LOGGER.info(
                 "codex-http.stream.end model=%s events=%d",

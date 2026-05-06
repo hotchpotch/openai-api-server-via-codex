@@ -93,6 +93,45 @@ def test_start_background_removes_stale_pid_and_writes_new_pid(
     assert paths.log_file.exists()
 
 
+def test_run_supervised_restarts_unexpected_child_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    popen_calls: list[list[str]] = []
+    sleeps: list[float] = []
+    return_codes = [1, 0]
+
+    class FakeProcess:
+        def __init__(self, returncode: int) -> None:
+            self.pid = 1000 + len(popen_calls)
+            self.returncode = returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode
+
+        def terminate(self) -> None:
+            raise AssertionError("unexpected terminate")
+
+        def kill(self) -> None:
+            raise AssertionError("unexpected kill")
+
+    def fake_popen(command: list[str], **kwargs: Any) -> FakeProcess:
+        popen_calls.append(command)
+        return FakeProcess(return_codes.pop(0))
+
+    monkeypatch.setattr(daemon.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(daemon.time, "sleep", lambda delay: sleeps.append(delay))
+
+    result = daemon.run_supervised(
+        ["python", "-m", "fake"],
+        restart_delay=0.25,
+        restart_limit=1,
+    )
+
+    assert result == 0
+    assert popen_calls == [["python", "-m", "fake"], ["python", "-m", "fake"]]
+    assert sleeps == [0.25]
+
+
 def test_stop_background_terms_live_pid_and_removes_pid_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

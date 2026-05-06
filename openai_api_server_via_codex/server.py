@@ -52,6 +52,7 @@ from .daemon import (
     daemon_status,
     find_daemon_pid_files,
     resolve_daemon_paths,
+    run_supervised,
     start_background,
     stop_background,
 )
@@ -179,6 +180,7 @@ def create_app(
     app.state.api_key = selected_api_key
     _install_api_key_auth(app)
     _install_verbose_request_logging(app)
+    _install_unhandled_exception_middleware(app)
     if verbose:
         LOGGER.info(
             "server.create_app backend=codex-http default_model=%s timeout=%s max_stored_items=%s auth_json=%s "
@@ -280,6 +282,17 @@ def create_app(
                 message,
             )
             return _openai_error(exc.status_code, message, error_type="api_error")
+        except Exception as exc:
+            LOGGER.error(
+                "responses.create.unhandled_error type=%s message=%s",
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            return _openai_error(
+                500,
+                _unexpected_error_message(),
+                error_type="api_error",
+            )
         response = ensure_response_defaults(response, request_payload=prepared)
         if previous_response_id:
             response["previous_response_id"] = previous_response_id
@@ -506,6 +519,17 @@ def create_app(
                 message,
             )
             return _openai_error(exc.status_code, message, error_type="api_error")
+        except Exception as exc:
+            LOGGER.error(
+                "chat.completions.create.unhandled_error type=%s message=%s",
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            return _openai_error(
+                500,
+                _unexpected_error_message(),
+                error_type="api_error",
+            )
         response = ensure_response_defaults(response, request_payload=response_payload)
         chat_completion = response_to_chat_completion(
             response,
@@ -677,6 +701,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     _add_config_option(serve)
     _add_server_options(serve)
+
+    daemon_run = subparsers.add_parser(
+        "daemon-run", help=argparse.SUPPRESS, allow_abbrev=False
+    )
+    _add_config_option(daemon_run)
+    _add_server_options(daemon_run)
 
     start = subparsers.add_parser(
         "start", help="run the server in the background", allow_abbrev=False
@@ -914,6 +944,12 @@ def serve_command(settings: ServerSettings) -> list[str]:
     return command
 
 
+def daemon_run_command(settings: ServerSettings) -> list[str]:
+    command = serve_command(settings)
+    command[3] = "daemon-run"
+    return command
+
+
 def serve_env(settings: ServerSettings) -> dict[str, str] | None:
     if settings.api_key is None:
         return None
@@ -974,6 +1010,12 @@ def _main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.command == "daemon-run":
+        settings = server_settings_from_args(args, loaded_config)
+        _configure_logging(settings.verbose)
+        _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
+        return run_supervised(serve_command(settings), env=serve_env(settings))
+
     settings = server_settings_from_args(args, loaded_config)
     _configure_logging(settings.verbose)
     _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
@@ -992,10 +1034,12 @@ def _main(argv: list[str] | None = None) -> int:
             settings.port,
             paths.pid_file,
             paths.log_file,
-            serve_command(settings),
+            daemon_run_command(settings),
         )
         try:
-            pid = start_background(serve_command(settings), paths, env=serve_env(settings))
+            pid = start_background(
+                daemon_run_command(settings), paths, env=serve_env(settings)
+            )
         except DaemonError as exc:
             print(str(exc), file=sys.stderr)
             return 1
@@ -1476,6 +1520,30 @@ def _install_verbose_request_logging(app: FastAPI) -> None:
         return response
 
 
+def _install_unhandled_exception_middleware(app: FastAPI) -> None:
+    @app.middleware("http")
+    async def _openai_unhandled_exception_boundary(
+        request: Request, call_next: Any
+    ) -> Response:
+        try:
+            return await call_next(request)
+        except Exception as exc:
+            if not request.url.path.startswith("/v1/"):
+                raise
+            LOGGER.error(
+                "request.unhandled_error method=%s path=%s type=%s message=%s",
+                request.method,
+                request.url.path,
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            return _openai_error(
+                500,
+                _unexpected_error_message(),
+                error_type="api_error",
+            )
+
+
 def _log_verbose(request: Request, message: str, *args: Any) -> None:
     if bool(getattr(request.app.state, "verbose", False)):
         LOGGER.info(message, *redact_sensitive_data(args))
@@ -1753,6 +1821,10 @@ def _openai_error(
     )
 
 
+def _unexpected_error_message() -> str:
+    return "Internal server error."
+
+
 @dataclass
 class _ChatStreamState:
     chat_id: str
@@ -1829,6 +1901,21 @@ async def _responses_event_stream(
                 "sequence_number": sequence_number,
                 "code": None,
                 "message": str(exc),
+                "param": None,
+            }
+        )
+    except Exception as exc:
+        LOGGER.error(
+            "responses.stream.unhandled_error type=%s message=%s",
+            exc.__class__.__name__,
+            redact_sensitive_text(str(exc)),
+        )
+        yield _sse_data(
+            {
+                "type": "error",
+                "sequence_number": sequence_number,
+                "code": None,
+                "message": _unexpected_error_message(),
                 "param": None,
             }
         )
@@ -2031,6 +2118,22 @@ async def _chat_completion_event_stream(
             {
                 "error": {
                     "message": str(exc),
+                    "type": "api_error",
+                    "param": None,
+                    "code": None,
+                }
+            }
+        )
+    except Exception as exc:
+        LOGGER.error(
+            "chat.completions.stream.unhandled_error type=%s message=%s",
+            exc.__class__.__name__,
+            redact_sensitive_text(str(exc)),
+        )
+        yield _sse_data(
+            {
+                "error": {
+                    "message": _unexpected_error_message(),
                     "type": "api_error",
                     "param": None,
                     "code": None,
