@@ -59,12 +59,18 @@ endpoints are served under `/v1`, for example
 
 ### Call the Responses API
 
-Point `openai-python` at the local server:
+Point `openai-python` at the local server with the standard OpenAI client
+environment variables:
+
+```console
+$ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
+$ export OPENAI_API_KEY=dummy
+```
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(api_key="dummy", base_url="http://127.0.0.1:18080/v1")
+client = OpenAI()
 
 response = client.responses.create(
     model="gpt-5.5",
@@ -74,8 +80,8 @@ response = client.responses.create(
 print(response.output_text)
 ```
 
-`api_key="dummy"` is only a placeholder required by the OpenAI SDK. The local
-server ignores incoming API keys unless you configure `--api-key`.
+`OPENAI_API_KEY=dummy` is only a placeholder required by the OpenAI SDK. The
+local server ignores incoming API keys unless you configure `--api-key`.
 
 ### Use chat completions
 
@@ -428,11 +434,11 @@ $ uvx openai-api-server-via-codex --api-key local-secret
 ```python
 from openai import OpenAI
 
-client = OpenAI(
-    api_key="local-secret",
-    base_url="http://127.0.0.1:18080/v1",
-)
+client = OpenAI()
 ```
+
+Run the client with `OPENAI_BASE_URL=http://127.0.0.1:18080/v1` and
+`OPENAI_API_KEY=local-secret`.
 
 ### Start on all interfaces
 
