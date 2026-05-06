@@ -12,7 +12,7 @@ client API rather than only raw HTTP payloads.
 
 ## Environment
 
-- Use Python 3.11.
+- Use Python 3.10 or newer.
 - Use `uv` for dependency management and command execution.
 - The default foreground server binds to `127.0.0.1:18080`.
 - Do not commit local virtualenv, cache, tox, pytest, or editor artifacts.

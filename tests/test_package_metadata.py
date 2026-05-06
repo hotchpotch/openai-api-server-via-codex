@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import re
-import tomllib
+import sys
 from pathlib import Path
 
 import pytest
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib
 
 from openai_api_server_via_codex import __version__
 from openai_api_server_via_codex import server

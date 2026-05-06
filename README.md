@@ -167,7 +167,7 @@ $ uv run openai-api-server-via-codex --help
 
 ## Requirements
 
-- Python 3.11+
+- Python 3.10+
 - `uv`
 - A working Codex login, usually at `~/.codex/auth.json`
 

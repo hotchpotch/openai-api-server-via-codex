@@ -3,7 +3,7 @@ name = "openai-api-server-via-codex"
 version = "0.0.3"
 description = "OpenAI-compatible local API server backed by Codex credentials"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [
     { name = "hotchpotch" },
@@ -15,6 +15,7 @@ classifiers = [
     "Framework :: FastAPI",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Topic :: Internet :: WWW/HTTP :: HTTP Servers",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -24,6 +25,7 @@ dependencies = [
     "httpx>=0.28.1",
     "openai>=2.34.0",
     "pydantic>=2.13.3",
+    "tomli>=2.3.0; python_version < '3.11'",
     "uvicorn>=0.46.0",
 ]
 
@@ -59,7 +61,7 @@ legacy_tox_ini = """
 requires = tox-uv>=1.29.0
 parallel = auto
 parallel_show_output = true
-env_list = py311, lint, type
+env_list = py310, lint, type
 
 [testenv]
 dependency_groups = dev

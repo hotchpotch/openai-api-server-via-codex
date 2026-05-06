@@ -36,11 +36,15 @@ jobs:
       - name: Check release version
         id: version
         run: |
-          python - <<'PY'
+          uv run python - <<'PY'
           import os
           import pathlib
           import re
-          import tomllib
+          import sys
+          if sys.version_info >= (3, 11):
+              import tomllib
+          else:
+              import tomli as tomllib
 
           root = pathlib.Path(".")
           pyproject_version = tomllib.loads(root.joinpath("pyproject.toml").read_text())["project"]["version"]

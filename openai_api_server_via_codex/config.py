@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import os
-import tomllib
+import sys
 from pathlib import Path
 from typing import Any
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib
 
 from .backend import CODEX_BASE_URL
 from .compat import DEFAULT_MAX_STORED_ITEMS, DEFAULT_MODEL
