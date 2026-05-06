@@ -13,18 +13,30 @@ forwards generation work to the Codex HTTP backend using the local
 
 ## Usage
 
-Run the server in the foreground:
+Run the server in the foreground with `uvx`:
 
 ```console
-$ uv run openai-api-server-via-codex
+$ uvx openai-api-server-via-codex
+INFO:     Started server process [12345]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:18080 (Press CTRL+C to quit)
 ```
+
+The default server URL is `http://127.0.0.1:18080`. OpenAI-compatible API
+endpoints are served under `/v1`, for example
+`http://127.0.0.1:18080/v1/responses`.
+
+> [!TIP]
+> To force `uvx` to use the latest published package instead of a cached copy,
+> run `uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex`.
 
 Call it with `openai-python`:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(api_key="local", base_url="http://127.0.0.1:18080/v1")
+client = OpenAI(api_key="dummy", base_url="http://127.0.0.1:18080/v1")
 
 response = client.responses.create(
     model="gpt-5.5",
@@ -33,6 +45,9 @@ response = client.responses.create(
 )
 print(response.output_text)
 ```
+
+`api_key="dummy"` is only a placeholder required by the OpenAI SDK. The local
+server ignores incoming API keys unless you configure `--api-key`.
 
 Use Chat Completions:
 
@@ -63,34 +78,52 @@ for event in stream:
 Run as a background daemon:
 
 ```console
-$ uv run openai-api-server-via-codex start --host 127.0.0.1 --port 18080
-$ uv run openai-api-server-via-codex status --port 18080
-$ uv run openai-api-server-via-codex stop --port 18080
+$ uvx openai-api-server-via-codex start
+PID file: /home/you/.config/openai-api-server-via-codex/run/server-127.0.0.1-18080.pid
+Log file: /home/you/.config/openai-api-server-via-codex/run/server-127.0.0.1-18080.log
+
+$ uvx openai-api-server-via-codex status
+$ uvx openai-api-server-via-codex stop
 ```
 
-`start` prints the PID file and log file paths.
+Expose the server to other machines only with access control:
+
+```console
+$ uvx openai-api-server-via-codex start \
+  --host 0.0.0.0 \
+  --api-key local-secret
+```
+
+Then connect clients to `http://<server-host>:18080/v1` and pass
+`api_key="local-secret"` to the OpenAI client.
 
 ## Install
 
-From this checkout:
-
-```console
-$ uv sync --dev
-$ uv run openai-api-server-via-codex --help
-```
-
-Run directly with `uvx` after the package is installed or published:
+Run without installing:
 
 ```console
 $ uvx openai-api-server-via-codex
 ```
 
-After the PyPI package is published, run the console command without cloning the
-repository:
+Install the command onto your standard user tool path:
 
 ```console
-$ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --help
-$ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --version
+$ uv tool install openai-api-server-via-codex
+$ openai-api-server-via-codex --help
+```
+
+Upgrade an installed tool:
+
+```console
+$ uv tool upgrade openai-api-server-via-codex
+$ openai-api-server-via-codex --version
+```
+
+For development from this checkout:
+
+```console
+$ uv sync --dev
+$ uv run openai-api-server-via-codex --help
 ```
 
 ## Requirements
@@ -102,8 +135,8 @@ $ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex 
 Use an explicit Codex auth file when needed:
 
 ```console
-$ uv run openai-api-server-via-codex --auth-json ~/.codex/auth.json
-$ OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uv run openai-api-server-via-codex
+$ uvx openai-api-server-via-codex --auth-json ~/.codex/auth.json
+$ OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uvx openai-api-server-via-codex
 ```
 
 > [!NOTE]
@@ -183,8 +216,8 @@ context. Public `store=true` behavior is implemented locally.
 Generate a default config file:
 
 ```console
-$ uv run openai-api-server-via-codex config-generate
-$ uv run openai-api-server-via-codex config-generate --stdout
+$ uvx openai-api-server-via-codex config-generate
+$ uvx openai-api-server-via-codex config-generate --stdout
 ```
 
 The default config path is:
@@ -238,7 +271,7 @@ stop_timeout = 10.0
 Default: `127.0.0.1`
 
 ```console
-$ uv run openai-api-server-via-codex --host 0.0.0.0
+$ uvx openai-api-server-via-codex --host 0.0.0.0
 ```
 
 > [!IMPORTANT]
@@ -251,7 +284,7 @@ $ uv run openai-api-server-via-codex --host 0.0.0.0
 Default: `18080`
 
 ```console
-$ uv run openai-api-server-via-codex --port 18080
+$ uvx openai-api-server-via-codex --port 18080
 ```
 
 ### `server.api_key`
@@ -269,8 +302,8 @@ Authorization: Bearer <api_key>
 `/healthz` remains unauthenticated.
 
 ```console
-$ uv run openai-api-server-via-codex --api-key local-secret
-$ OPENAI_VIA_CODEX_API_KEY=local-secret uv run openai-api-server-via-codex
+$ uvx openai-api-server-via-codex --api-key local-secret
+$ OPENAI_VIA_CODEX_API_KEY=local-secret uvx openai-api-server-via-codex
 ```
 
 `start` passes the API key to the background `serve` process through the child
@@ -317,9 +350,9 @@ Raw auth tokens are not logged. Token-like values in upstream errors or query
 strings are redacted to a short prefix plus `******`.
 
 ```console
-$ uv run openai-api-server-via-codex --verbose
-$ uv run openai-api-server-via-codex status --verbose
-$ uv run openai-api-server-via-codex stop --verbose
+$ uvx openai-api-server-via-codex --verbose
+$ uvx openai-api-server-via-codex status --verbose
+$ uvx openai-api-server-via-codex stop --verbose
 ```
 
 ### `codex.auth_json`
@@ -350,7 +383,7 @@ multiple matches exist, it refuses to guess and asks for `--host` or
 ### Require an API key
 
 ```console
-$ uv run openai-api-server-via-codex --api-key local-secret
+$ uvx openai-api-server-via-codex --api-key local-secret
 ```
 
 ```python
@@ -365,7 +398,7 @@ client = OpenAI(
 ### Start on all interfaces
 
 ```console
-$ uv run openai-api-server-via-codex start \
+$ uvx openai-api-server-via-codex start \
   --host 0.0.0.0 \
   --port 18080 \
   --api-key local-secret \
@@ -375,8 +408,8 @@ $ uv run openai-api-server-via-codex start \
 ### Use a custom config
 
 ```console
-$ uv run openai-api-server-via-codex config-generate --config ./config.toml
-$ uv run openai-api-server-via-codex --config ./config.toml
+$ uvx openai-api-server-via-codex config-generate --config ./config.toml
+$ uvx openai-api-server-via-codex --config ./config.toml
 ```
 
 ### Use Chat Completions streaming
@@ -472,3 +505,23 @@ release checklist in [docs/publishing.md](docs/publishing.md).
 The recommended production path is PyPI Trusted Publishing from GitHub Actions
 with the `pypi` environment. Local release work should build, inspect, and smoke
 test the artifacts before the tag is pushed.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
+
+## Acknowledgements
+
+- Simon Willison's article,
+  [A pelican for GPT-5.5 via the semi-official Codex backdoor API](https://simonwillison.net/2026/Apr/23/gpt-5-5/),
+  helped document the nature of the Codex HTTP backend used by this project.
+- [OpenClaw](https://github.com/openclaw/openclaw) was a useful reference for
+  understanding Codex backend integration patterns.
+- [Pi Monorepo](https://github.com/badlogic/pi-mono) was a useful reference for
+  Codex backend API behavior and compatibility details.
+
+## Author
+
+- Yuichi Tateno ([@hotchpotch](https://github.com/hotchpotch))
+
+<img src="https://secon.dev/images/profile_usa.png" width="64" height="64" alt="Yuichi Tateno" />
