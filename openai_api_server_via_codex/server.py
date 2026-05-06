@@ -31,6 +31,7 @@ from .backend import (
     CodexHttpBackend,
     _forward_proxy_request_headers,
     _forward_proxy_response_headers,
+    _validate_proxy_path,
 )
 from . import config as config_module
 from .compat import (
@@ -688,6 +689,17 @@ def create_app(
             len(body),
             _backend_name(backend),
         )
+        try:
+            _validate_proxy_path(proxy_path)
+        except CodexBackendError as exc:
+            message = redact_sensitive_text(str(exc))
+            _log_verbose(
+                request,
+                "proxy.request.rejected status=%s message=%s",
+                exc.status_code,
+                message,
+            )
+            return _openai_error(exc.status_code, message, error_type="api_error")
         try:
             async with _backend_slot(request):
                 upstream = await backend.proxy_request(

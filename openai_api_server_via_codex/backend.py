@@ -245,7 +245,7 @@ class CodexHttpBackend:
         )
         upstream_headers.update(headers)
         upstream_headers["Authorization"] = f"Bearer {token}"
-        url = httpx.URL(f"{self.base_url}/{path.lstrip('/')}").copy_with(query=query)
+        url = _resolve_proxy_url(self.base_url, path, query)
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.request(
@@ -323,6 +323,25 @@ class CodexHttpBackend:
             headers["session_id"] = request_id
             headers["x-client-request-id"] = request_id
         return headers
+
+
+def _validate_proxy_path(path: str) -> str:
+    segments = [segment for segment in path.split("/") if segment and segment != "."]
+    if any(segment == ".." for segment in segments):
+        raise CodexBackendError("Invalid proxy path.", status_code=400)
+    return "/".join(segments)
+
+
+def _resolve_proxy_url(base_url: str, path: str, query: bytes) -> httpx.URL:
+    cleaned_path = _validate_proxy_path(path)
+    base = base_url.rstrip("/")
+    candidate = f"{base}/{cleaned_path}" if cleaned_path else f"{base}/"
+    url = httpx.URL(candidate)
+    if query:
+        url = url.copy_with(query=query)
+    if not str(url.copy_with(query=None)).startswith(f"{base}/"):
+        raise CodexBackendError("Invalid proxy path.", status_code=400)
+    return url
 
 
 def _forward_proxy_request_headers(headers: Mapping[str, str]) -> dict[str, str]:
