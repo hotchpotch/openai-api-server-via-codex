@@ -10,10 +10,11 @@ from openai_api_server_via_codex.backend import (
     DEFAULT_MODELS,
     _forward_proxy_request_headers,
     _forward_proxy_response_headers,
+    _normalize_codex_stream_event,
     _prepare_codex_payload,
     _resolve_proxy_url,
+    _resolve_transcribe_url,
     _status_error_message,
-    _normalize_codex_stream_event,
 )
 
 
@@ -118,6 +119,18 @@ def test_resolve_proxy_url_builds_url_under_base() -> None:
     assert str(url) == (
         "https://chatgpt.com/backend-api/codex/tokenizer?model=gpt-5.4&input=one"
     )
+
+
+def test_resolve_transcribe_url_uses_backend_api_sibling() -> None:
+    url = _resolve_transcribe_url("https://chatgpt.com/backend-api/codex")
+
+    assert str(url) == "https://chatgpt.com/backend-api/transcribe"
+
+
+def test_resolve_transcribe_url_allows_non_codex_base() -> None:
+    url = _resolve_transcribe_url("https://example.test/backend-api")
+
+    assert str(url) == "https://example.test/backend-api/transcribe"
 
 
 def test_resolve_proxy_url_strips_redundant_slashes_and_dot_segments() -> None:
