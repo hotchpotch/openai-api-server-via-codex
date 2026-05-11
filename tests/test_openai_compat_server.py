@@ -124,11 +124,20 @@ class RecordingBackend:
     ) -> CodexProxyResponse:
         raise AssertionError(f"unexpected proxy request: {method} {path!r}")
 
+    async def transcribe_audio(
+        self,
+        *,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        raise AssertionError("unexpected transcription request")
+
 
 class ProxyRecordingBackend(RecordingBackend):
     def __init__(self) -> None:
         super().__init__()
         self.proxy_requests: list[dict[str, Any]] = []
+        self.transcription_requests: list[dict[str, Any]] = []
         self.proxy_response = CodexProxyResponse(
             status_code=207,
             headers={
@@ -139,6 +148,11 @@ class ProxyRecordingBackend(RecordingBackend):
                 "connection": "close",
             },
             body=b'{"proxied":true}',
+        )
+        self.transcription_response = CodexProxyResponse(
+            status_code=200,
+            headers={"content-type": "application/json"},
+            body=b'{"text":"transcribed text"}',
         )
 
     async def proxy_request(
@@ -160,6 +174,20 @@ class ProxyRecordingBackend(RecordingBackend):
             }
         )
         return self.proxy_response
+
+    async def transcribe_audio(
+        self,
+        *,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        self.transcription_requests.append(
+            {
+                "headers": headers,
+                "body": body,
+            }
+        )
+        return self.transcription_response
 
 
 class SlowConcurrencyBackend(RecordingBackend):
@@ -652,6 +680,86 @@ async def test_unknown_v1_proxy_preserves_upstream_error_payload() -> None:
     assert response.status_code == 404
     assert response.json() == {"error": {"message": "missing upstream endpoint"}}
     assert response.headers["x-openai-via-codex-proxy"] == "codex-http"
+
+
+@pytest.mark.asyncio
+async def test_audio_transcriptions_use_codex_transcribe_endpoint() -> None:
+    backend = ProxyRecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+
+    multipart_body = (
+        b"--boundary\r\n"
+        b'Content-Disposition: form-data; name="model"\r\n\r\n'
+        b"whisper-1\r\n"
+        b"--boundary\r\n"
+        b'Content-Disposition: form-data; name="file"; filename="sample.wav"\r\n'
+        b"Content-Type: audio/wav\r\n\r\n"
+        b"RIFFfake\r\n"
+        b"--boundary--\r\n"
+    )
+
+    try:
+        response = await http_client.post(
+            "/v1/audio/transcriptions",
+            headers={
+                "Authorization": "Bearer local-secret",
+                "Content-Type": "multipart/form-data; boundary=boundary",
+                "Accept": "application/json",
+            },
+            content=multipart_body,
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response.status_code == 200
+    assert response.json() == {"text": "transcribed text"}
+    assert response.headers["x-openai-via-codex-proxy"] == "codex-http"
+    assert backend.proxy_requests == []
+    assert len(backend.transcription_requests) == 1
+    transcribed = backend.transcription_requests[0]
+    assert transcribed["body"] == multipart_body
+    assert transcribed["headers"] == {
+        "accept": "application/json",
+        "content-type": "multipart/form-data; boundary=boundary",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_client_audio_transcriptions_parse_response() -> None:
+    backend = ProxyRecordingBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        base_url="http://testserver/v1",
+        api_key="local-secret",
+        http_client=http_client,
+    )
+
+    try:
+        transcription = await client.audio.transcriptions.create(
+            model="whisper-1",
+            file=("sample.wav", b"RIFFfake", "audio/wav"),
+            language="ja",
+        )
+    finally:
+        await client.close()
+
+    assert transcription.text == "transcribed text"
+    assert backend.proxy_requests == []
+    assert len(backend.transcription_requests) == 1
+    body = backend.transcription_requests[0]["body"]
+    assert b'name="model"' in body
+    assert b"whisper-1" in body
+    assert b'name="language"' in body
+    assert b"ja" in body
+    assert b'filename="sample.wav"' in body
 
 
 @pytest.mark.asyncio

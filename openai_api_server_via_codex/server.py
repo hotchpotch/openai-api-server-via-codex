@@ -667,6 +667,58 @@ def create_app(
 
         return JSONResponse(_cursor_page(messages, has_more=has_more))
 
+    @app.post("/v1/audio/transcriptions", response_model=None)
+    async def create_audio_transcription(request: Request) -> Response | JSONResponse:
+        backend = _get_backend(request)
+        body = await request.body()
+        headers = _forward_proxy_request_headers(request.headers)
+        _log_verbose(
+            request,
+            "audio.transcriptions.create bytes=%d backend=%s",
+            len(body),
+            _backend_name(backend),
+        )
+        try:
+            async with _backend_slot(request):
+                upstream = await backend.transcribe_audio(
+                    headers=headers,
+                    body=body,
+                )
+        except CodexBackendError as exc:
+            message = redact_sensitive_text(str(exc))
+            _log_verbose(
+                request,
+                "audio.transcriptions.create.error status=%s message=%s",
+                exc.status_code,
+                message,
+            )
+            return _openai_error(exc.status_code, message, error_type="api_error")
+        except Exception as exc:
+            LOGGER.error(
+                "audio.transcriptions.create.unhandled_error type=%s message=%s",
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            return _openai_error(
+                500,
+                _unexpected_error_message(),
+                error_type="api_error",
+            )
+
+        response_headers = _forward_proxy_response_headers(upstream.headers)
+        response_headers["x-openai-via-codex-proxy"] = "codex-http"
+        _log_verbose(
+            request,
+            "audio.transcriptions.create.done status=%s bytes=%d",
+            upstream.status_code,
+            len(upstream.body),
+        )
+        return Response(
+            content=upstream.body,
+            status_code=upstream.status_code,
+            headers=response_headers,
+        )
+
     @app.api_route(
         "/v1/{proxy_path:path}",
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],

@@ -95,6 +95,14 @@ class CodexBackend(Protocol):
     ) -> CodexProxyResponse:
         """Forward an otherwise unsupported /v1 request to Codex HTTP."""
 
+    async def transcribe_audio(
+        self,
+        *,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        """Forward an OpenAI-compatible audio transcription request to Codex."""
+
 
 class CodexBackendError(Exception):
     def __init__(self, message: str, *, status_code: int = 502) -> None:
@@ -286,6 +294,57 @@ class CodexHttpBackend:
             body=response.content,
         )
 
+    async def transcribe_audio(
+        self,
+        *,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> CodexProxyResponse:
+        LOGGER.info(
+            "codex-http.transcribe.start base_url=%s timeout=%s",
+            self.base_url,
+            self.timeout,
+        )
+        url = _resolve_transcribe_url(self.base_url)
+        token, account_id = await self._borrow_key()
+        upstream_headers = self._headers(
+            account_id,
+            client_version=self.client_version,
+        )
+        upstream_headers.update(headers)
+        upstream_headers["Authorization"] = f"Bearer {token}"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    url,
+                    headers=upstream_headers,
+                    content=body,
+                )
+        except httpx.RequestError as exc:
+            LOGGER.warning(
+                "codex-http.transcribe.request_error message=%s",
+                redact_sensitive_text(str(exc)),
+            )
+            raise CodexBackendError("Codex backend transcription request failed.") from exc
+        except Exception as exc:
+            LOGGER.error(
+                "codex-http.transcribe.unhandled_error type=%s message=%s",
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            raise CodexBackendError("Codex backend transcription request failed.") from exc
+
+        LOGGER.info(
+            "codex-http.transcribe.end status=%s bytes=%d",
+            response.status_code,
+            len(response.content),
+        )
+        return CodexProxyResponse(
+            status_code=response.status_code,
+            headers=_forward_proxy_response_headers(response.headers),
+            body=response.content,
+        )
+
     async def _borrow_key(self) -> tuple[str, str | None]:
         try:
             token, account_id = await asyncio.to_thread(
@@ -344,6 +403,14 @@ def _resolve_proxy_url(base_url: str, path: str, query: bytes) -> httpx.URL:
     if not str(url.copy_with(query=None)).startswith(f"{base}/"):
         raise CodexBackendError("Invalid proxy path.", status_code=400)
     return url
+
+
+def _resolve_transcribe_url(base_url: str) -> httpx.URL:
+    base = base_url.rstrip("/")
+    codex_suffix = "/codex"
+    if base.endswith(codex_suffix):
+        base = base[: -len(codex_suffix)]
+    return httpx.URL(f"{base}/transcribe")
 
 
 def _forward_proxy_request_headers(headers: Mapping[str, str]) -> dict[str, str]:

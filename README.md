@@ -222,6 +222,7 @@ Completions.
 | `DELETE` | `/v1/responses/{response_id}` |
 | `POST` | `/v1/responses/{response_id}/cancel` |
 | `POST` | `/v1/responses/input_tokens` |
+| `POST` | `/v1/audio/transcriptions` |
 | `POST` | `/v1/chat/completions` |
 | `GET` | `/v1/chat/completions` |
 | `GET` | `/v1/chat/completions/{completion_id}` |
