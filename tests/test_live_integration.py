@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import os
 import socket
 import subprocess
@@ -134,6 +135,55 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
             )
             assert image_chat.choices[0].message.content
 
+            generated = await client.images.generate(
+                model="gpt-image-2",
+                prompt=(
+                    "A clean pixel art image of a ramen bowl in a red bowl, "
+                    "with noodles, egg, nori, and green scallions. No text."
+                ),
+                size="1024x1024",
+                quality="medium",
+                output_format="png",
+                response_format="b64_json",
+            )
+            assert generated.data
+            image_b64 = generated.data[0].b64_json
+            assert image_b64
+            image_bytes = base64.b64decode(image_b64)
+            width, height = _png_dimensions(image_bytes)
+            assert width > 0
+            assert height > 0
+
+            image_description = await client.responses.create(
+                model=model,
+                input=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": (
+                                    "Describe the main subject in this generated "
+                                    "image in one short sentence."
+                                ),
+                            },
+                            {
+                                "type": "input_image",
+                                "image_url": f"data:image/png;base64,{image_b64}",
+                                "detail": "low",
+                            },
+                        ],
+                    }
+                ],
+                reasoning={"effort": "low"},
+            )
+            description = image_description.output_text.lower()
+            assert any(word in description for word in ("ramen", "noodle", "bowl")), (
+                description,
+                width,
+                height,
+            )
+
             async with httpx.AsyncClient(base_url=base_url, timeout=120.0) as direct:
                 proxy_attempts = [
                     (
@@ -212,6 +262,15 @@ def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+def _png_dimensions(image_bytes: bytes) -> tuple[int, int]:
+    signature = b"\x89PNG\r\n\x1a\n"
+    if not image_bytes.startswith(signature) or image_bytes[12:16] != b"IHDR":
+        raise AssertionError("generated image is not a PNG")
+    width = int.from_bytes(image_bytes[16:20], "big")
+    height = int.from_bytes(image_bytes[20:24], "big")
+    return width, height
 
 
 async def _wait_for_server(base_url: str) -> None:

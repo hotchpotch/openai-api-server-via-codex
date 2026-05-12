@@ -36,6 +36,7 @@ from .backend import (
 from . import config as config_module
 from .compat import (
     ChatCompletionStore,
+    DEFAULT_INSTRUCTIONS,
     DEFAULT_MAX_STORED_ITEMS,
     DEFAULT_MODEL,
     ResponseStore,
@@ -718,6 +719,71 @@ def create_app(
             status_code=upstream.status_code,
             headers=response_headers,
         )
+
+    @app.post("/v1/images/generations", response_model=None)
+    async def create_image_generation(
+        request: Request, body: dict[str, Any] = Body(...)
+    ) -> JSONResponse:
+        backend = _get_backend(request)
+        _log_verbose(
+            request,
+            "images.generations.create model=%s n=%s size=%s quality=%s output_format=%s backend=%s",
+            body.get("model"),
+            body.get("n") or 1,
+            body.get("size"),
+            body.get("quality"),
+            body.get("output_format"),
+            _backend_name(backend),
+        )
+        validation_error = _validate_image_generation_request(body)
+        if validation_error is not None:
+            return validation_error
+
+        count = int(body.get("n") or 1)
+        try:
+            async with _backend_slot(request):
+                response_items = [
+                    await backend.create_response(
+                        _image_generation_response_payload(
+                            body,
+                            default_model=request.app.state.default_model,
+                        )
+                    )
+                    for _ in range(count)
+                ]
+        except CodexBackendError as exc:
+            message = redact_sensitive_text(str(exc))
+            _log_verbose(
+                request,
+                "images.generations.create.error status=%s message=%s",
+                exc.status_code,
+                message,
+            )
+            return _openai_error(exc.status_code, message, error_type="api_error")
+        except Exception as exc:
+            LOGGER.error(
+                "images.generations.create.unhandled_error type=%s message=%s",
+                exc.__class__.__name__,
+                redact_sensitive_text(str(exc)),
+            )
+            return _openai_error(
+                500,
+                _unexpected_error_message(),
+                error_type="api_error",
+            )
+
+        try:
+            images_response = _responses_to_images_response(body, response_items)
+        except CodexBackendError as exc:
+            return _openai_error(exc.status_code, str(exc), error_type="api_error")
+
+        _log_verbose(
+            request,
+            "images.generations.create.done count=%d output_format=%s",
+            len(images_response.get("data") or []),
+            images_response.get("output_format"),
+        )
+        return JSONResponse(images_response)
 
     @app.api_route(
         "/v1/{proxy_path:path}",
@@ -1740,6 +1806,147 @@ def _positive_int(value: Any) -> int | None:
 
 def _chat_choice_count(value: Any) -> int:
     return _positive_int(value) or 1
+
+
+def _validate_image_generation_request(body: dict[str, Any]) -> JSONResponse | None:
+    prompt = body.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        return _openai_error(400, "prompt is required.", param="prompt")
+
+    if body.get("stream") is True:
+        return _openai_error(
+            400,
+            "stream=true is not supported for image generations.",
+            param="stream",
+        )
+
+    response_format = body.get("response_format")
+    if response_format not in {None, "b64_json"}:
+        return _openai_error(
+            400,
+            "Only response_format='b64_json' is supported for image generations.",
+            param="response_format",
+        )
+
+    try:
+        count = int(body.get("n") or 1)
+    except (TypeError, ValueError):
+        return _openai_error(400, "n must be an integer between 1 and 10.", param="n")
+    if count < 1 or count > 10:
+        return _openai_error(400, "n must be between 1 and 10.", param="n")
+
+    output_format = _image_output_format(body)
+    if output_format not in {"png", "jpeg", "webp"}:
+        return _openai_error(
+            400,
+            "output_format must be one of png, jpeg, or webp.",
+            param="output_format",
+        )
+
+    return None
+
+
+def _image_generation_response_payload(
+    body: dict[str, Any], *, default_model: str
+) -> dict[str, Any]:
+    output_format = _image_output_format(body)
+    return {
+        "model": default_model,
+        "instructions": (
+            f"{DEFAULT_INSTRUCTIONS} Use the image_generation tool when the user "
+            "asks for an image. Return the generated image without adding extra "
+            "requirements."
+        ),
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": _image_generation_prompt(body),
+                    }
+                ],
+            }
+        ],
+        "tools": [{"type": "image_generation", "output_format": output_format}],
+        "tool_choice": "auto",
+        "parallel_tool_calls": True,
+        "store": False,
+    }
+
+
+def _image_generation_prompt(body: dict[str, Any]) -> str:
+    lines = [
+        "Generate an image using the image_generation tool.",
+        f"Primary request: {str(body.get('prompt') or '').strip()}",
+    ]
+    for key, label in (
+        ("size", "Requested size"),
+        ("quality", "Requested quality"),
+        ("background", "Requested background"),
+        ("style", "Requested style"),
+    ):
+        value = body.get(key)
+        if isinstance(value, str) and value:
+            lines.append(f"{label}: {value}")
+    lines.append("Do not include text, logos, or watermarks unless explicitly requested.")
+    return "\n".join(lines)
+
+
+def _responses_to_images_response(
+    body: dict[str, Any], responses: list[dict[str, Any]]
+) -> dict[str, Any]:
+    data: list[dict[str, str]] = []
+    created_values: list[int] = []
+    for response in responses:
+        created_at = response.get("created_at")
+        if isinstance(created_at, (int, float)):
+            created_values.append(int(created_at))
+        image = _image_from_response(response)
+        if image is None:
+            raise CodexBackendError(
+                "Codex backend did not return an image_generation_call.",
+                status_code=502,
+            )
+        data.append(image)
+
+    result: dict[str, Any] = {
+        "created": created_values[0] if created_values else int(time.time()),
+        "data": data,
+        "output_format": _image_output_format(body),
+    }
+    background = body.get("background")
+    if background in {"transparent", "opaque"}:
+        result["background"] = background
+    quality = body.get("quality")
+    if quality in {"low", "medium", "high"}:
+        result["quality"] = quality
+    size = body.get("size")
+    if size in {"1024x1024", "1024x1536", "1536x1024"}:
+        result["size"] = size
+    return result
+
+
+def _image_from_response(response: dict[str, Any]) -> dict[str, str] | None:
+    for item in response.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "image_generation_call":
+            continue
+        result = item.get("result")
+        if not isinstance(result, str) or not result:
+            continue
+        image: dict[str, str] = {"b64_json": result}
+        revised_prompt = item.get("revised_prompt")
+        if isinstance(revised_prompt, str) and revised_prompt:
+            image["revised_prompt"] = revised_prompt
+        return image
+    return None
+
+
+def _image_output_format(body: dict[str, Any]) -> str:
+    output_format = body.get("output_format")
+    if isinstance(output_format, str) and output_format:
+        return "jpeg" if output_format == "jpg" else output_format
+    return "png"
 
 
 def _input_item_id(item: Any, index: int) -> str:
