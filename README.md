@@ -124,6 +124,8 @@ image = client.images.generate(
 )
 
 png_bytes = base64.b64decode(image.data[0].b64_json)
+with open("ramen.png", "wb") as file:
+    file.write(png_bytes)
 ```
 
 The image generation endpoint returns OpenAI-compatible base64 image results.
