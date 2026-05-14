@@ -109,6 +109,28 @@ for event in stream:
         print(event.delta, end="")
 ```
 
+### Generate an image
+
+```python
+import base64
+
+image = client.images.generate(
+    model="gpt-image-2",
+    prompt="A cozy pixel art bowl of ramen, no text.",
+    size="1024x1024",
+    quality="medium",
+    output_format="png",
+    response_format="b64_json",
+)
+
+png_bytes = base64.b64decode(image.data[0].b64_json)
+with open("ramen.png", "wb") as file:
+    file.write(png_bytes)
+```
+
+The image generation endpoint returns OpenAI-compatible base64 image results.
+The server does not host generated files or return temporary image URLs.
+
 ### Run as a background daemon
 
 ```console
@@ -223,6 +245,7 @@ Completions.
 | `POST` | `/v1/responses/{response_id}/cancel` |
 | `POST` | `/v1/responses/input_tokens` |
 | `POST` | `/v1/audio/transcriptions` |
+| `POST` | `/v1/images/generations` |
 | `POST` | `/v1/chat/completions` |
 | `GET` | `/v1/chat/completions` |
 | `GET` | `/v1/chat/completions/{completion_id}` |
@@ -257,6 +280,7 @@ Supported behavior includes:
 - `previous_response_id` for Responses, backed by local in-memory context
 - standard Chat Completions multi-turn through the `messages` list
 - function and tool calling, including streaming tool-call arguments
+- image generation through `client.images.generate(..., response_format="b64_json")`
 - JSON mode and structured outputs
 - URL and data URL image parts
 - reasoning effort fields where the selected model accepts them
@@ -266,6 +290,19 @@ For Codex compatibility, backend requests are normalized to streaming
 Responses calls with `store=false`, low text verbosity by default, automatic
 tool choice defaults, and `reasoning.encrypted_content` included for reasoning
 context. Public `store=true` behavior is implemented locally.
+
+Image generations are implemented by translating `client.images.generate(...)`
+requests into a Codex Responses call with the hosted `image_generation` tool,
+then returning the generated image bytes as `data[].b64_json`. The public image
+model parameter is accepted for OpenAI SDK compatibility, but the backend call
+uses this server's configured Codex model because hosted image generation runs
+inside a Responses request. The endpoint supports non-streaming generation only;
+`response_format="url"` and `client.images.edit(...)` are not implemented.
+`n` is handled by making one Codex image generation call per requested image.
+Parameters such as `size`, `quality`, `background`, and `style` are passed as
+prompt guidance because the Codex hosted tool only exposes `output_format`
+directly. Treat exact dimensions and quality as best-effort unless Codex exposes
+more hosted image tool controls.
 
 > [!NOTE]
 > Model listing is best-effort because the upstream Codex HTTP model catalog can
@@ -559,7 +596,10 @@ $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_comp
 ```
 
 The live tests use the machine's existing Codex credentials and make real model
-requests.
+requests. The main live integration test also exercises image generation through
+`client.images.generate(...)`: it decodes the returned base64 PNG, verifies the
+image dimensions from the PNG header, then sends the generated image back through
+Responses vision input and checks that the model describes the expected subject.
 
 ## Release
 

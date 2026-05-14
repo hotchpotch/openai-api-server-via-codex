@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 from typing import Any
@@ -188,6 +189,52 @@ class ProxyRecordingBackend(RecordingBackend):
             }
         )
         return self.transcription_response
+
+
+class ImageGenerationBackend(RecordingBackend):
+    def __init__(self) -> None:
+        super().__init__()
+        self.image_bytes = b"\x89PNG\r\n\x1a\nfake-image"
+
+    def _response_for_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        response_number = len(self.requests)
+        return {
+            "id": f"resp_image_{response_number}",
+            "object": "response",
+            "created_at": time.time(),
+            "status": "completed",
+            "model": payload["model"],
+            "output": [
+                {
+                    "id": f"ig_fake_{response_number}",
+                    "type": "image_generation_call",
+                    "status": "completed",
+                    "revised_prompt": f"revised image prompt {response_number}",
+                    "result": base64.b64encode(self.image_bytes).decode("ascii"),
+                },
+                {
+                    "id": f"msg_image_{response_number}",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Generated an image.",
+                            "annotations": [],
+                        }
+                    ],
+                },
+            ],
+            "parallel_tool_calls": True,
+            "tool_choice": "auto",
+            "tools": payload.get("tools") or [],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 3,
+                "total_tokens": 13,
+            },
+        }
 
 
 class SlowConcurrencyBackend(RecordingBackend):
@@ -475,6 +522,85 @@ async def test_responses_create_round_trips_with_openai_client(
     assert response.usage.input_tokens == 3
     assert backend.requests[0]["reasoning"] == {"effort": "low"}
     assert backend.requests[0]["store"] is False
+
+
+@pytest.mark.asyncio
+async def test_images_generate_round_trips_with_openai_client() -> None:
+    backend = ImageGenerationBackend()
+    app = create_app(backend=backend, default_model="gpt-5.5")
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        response = await client.images.generate(
+            model="gpt-image-2",
+            prompt="A pixel art bowl of ramen.",
+            n=2,
+            size="1024x1024",
+            quality="medium",
+            background="opaque",
+            output_format="png",
+            response_format="b64_json",
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response.created > 0
+    assert response.output_format == "png"
+    assert response.quality == "medium"
+    assert response.size == "1024x1024"
+    assert response.data is not None
+    assert [image.revised_prompt for image in response.data] == [
+        "revised image prompt 1",
+        "revised image prompt 2",
+    ]
+    assert [
+        base64.b64decode(image.b64_json or b"") for image in response.data
+    ] == [backend.image_bytes, backend.image_bytes]
+    assert len(backend.requests) == 2
+    for request in backend.requests:
+        assert request["model"] == "gpt-5.5"
+        assert request["tools"] == [{"type": "image_generation", "output_format": "png"}]
+        assert request["tool_choice"] == "auto"
+        assert request["store"] is False
+        assert "A pixel art bowl of ramen." in str(request["input"])
+        assert "Requested size: 1024x1024" in str(request["input"])
+        assert "Requested quality: medium" in str(request["input"])
+        assert "Requested background: opaque" in str(request["input"])
+
+
+@pytest.mark.asyncio
+async def test_images_generate_rejects_url_response_format() -> None:
+    backend = ImageGenerationBackend()
+    app = create_app(backend=backend)
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        with pytest.raises(Exception) as exc_info:
+            await client.images.generate(
+                prompt="A pixel art bowl of ramen.",
+                response_format="url",
+            )
+    finally:
+        await http_client.aclose()
+
+    assert getattr(exc_info.value, "status_code", None) == 400
+    assert backend.requests == []
 
 
 @pytest.mark.asyncio
