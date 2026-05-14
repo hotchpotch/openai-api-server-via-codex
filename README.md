@@ -109,6 +109,26 @@ for event in stream:
         print(event.delta, end="")
 ```
 
+### Generate an image
+
+```python
+import base64
+
+image = client.images.generate(
+    model="gpt-image-2",
+    prompt="A cozy pixel art bowl of ramen, no text.",
+    size="1024x1024",
+    quality="medium",
+    output_format="png",
+    response_format="b64_json",
+)
+
+png_bytes = base64.b64decode(image.data[0].b64_json)
+```
+
+The image generation endpoint returns OpenAI-compatible base64 image results.
+The server does not host generated files or return temporary image URLs.
+
 ### Run as a background daemon
 
 ```console
@@ -525,27 +545,6 @@ response = client.responses.create(
     ],
 )
 ```
-
-### Generate an image
-
-```python
-import base64
-
-image = client.images.generate(
-    model="gpt-image-2",
-    prompt="A cozy pixel art bowl of ramen, no text.",
-    size="1024x1024",
-    quality="medium",
-    output_format="png",
-    response_format="b64_json",
-)
-
-png_bytes = base64.b64decode(image.data[0].b64_json)
-```
-
-The returned object follows the `openai-python` image generation response shape
-for base64 results. Save or inspect `png_bytes` in the caller as needed. The
-server does not host generated files or return temporary image URLs.
 
 ### Use tool calling
 
