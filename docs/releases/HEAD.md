@@ -1,10 +1,1 @@
 # HEAD
-
-## Changed
-
-- Improved `/v1/images/generations` compatibility with GPT image generation by
-  forwarding supported controls such as `size`, `quality`, `background`,
-  `moderation`, `output_compression`, and `output_format` into the hosted
-  `image_generation` tool spec instead of rewriting them into the prompt.
-- Removed the compatibility shim for `response_format` on image generations;
-  GPT image results are returned as `data[].b64_json`.
