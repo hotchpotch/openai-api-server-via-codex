@@ -144,7 +144,6 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
                 size="1024x1024",
                 quality="medium",
                 output_format="png",
-                response_format="b64_json",
             )
             assert generated.data
             image_b64 = generated.data[0].b64_json
@@ -178,6 +177,10 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
                 reasoning={"effort": "low"},
             )
             description = image_description.output_text.lower()
+            print(
+                "live image generation "
+                f"dimensions={width}x{height} description={description!r}"
+            )
             assert any(word in description for word in ("ramen", "noodle", "bowl")), (
                 description,
                 width,

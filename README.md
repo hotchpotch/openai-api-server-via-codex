@@ -120,7 +120,6 @@ image = client.images.generate(
     size="1024x1024",
     quality="medium",
     output_format="png",
-    response_format="b64_json",
 )
 
 png_bytes = base64.b64decode(image.data[0].b64_json)
@@ -129,7 +128,8 @@ with open("ramen.png", "wb") as file:
 ```
 
 The image generation endpoint returns OpenAI-compatible base64 image results.
-The server does not host generated files or return temporary image URLs.
+The server does not host generated files or return temporary image URLs. Do not
+pass `response_format`; GPT image generations are returned as `b64_json`.
 
 ### Run as a background daemon
 
@@ -280,7 +280,7 @@ Supported behavior includes:
 - `previous_response_id` for Responses, backed by local in-memory context
 - standard Chat Completions multi-turn through the `messages` list
 - function and tool calling, including streaming tool-call arguments
-- image generation through `client.images.generate(..., response_format="b64_json")`
+- image generation through `client.images.generate(...)` with base64 image data
 - JSON mode and structured outputs
 - URL and data URL image parts
 - reasoning effort fields where the selected model accepts them
@@ -297,12 +297,14 @@ then returning the generated image bytes as `data[].b64_json`. The public image
 model parameter is accepted for OpenAI SDK compatibility, but the backend call
 uses this server's configured Codex model because hosted image generation runs
 inside a Responses request. The endpoint supports non-streaming generation only;
-`response_format="url"` and `client.images.edit(...)` are not implemented.
-`n` is handled by making one Codex image generation call per requested image.
-Parameters such as `size`, `quality`, `background`, and `style` are passed as
-prompt guidance because the Codex hosted tool only exposes `output_format`
-directly. Treat exact dimensions and quality as best-effort unless Codex exposes
-more hosted image tool controls.
+`response_format`, URL results, streamed partial images, `style`, and
+`client.images.edit(...)` are not implemented. `n` is handled by making one
+Codex image generation call per requested image. Supported GPT image controls
+such as `size`, `quality`, `background`, `moderation`, `output_compression`,
+and `output_format` are forwarded directly into the hosted `image_generation`
+tool spec instead of being rewritten into the prompt. Arbitrary `WIDTHxHEIGHT`
+size strings are accepted and forwarded, though the top-level
+OpenAI-compatible response echoes only SDK-compatible standard sizes.
 
 > [!NOTE]
 > Model listing is best-effort because the upstream Codex HTTP model catalog can
