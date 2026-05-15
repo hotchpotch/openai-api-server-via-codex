@@ -36,7 +36,6 @@ from .backend import (
 from . import config as config_module
 from .compat import (
     ChatCompletionStore,
-    DEFAULT_INSTRUCTIONS,
     DEFAULT_MAX_STORED_ITEMS,
     DEFAULT_MODEL,
     ResponseStore,
@@ -1808,6 +1807,15 @@ def _chat_choice_count(value: Any) -> int:
     return _positive_int(value) or 1
 
 
+_IMAGE_OUTPUT_FORMATS = {"png", "jpeg", "webp"}
+_IMAGE_QUALITIES = {"low", "medium", "high", "auto"}
+_IMAGE_BACKGROUNDS = {"transparent", "opaque", "auto"}
+_IMAGE_MODERATIONS = {"low", "auto"}
+_IMAGE_RESPONSE_QUALITIES = {"low", "medium", "high"}
+_IMAGE_RESPONSE_BACKGROUNDS = {"transparent", "opaque"}
+_IMAGE_RESPONSE_SIZES = {"1024x1024", "1024x1536", "1536x1024"}
+
+
 def _validate_image_generation_request(body: dict[str, Any]) -> JSONResponse | None:
     prompt = body.get("prompt")
     if not isinstance(prompt, str) or not prompt.strip():
@@ -1821,10 +1829,10 @@ def _validate_image_generation_request(body: dict[str, Any]) -> JSONResponse | N
         )
 
     response_format = body.get("response_format")
-    if response_format not in {None, "b64_json"}:
+    if response_format is not None:
         return _openai_error(
             400,
-            "Only response_format='b64_json' is supported for image generations.",
+            "response_format is not supported for GPT image generations; images are always returned as b64_json.",
             param="response_format",
         )
 
@@ -1836,11 +1844,74 @@ def _validate_image_generation_request(body: dict[str, Any]) -> JSONResponse | N
         return _openai_error(400, "n must be between 1 and 10.", param="n")
 
     output_format = _image_output_format(body)
-    if output_format not in {"png", "jpeg", "webp"}:
+    if output_format not in _IMAGE_OUTPUT_FORMATS:
         return _openai_error(
             400,
             "output_format must be one of png, jpeg, or webp.",
             param="output_format",
+        )
+
+    size = body.get("size")
+    if size is not None and not _valid_image_size(size):
+        return _openai_error(
+            400,
+            "size must be 'auto' or a WIDTHxHEIGHT pixel string.",
+            param="size",
+        )
+
+    quality = body.get("quality")
+    if quality is not None and quality not in _IMAGE_QUALITIES:
+        return _openai_error(
+            400,
+            "quality must be one of low, medium, high, or auto.",
+            param="quality",
+        )
+
+    background = body.get("background")
+    if background is not None and background not in _IMAGE_BACKGROUNDS:
+        return _openai_error(
+            400,
+            "background must be one of transparent, opaque, or auto.",
+            param="background",
+        )
+
+    moderation = body.get("moderation")
+    if moderation is not None and moderation not in _IMAGE_MODERATIONS:
+        return _openai_error(
+            400,
+            "moderation must be one of low or auto.",
+            param="moderation",
+        )
+
+    output_compression = body.get("output_compression")
+    if output_compression is not None:
+        try:
+            output_compression = int(output_compression)
+        except (TypeError, ValueError):
+            return _openai_error(
+                400,
+                "output_compression must be an integer between 0 and 100.",
+                param="output_compression",
+            )
+        if output_compression < 0 or output_compression > 100:
+            return _openai_error(
+                400,
+                "output_compression must be between 0 and 100.",
+                param="output_compression",
+            )
+
+    if body.get("style") is not None:
+        return _openai_error(
+            400,
+            "style is not supported for GPT image generations.",
+            param="style",
+        )
+
+    if body.get("partial_images") is not None:
+        return _openai_error(
+            400,
+            "partial_images requires streamed image generations, which are not supported.",
+            param="partial_images",
         )
 
     return None
@@ -1849,48 +1920,41 @@ def _validate_image_generation_request(body: dict[str, Any]) -> JSONResponse | N
 def _image_generation_response_payload(
     body: dict[str, Any], *, default_model: str
 ) -> dict[str, Any]:
-    output_format = _image_output_format(body)
     return {
         "model": default_model,
-        "instructions": (
-            f"{DEFAULT_INSTRUCTIONS} Use the image_generation tool when the user "
-            "asks for an image. Return the generated image without adding extra "
-            "requirements."
-        ),
+        "instructions": "Use the image_generation tool to generate the requested image.",
         "input": [
             {
                 "role": "user",
                 "content": [
                     {
                         "type": "input_text",
-                        "text": _image_generation_prompt(body),
+                        "text": str(body.get("prompt") or "").strip(),
                     }
                 ],
             }
         ],
-        "tools": [{"type": "image_generation", "output_format": output_format}],
+        "tools": [_image_generation_tool(body)],
         "tool_choice": "auto",
         "parallel_tool_calls": True,
         "store": False,
     }
 
 
-def _image_generation_prompt(body: dict[str, Any]) -> str:
-    lines = [
-        "Generate an image using the image_generation tool.",
-        f"Primary request: {str(body.get('prompt') or '').strip()}",
-    ]
-    for key, label in (
-        ("size", "Requested size"),
-        ("quality", "Requested quality"),
-        ("background", "Requested background"),
-        ("style", "Requested style"),
-    ):
+def _image_generation_tool(body: dict[str, Any]) -> dict[str, Any]:
+    tool: dict[str, Any] = {
+        "type": "image_generation",
+        "action": "generate",
+        "output_format": _image_output_format(body),
+    }
+    for key in ("size", "quality", "background", "moderation"):
         value = body.get(key)
         if isinstance(value, str) and value:
-            lines.append(f"{label}: {value}")
-    lines.append("Do not include text, logos, or watermarks unless explicitly requested.")
-    return "\n".join(lines)
+            tool[key] = value
+    output_compression = body.get("output_compression")
+    if output_compression is not None:
+        tool["output_compression"] = int(output_compression)
+    return tool
 
 
 def _responses_to_images_response(
@@ -1916,13 +1980,13 @@ def _responses_to_images_response(
         "output_format": _image_output_format(body),
     }
     background = body.get("background")
-    if background in {"transparent", "opaque"}:
+    if background in _IMAGE_RESPONSE_BACKGROUNDS:
         result["background"] = background
     quality = body.get("quality")
-    if quality in {"low", "medium", "high"}:
+    if quality in _IMAGE_RESPONSE_QUALITIES:
         result["quality"] = quality
     size = body.get("size")
-    if size in {"1024x1024", "1024x1536", "1536x1024"}:
+    if size in _IMAGE_RESPONSE_SIZES:
         result["size"] = size
     return result
 
@@ -1945,8 +2009,19 @@ def _image_from_response(response: dict[str, Any]) -> dict[str, str] | None:
 def _image_output_format(body: dict[str, Any]) -> str:
     output_format = body.get("output_format")
     if isinstance(output_format, str) and output_format:
-        return "jpeg" if output_format == "jpg" else output_format
+        return output_format
     return "png"
+
+
+def _valid_image_size(size: Any) -> bool:
+    if size == "auto":
+        return True
+    if not isinstance(size, str):
+        return False
+    width, separator, height = size.partition("x")
+    if separator != "x" or not width.isdecimal() or not height.isdecimal():
+        return False
+    return int(width) > 0 and int(height) > 0
 
 
 def _input_item_id(item: Any, index: int) -> str:

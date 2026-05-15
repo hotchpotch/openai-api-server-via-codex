@@ -4,7 +4,7 @@ import asyncio
 import base64
 import logging
 import time
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -546,8 +546,9 @@ async def test_images_generate_round_trips_with_openai_client() -> None:
             size="1024x1024",
             quality="medium",
             background="opaque",
+            moderation="low",
+            output_compression=80,
             output_format="png",
-            response_format="b64_json",
         )
     finally:
         await http_client.aclose()
@@ -567,17 +568,79 @@ async def test_images_generate_round_trips_with_openai_client() -> None:
     assert len(backend.requests) == 2
     for request in backend.requests:
         assert request["model"] == "gpt-5.5"
-        assert request["tools"] == [{"type": "image_generation", "output_format": "png"}]
+        assert request["input"] == [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "A pixel art bowl of ramen.",
+                    }
+                ],
+            }
+        ]
+        assert request["tools"] == [
+            {
+                "type": "image_generation",
+                "action": "generate",
+                "output_format": "png",
+                "size": "1024x1024",
+                "quality": "medium",
+                "background": "opaque",
+                "moderation": "low",
+                "output_compression": 80,
+            }
+        ]
         assert request["tool_choice"] == "auto"
         assert request["store"] is False
-        assert "A pixel art bowl of ramen." in str(request["input"])
-        assert "Requested size: 1024x1024" in str(request["input"])
-        assert "Requested quality: medium" in str(request["input"])
-        assert "Requested background: opaque" in str(request["input"])
 
 
 @pytest.mark.asyncio
-async def test_images_generate_rejects_url_response_format() -> None:
+async def test_images_generate_forwards_arbitrary_size_without_echoing_sdk_incompatible_fields() -> (
+    None
+):
+    backend = ImageGenerationBackend()
+    app = create_app(backend=backend, default_model="gpt-5.5")
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+
+    try:
+        response = await client.images.generate(
+            model="gpt-image-2",
+            prompt="A banner image.",
+            size=cast(Any, "1536x864"),
+            quality="auto",
+            background="auto",
+            output_format="webp",
+        )
+    finally:
+        await http_client.aclose()
+
+    assert response.output_format == "webp"
+    assert response.background is None
+    assert response.quality is None
+    assert response.size is None
+    assert backend.requests[0]["tools"] == [
+        {
+            "type": "image_generation",
+            "action": "generate",
+            "output_format": "webp",
+            "size": "1536x864",
+            "quality": "auto",
+            "background": "auto",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_images_generate_rejects_response_format_parameter() -> None:
     backend = ImageGenerationBackend()
     app = create_app(backend=backend)
     http_client = httpx.AsyncClient(
@@ -594,7 +657,7 @@ async def test_images_generate_rejects_url_response_format() -> None:
         with pytest.raises(Exception) as exc_info:
             await client.images.generate(
                 prompt="A pixel art bowl of ramen.",
-                response_format="url",
+                response_format="b64_json",
             )
     finally:
         await http_client.aclose()
