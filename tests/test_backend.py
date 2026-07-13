@@ -11,7 +11,6 @@ from openai_api_server_via_codex.backend import (
     CodexBackendError,
     CodexHttpBackend,
     DEFAULT_MODELS,
-    RESPONSES_LITE_MODELS,
     _collect_streamed_response,
     _forward_proxy_request_headers,
     _forward_proxy_response_headers,
@@ -84,8 +83,8 @@ def test_prepare_codex_payload_preserves_explicit_parallel_tool_calls_for_regula
     assert prepared["parallel_tool_calls"] is True
 
 
-def test_prepare_codex_payload_uses_responses_lite_defaults_for_gpt_5_6_models() -> None:
-    for model in RESPONSES_LITE_MODELS:
+def test_prepare_codex_payload_uses_standard_defaults_for_gpt_5_6_models() -> None:
+    for model in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"):
         prepared = _prepare_codex_payload(
             {
                 "model": model,
@@ -98,11 +97,12 @@ def test_prepare_codex_payload_uses_responses_lite_defaults_for_gpt_5_6_models()
         assert prepared["store"] is False
         assert prepared["tool_choice"] == "auto"
         assert prepared["parallel_tool_calls"] is False
-        assert prepared["reasoning"] == {"context": "all_turns"}
         assert prepared["include"] == ["reasoning.encrypted_content"]
+        assert "reasoning" not in prepared
+        assert "prompt_cache_key" not in prepared
 
 
-def test_prepare_codex_payload_rewrites_responses_lite_instructions_and_tools() -> None:
+def test_prepare_codex_payload_preserves_gpt_5_6_instructions_and_tools() -> None:
     prepared = _prepare_codex_payload(
         {
             "model": "gpt-5.6-luna",
@@ -112,24 +112,12 @@ def test_prepare_codex_payload_rewrites_responses_lite_instructions_and_tools() 
         }
     )
 
-    assert "instructions" not in prepared
-    assert "tools" not in prepared
-    assert prepared["input"] == [
-        {
-            "type": "additional_tools",
-            "role": "developer",
-            "tools": [{"type": "function", "name": "lookup"}],
-        },
-        {
-            "type": "message",
-            "role": "developer",
-            "content": [{"type": "input_text", "text": "You are concise."}],
-        },
-        {"role": "user", "content": "hello"},
-    ]
+    assert prepared["instructions"] == "You are concise."
+    assert prepared["tools"] == [{"type": "function", "name": "lookup"}]
+    assert prepared["input"] == [{"role": "user", "content": "hello"}]
 
 
-def test_prepare_codex_payload_strips_responses_lite_image_detail() -> None:
+def test_prepare_codex_payload_preserves_gpt_5_6_image_detail() -> None:
     prepared = _prepare_codex_payload(
         {
             "model": "gpt-5.6-luna",
@@ -145,13 +133,14 @@ def test_prepare_codex_payload_strips_responses_lite_image_detail() -> None:
         }
     )
 
-    assert prepared["input"][1]["content"][1] == {
+    assert prepared["input"][0]["content"][1] == {
         "type": "input_image",
         "image_url": "data:",
+        "detail": "high",
     }
 
 
-def test_prepare_codex_payload_preserves_responses_lite_reasoning_options() -> None:
+def test_prepare_codex_payload_preserves_gpt_5_6_reasoning_options() -> None:
     prepared = _prepare_codex_payload(
         {
             "model": "gpt-5.6-luna",
@@ -160,10 +149,10 @@ def test_prepare_codex_payload_preserves_responses_lite_reasoning_options() -> N
         }
     )
 
-    assert prepared["reasoning"] == {"effort": "medium", "context": "all_turns"}
+    assert prepared["reasoning"] == {"effort": "medium"}
 
 
-def test_prepare_codex_payload_forces_responses_lite_reasoning_context() -> None:
+def test_prepare_codex_payload_preserves_gpt_5_6_reasoning_context() -> None:
     prepared = _prepare_codex_payload(
         {
             "model": "gpt-5.6-luna",
@@ -172,32 +161,7 @@ def test_prepare_codex_payload_forces_responses_lite_reasoning_context() -> None
         }
     )
 
-    assert prepared["reasoning"] == {"effort": "medium", "context": "all_turns"}
-
-
-def test_responses_lite_models_are_the_exact_gpt_5_6_lite_set() -> None:
-    assert RESPONSES_LITE_MODELS == {
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-    }
-
-
-def test_headers_add_responses_lite_flag_only_when_requested() -> None:
-    regular_headers = CodexHttpBackend._headers(
-        "account-1",
-        client_version="1.2.3",
-        event_stream=True,
-    )
-    lite_headers = CodexHttpBackend._headers(
-        "account-1",
-        client_version="1.2.3",
-        event_stream=True,
-        responses_lite=True,
-    )
-
-    assert "x-openai-internal-codex-responses-lite" not in regular_headers
-    assert lite_headers["x-openai-internal-codex-responses-lite"] == "true"
+    assert prepared["reasoning"] == {"effort": "medium", "context": "last_turn"}
 
 
 def test_headers_use_codex_cli_identity() -> None:
@@ -214,20 +178,20 @@ def test_headers_use_codex_cli_identity() -> None:
     assert "ChatGPT-Account-ID" not in headers
 
 
-def test_headers_add_responses_lite_session_contract() -> None:
+def test_headers_add_session_contract_without_lite_routing() -> None:
     headers = CodexHttpBackend._headers(
         "account-1",
         client_version="1.2.3",
         request_id="session-1",
         event_stream=True,
-        responses_lite=True,
     )
 
     assert headers["session_id"] == "session-1"
     assert headers["session-id"] == "session-1"
     assert headers["x-client-request-id"] == "session-1"
-    assert headers["x-session-affinity"] == "session-1"
-    assert headers["version"] == "0.144.0"
+    assert "x-session-affinity" not in headers
+    assert "x-openai-internal-codex-responses-lite" not in headers
+    assert "version" not in headers
 
 
 async def test_collect_streamed_response_uses_request_parallel_tool_calls_default() -> None:
@@ -253,7 +217,7 @@ async def test_collect_streamed_response_preserves_request_parallel_tool_calls()
     assert response["parallel_tool_calls"] is True
 
 
-async def test_stream_response_sends_responses_lite_header_and_payload(
+async def test_stream_response_sends_standard_gpt_5_6_payload(
     monkeypatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -298,27 +262,18 @@ async def test_stream_response_sends_responses_lite_header_and_payload(
     assert events == [{"type": "response.completed", "response": {"id": "resp_1"}}]
     assert captured["payload"]["model"] == "gpt-5.6-luna"
     assert captured["payload"]["tool_choice"] == "auto"
-    assert captured["payload"]["parallel_tool_calls"] is False
-    assert isinstance(captured["payload"]["prompt_cache_key"], str)
+    assert captured["payload"]["parallel_tool_calls"] is True
+    assert "prompt_cache_key" not in captured["payload"]
     assert captured["payload"]["reasoning"] == {
         "effort": "medium",
-        "context": "all_turns",
+        "context": "last_turn",
     }
-    assert captured["payload"]["input"][0] == {
-        "type": "additional_tools",
-        "role": "developer",
-        "tools": [],
-    }
-    assert (
-        captured["client_kwargs"]["default_headers"][
-            "x-openai-internal-codex-responses-lite"
-        ]
-        == "true"
-    )
-    assert captured["client_kwargs"]["default_headers"]["version"] == "0.144.0"
-    assert captured["client_kwargs"]["default_headers"]["x-session-affinity"] == captured[
-        "payload"
-    ]["prompt_cache_key"]
+    assert captured["payload"]["input"] == [{"role": "user", "content": "hello"}]
+    assert "x-openai-internal-codex-responses-lite" not in captured["client_kwargs"][
+        "default_headers"
+    ]
+    assert "version" not in captured["client_kwargs"]["default_headers"]
+    assert "x-session-affinity" not in captured["client_kwargs"]["default_headers"]
     assert captured["closed"] is True
 
 
