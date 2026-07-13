@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 from openai import APIStatusError
 
+import openai_api_server_via_codex.backend as backend_module
 from openai_api_server_via_codex.backend import (
     CodexBackendError,
     CodexHttpBackend,
     DEFAULT_MODELS,
+    RESPONSES_LITE_MODELS,
+    _collect_streamed_response,
     _forward_proxy_request_headers,
     _forward_proxy_response_headers,
     _normalize_codex_stream_event,
@@ -51,7 +56,7 @@ def test_prepare_codex_payload_adds_codex_http_defaults_without_overwriting() ->
     assert payload["max_output_tokens"] == 20
 
 
-def test_prepare_codex_payload_adds_missing_tool_and_reasoning_defaults() -> None:
+def test_prepare_codex_payload_defaults_parallel_tool_calls_off() -> None:
     prepared = _prepare_codex_payload(
         {
             "model": "gpt-5.4-mini",
@@ -62,9 +67,170 @@ def test_prepare_codex_payload_adds_missing_tool_and_reasoning_defaults() -> Non
     assert prepared["stream"] is True
     assert prepared["store"] is False
     assert prepared["tool_choice"] == "auto"
-    assert prepared["parallel_tool_calls"] is True
+    assert prepared["parallel_tool_calls"] is False
     assert prepared["text"] == {"verbosity": "low"}
     assert prepared["include"] == ["reasoning.encrypted_content"]
+
+
+def test_prepare_codex_payload_preserves_explicit_parallel_tool_calls_for_regular_models() -> None:
+    prepared = _prepare_codex_payload(
+        {
+            "model": "gpt-5.4-mini",
+            "input": [{"role": "user", "content": "hello"}],
+            "parallel_tool_calls": True,
+        }
+    )
+
+    assert prepared["parallel_tool_calls"] is True
+
+
+def test_prepare_codex_payload_uses_responses_lite_defaults_for_gpt_5_6_models() -> None:
+    for model in RESPONSES_LITE_MODELS:
+        prepared = _prepare_codex_payload(
+            {
+                "model": model,
+                "input": [{"role": "user", "content": "hello"}],
+            }
+        )
+
+        assert prepared["model"] == model
+        assert prepared["stream"] is True
+        assert prepared["store"] is False
+        assert prepared["tool_choice"] == "auto"
+        assert prepared["parallel_tool_calls"] is False
+        assert prepared["reasoning"] == {"context": "all_turns"}
+        assert prepared["include"] == ["reasoning.encrypted_content"]
+
+
+def test_prepare_codex_payload_preserves_responses_lite_reasoning_options() -> None:
+    prepared = _prepare_codex_payload(
+        {
+            "model": "gpt-5.6-luna",
+            "input": [{"role": "user", "content": "hello"}],
+            "reasoning": {"effort": "medium"},
+        }
+    )
+
+    assert prepared["reasoning"] == {"effort": "medium", "context": "all_turns"}
+
+
+def test_prepare_codex_payload_forces_responses_lite_reasoning_context() -> None:
+    prepared = _prepare_codex_payload(
+        {
+            "model": "gpt-5.6-luna",
+            "input": [{"role": "user", "content": "hello"}],
+            "reasoning": {"effort": "medium", "context": "last_turn"},
+        }
+    )
+
+    assert prepared["reasoning"] == {"effort": "medium", "context": "all_turns"}
+
+
+def test_responses_lite_models_are_the_exact_gpt_5_6_lite_set() -> None:
+    assert RESPONSES_LITE_MODELS == {
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    }
+
+
+def test_headers_add_responses_lite_flag_only_when_requested() -> None:
+    regular_headers = CodexHttpBackend._headers(
+        "account-1",
+        client_version="1.2.3",
+        event_stream=True,
+    )
+    lite_headers = CodexHttpBackend._headers(
+        "account-1",
+        client_version="1.2.3",
+        event_stream=True,
+        responses_lite=True,
+    )
+
+    assert "x-openai-internal-codex-responses-lite" not in regular_headers
+    assert lite_headers["x-openai-internal-codex-responses-lite"] == "true"
+
+
+async def test_collect_streamed_response_uses_request_parallel_tool_calls_default() -> None:
+    async def stream():
+        yield {"type": "response.output_text.delta", "delta": "hello"}
+
+    response = await _collect_streamed_response(
+        stream(), {"model": "gpt-5.4-mini", "input": "hello"}
+    )
+
+    assert response["parallel_tool_calls"] is False
+
+
+async def test_collect_streamed_response_preserves_request_parallel_tool_calls() -> None:
+    async def stream():
+        yield {"type": "response.output_text.delta", "delta": "hello"}
+
+    response = await _collect_streamed_response(
+        stream(),
+        {"model": "gpt-5.4-mini", "input": "hello", "parallel_tool_calls": True},
+    )
+
+    assert response["parallel_tool_calls"] is True
+
+
+async def test_stream_response_sends_responses_lite_header_and_payload(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    class FakeResponses:
+        async def create(self, **payload):
+            captured["payload"] = payload
+
+            async def stream():
+                yield {"type": "response.completed", "response": {"id": "resp_1"}}
+
+            return stream()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.responses = FakeResponses()
+
+        async def close(self) -> None:
+            captured["closed"] = True
+
+    backend = CodexHttpBackend()
+
+    async def fake_borrow_key() -> tuple[str, str | None]:
+        return "token-1", "account-1"
+
+    monkeypatch.setattr(backend, "_borrow_key", fake_borrow_key)
+    monkeypatch.setattr(backend_module, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    events = [
+        event
+        async for event in backend.stream_response(
+            {
+                "model": "gpt-5.6-luna",
+                "input": "hello",
+                "parallel_tool_calls": True,
+                "reasoning": {"effort": "medium", "context": "last_turn"},
+            }
+        )
+    ]
+
+    assert events == [{"type": "response.completed", "response": {"id": "resp_1"}}]
+    assert captured["payload"]["model"] == "gpt-5.6-luna"
+    assert captured["payload"]["tool_choice"] == "auto"
+    assert captured["payload"]["parallel_tool_calls"] is False
+    assert captured["payload"]["reasoning"] == {
+        "effort": "medium",
+        "context": "all_turns",
+    }
+    assert (
+        captured["client_kwargs"]["default_headers"][
+            "x-openai-internal-codex-responses-lite"
+        ]
+        == "true"
+    )
+    assert captured["closed"] is True
 
 
 def test_default_models_match_codex_http_fallback_catalog() -> None:
@@ -79,6 +245,9 @@ def test_default_models_match_codex_http_fallback_catalog() -> None:
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
     ]
 
 

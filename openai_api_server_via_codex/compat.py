@@ -432,7 +432,9 @@ def ensure_response_defaults(
     prepared.setdefault("status", "completed")
     prepared.setdefault("model", request_payload.get("model") or DEFAULT_MODEL)
     prepared.setdefault("output", [])
-    prepared.setdefault("parallel_tool_calls", True)
+    prepared.setdefault(
+        "parallel_tool_calls", request_payload.get("parallel_tool_calls") is True
+    )
     prepared.setdefault("tool_choice", request_payload.get("tool_choice") or "auto")
     prepared.setdefault("tools", request_payload.get("tools") or [])
     prepared.setdefault("previous_response_id", request_payload.get("previous_response_id"))

@@ -32,7 +32,17 @@ DEFAULT_MODELS = [
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.5",
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
 ]
+RESPONSES_LITE_MODELS = frozenset(
+    {
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    }
+)
 CODEX_REASONING_INCLUDE = "reasoning.encrypted_content"
 CODEX_RESPONSE_STATUSES = {
     "completed",
@@ -141,12 +151,14 @@ class CodexHttpBackend:
         )
         token, account_id = await self._borrow_key()
         codex_payload = _prepare_codex_payload(payload)
+        responses_lite = _is_responses_lite_model(codex_payload.get("model"))
         request_id = codex_payload.get("prompt_cache_key")
         headers = self._headers(
             account_id,
             client_version=self.client_version,
             request_id=request_id if isinstance(request_id, str) else None,
             event_stream=True,
+            responses_lite=responses_lite,
         )
         client = AsyncOpenAI(
             api_key=token,
@@ -368,6 +380,7 @@ class CodexHttpBackend:
         client_version: str,
         request_id: str | None = None,
         event_stream: bool = False,
+        responses_lite: bool = False,
     ) -> dict[str, str]:
         headers = {
             "originator": "openai-api-server-via-codex",
@@ -382,6 +395,8 @@ class CodexHttpBackend:
         if request_id:
             headers["session_id"] = request_id
             headers["x-client-request-id"] = request_id
+        if responses_lite:
+            headers["x-openai-internal-codex-responses-lite"] = "true"
         return headers
 
 
@@ -451,11 +466,20 @@ def _list_len(value: Any) -> int:
 
 def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
     codex_payload = copy.deepcopy(payload)
+    responses_lite = _is_responses_lite_model(codex_payload.get("model"))
     codex_payload.pop("max_output_tokens", None)
     codex_payload["stream"] = True
     codex_payload["store"] = False
-    codex_payload.setdefault("tool_choice", "auto")
-    codex_payload.setdefault("parallel_tool_calls", True)
+    if responses_lite:
+        codex_payload["tool_choice"] = "auto"
+        codex_payload["parallel_tool_calls"] = False
+        reasoning = codex_payload.get("reasoning")
+        reasoning_config = dict(reasoning) if isinstance(reasoning, dict) else {}
+        reasoning_config["context"] = "all_turns"
+        codex_payload["reasoning"] = reasoning_config
+    else:
+        codex_payload.setdefault("tool_choice", "auto")
+        codex_payload.setdefault("parallel_tool_calls", False)
 
     text = codex_payload.get("text")
     text_config = dict(text) if isinstance(text, dict) else {}
@@ -468,6 +492,10 @@ def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
         include_values.append(CODEX_REASONING_INCLUDE)
     codex_payload["include"] = include_values
     return codex_payload
+
+
+def _is_responses_lite_model(model: Any) -> bool:
+    return isinstance(model, str) and model in RESPONSES_LITE_MODELS
 
 
 def _normalize_codex_stream_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -545,10 +573,14 @@ async def _collect_streamed_response(
                 ],
             }
         ],
-        "parallel_tool_calls": True,
+        "parallel_tool_calls": _parallel_tool_calls_value(payload),
         "tool_choice": payload.get("tool_choice") or "auto",
         "tools": payload.get("tools") or [],
     }
+
+
+def _parallel_tool_calls_value(payload: dict[str, Any]) -> bool:
+    return payload.get("parallel_tool_calls") is True
 
 
 def _status_error_message(exc: APIStatusError) -> str:
