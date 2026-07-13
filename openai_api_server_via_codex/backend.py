@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-import platform
 import time
+import uuid
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -21,6 +21,8 @@ LOGGER = logging.getLogger("openai_api_server_via_codex.backend")
 install_redacting_filter(LOGGER)
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_BACKEND_HTTP = "codex-http"
+CODEX_ORIGINATOR = "codex_cli_rs"
+CODEX_USER_AGENT = "codex_cli_rs/0.0.0 (openai-api-server-via-codex)"
 DEFAULT_MODELS = [
     "gpt-5.1",
     "gpt-5.1-codex-max",
@@ -43,6 +45,7 @@ RESPONSES_LITE_MODELS = frozenset(
         "gpt-5.6-luna",
     }
 )
+CODEX_RESPONSES_LITE_VERSION = "0.144.0"
 CODEX_REASONING_INCLUDE = "reasoning.encrypted_content"
 CODEX_RESPONSE_STATUSES = {
     "completed",
@@ -383,20 +386,25 @@ class CodexHttpBackend:
         responses_lite: bool = False,
     ) -> dict[str, str]:
         headers = {
-            "originator": "openai-api-server-via-codex",
-            "User-Agent": _user_agent(client_version),
+            "originator": CODEX_ORIGINATOR,
+            "User-Agent": CODEX_USER_AGENT,
+            "Origin": "https://chatgpt.com",
         }
         if event_stream:
             headers["OpenAI-Beta"] = "responses=experimental"
             headers["Accept"] = "text/event-stream"
             headers["Content-Type"] = "application/json"
         if account_id:
-            headers["ChatGPT-Account-ID"] = account_id
+            headers["OpenAI-Account-ID"] = account_id
         if request_id:
             headers["session_id"] = request_id
+            headers["session-id"] = request_id
             headers["x-client-request-id"] = request_id
+            if responses_lite:
+                headers["x-session-affinity"] = request_id
         if responses_lite:
             headers["x-openai-internal-codex-responses-lite"] = "true"
+            headers["version"] = CODEX_RESPONSES_LITE_VERSION
         return headers
 
 
@@ -471,6 +479,7 @@ def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
     codex_payload["stream"] = True
     codex_payload["store"] = False
     if responses_lite:
+        _prepare_responses_lite_payload(codex_payload)
         codex_payload["tool_choice"] = "auto"
         codex_payload["parallel_tool_calls"] = False
         reasoning = codex_payload.get("reasoning")
@@ -496,6 +505,46 @@ def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _is_responses_lite_model(model: Any) -> bool:
     return isinstance(model, str) and model in RESPONSES_LITE_MODELS
+
+
+def _prepare_responses_lite_payload(payload: dict[str, Any]) -> None:
+    payload.setdefault("prompt_cache_key", str(uuid.uuid4()))
+    input_items = payload.get("input")
+    if isinstance(input_items, list):
+        _strip_image_detail(input_items)
+        rewritten_input = [
+            {
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": payload.get("tools") if isinstance(payload.get("tools"), list) else [],
+            }
+        ]
+        instructions = payload.get("instructions")
+        if isinstance(instructions, str):
+            rewritten_input.append(
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": instructions}],
+                }
+            )
+        rewritten_input.extend(input_items)
+        payload["input"] = rewritten_input
+    payload.pop("tools", None)
+    payload.pop("instructions", None)
+
+
+def _strip_image_detail(value: Any) -> None:
+    if isinstance(value, list):
+        for item in value:
+            _strip_image_detail(item)
+        return
+    if not isinstance(value, dict):
+        return
+    if value.get("type") == "input_image":
+        value.pop("detail", None)
+    for item in value.values():
+        _strip_image_detail(item)
 
 
 def _normalize_codex_stream_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -610,9 +659,3 @@ def _reset_time_text(value: Any) -> str:
     minutes = max(0, round((float(value) - time.time()) / 60))
     return f" Try again in ~{minutes} min."
 
-
-def _user_agent(client_version: str) -> str:
-    return (
-        f"openai-api-server-via-codex/{client_version} "
-        f"({platform.system().lower()} {platform.release()}; {platform.machine()})"
-    )
