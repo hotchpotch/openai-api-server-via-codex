@@ -12,7 +12,6 @@ import httpx
 import pytest
 from openai import AsyncOpenAI, OpenAI
 
-
 ONE_PIXEL_PNG_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -61,7 +60,7 @@ async def test_live_codex_http_supports_openai_calls() -> None:
             response_stream_text: list[str] = []
             async for event in response_stream:
                 if event.type == "response.output_text.delta":
-                    response_stream_text.append(str(getattr(event, "delta")))
+                    response_stream_text.append(str(getattr(event, "delta")))  # noqa: B009
             assert "".join(response_stream_text).strip()
 
             chat = await client.chat.completions.create(
@@ -852,7 +851,7 @@ async def _assert_responses_auxiliary_sdk_methods(
             if item_text:
                 replayed_output_text_parts.append(item_text)
         elif event.type == "response.completed":
-            completed_response_id = getattr(event, "response").id
+            completed_response_id = getattr(event, "response").id  # noqa: B009
 
     assert event_types[0] == "response.created", (backend_name, event_types)
     assert event_types[-1] == "response.completed", (backend_name, event_types)

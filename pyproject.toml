@@ -48,7 +48,7 @@ include = ["openai_api_server_via_codex*"]
 dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
-    "ruff>=0.15.12",
+    "ruff==0.16.1",
     "tox>=4.53.1",
     "tox-uv>=1.35.1",
     "twine>=6.2.0",
@@ -77,3 +77,9 @@ commands = ty check
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
+
+[tool.ruff.lint.per-file-ignores]
+"openai_api_server_via_codex/auth.py" = ["BLE001", "S110"]
+"openai_api_server_via_codex/backend.py" = ["BLE001"]
+"openai_api_server_via_codex/server.py" = ["B008", "BLE001"]
+"tests/test_live_*.py" = ["ASYNC220"]

@@ -11,7 +11,6 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-
 ONE_PIXEL_PNG_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC"
@@ -73,7 +72,7 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
             response_stream_completed = False
             async for event in response_stream:
                 if event.type == "response.output_text.delta":
-                    response_stream_text.append(str(getattr(event, "delta")))
+                    response_stream_text.append(str(getattr(event, "delta")))  # noqa: B009
                 elif event.type == "response.completed":
                     response_stream_completed = True
             assert "".join(response_stream_text).strip()

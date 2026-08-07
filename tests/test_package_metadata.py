@@ -11,8 +11,7 @@ if sys.version_info >= (3, 11):
 else:  # pragma: no cover - exercised on Python 3.10
     import tomli as tomllib
 
-from openai_api_server_via_codex import __version__
-from openai_api_server_via_codex import server
+from openai_api_server_via_codex import __version__, server
 
 
 def test_package_version_metadata_is_consistent() -> None:

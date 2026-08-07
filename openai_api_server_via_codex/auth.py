@@ -13,7 +13,6 @@ from typing import Any
 
 from .redaction import redact_sensitive_text
 
-
 REFRESH_URL = "https://auth.openai.com/oauth/token"
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 REFRESH_SKEW_SECONDS = 30

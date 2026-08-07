@@ -683,12 +683,14 @@ async def test_responses_create_unexpected_backend_error_returns_openai_error(
     )
 
     try:
-        with caplog.at_level(logging.ERROR, logger="openai_api_server_via_codex"):
-            with pytest.raises(Exception) as exc_info:
-                await client.responses.create(
-                    model="gpt-5.4",
-                    input="Return an API error.",
-                )
+        with (
+            caplog.at_level(logging.ERROR, logger="openai_api_server_via_codex"),
+            pytest.raises(Exception) as exc_info,
+        ):
+            await client.responses.create(
+                model="gpt-5.4",
+                input="Return an API error.",
+            )
         healthz = await http_client.get("/healthz")
     finally:
         await http_client.aclose()
@@ -1369,10 +1371,10 @@ async def test_responses_retrieve_can_stream_stored_response_events(
     async for event in stream:
         event_types.append(event.type)
         if event.type == "response.output_item.done":
-            item = getattr(event, "item")
+            item = getattr(event, "item")  # noqa: B009
             output_item_text = _response_output_text({"output": [item.model_dump()]})
         elif event.type == "response.completed":
-            completed_response_id = getattr(event, "response").id
+            completed_response_id = getattr(event, "response").id  # noqa: B009
 
     assert event_types == [
         "response.created",
@@ -1498,9 +1500,9 @@ async def test_responses_create_streams_openai_events_and_stores_context(
     async for event in stream:
         event_types.append(event.type)
         if event.type == "response.output_text.delta":
-            text_parts.append(str(getattr(event, "delta")))
+            text_parts.append(str(getattr(event, "delta")))  # noqa: B009
         elif event.type == "response.completed":
-            response = getattr(event, "response")
+            response = getattr(event, "response")  # noqa: B009
             completed_response_id = response.id
 
     assert event_types == [
@@ -1697,7 +1699,7 @@ async def test_chat_completions_create_returns_tool_calls_without_streaming():
         assert message.content is None
         assert message.tool_calls is not None
         tool_call = message.tool_calls[0]
-        function = getattr(tool_call, "function")
+        function = getattr(tool_call, "function")  # noqa: B009
         assert tool_call.id == "call_fake_1"
         assert tool_call.type == "function"
         assert function.name == "lookup_weather"

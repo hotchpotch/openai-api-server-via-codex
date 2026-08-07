@@ -11,8 +11,8 @@ import logging
 import os
 import sys
 import time
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from . import __version__
+from . import config as config_module
 from .auth import AUTH_JSON_ENV, BorrowKeyError, CodexAuthConfig, borrow_codex_key
 from .backend import (
     CODEX_BASE_URL,
@@ -33,11 +34,10 @@ from .backend import (
     _forward_proxy_response_headers,
     _validate_proxy_path,
 )
-from . import config as config_module
 from .compat import (
-    ChatCompletionStore,
     DEFAULT_MAX_STORED_ITEMS,
     DEFAULT_MODEL,
+    ChatCompletionStore,
     ResponseStore,
     chat_request_to_response_payload,
     ensure_response_defaults,
@@ -47,11 +47,11 @@ from .compat import (
     uses_legacy_chat_functions,
 )
 from .daemon import (
-    DaemonError,
-    DaemonPaths,
     LOG_FILE_ENV,
     PID_FILE_ENV,
     STATE_DIR_ENV,
+    DaemonError,
+    DaemonPaths,
     daemon_status,
     find_daemon_pid_files,
     resolve_daemon_paths,
@@ -64,7 +64,6 @@ from .redaction import (
     redact_sensitive_data,
     redact_sensitive_text,
 )
-
 
 LOGGER = logging.getLogger("openai_api_server_via_codex")
 install_redacting_filter(LOGGER)
@@ -2109,9 +2108,7 @@ def _text_values(value: Any) -> list[str]:
     values: list[str] = []
     if isinstance(value, dict):
         for key, item in value.items():
-            if key in {"text", "content", "instructions", "name", "description"}:
-                values.extend(_text_values(item))
-            elif isinstance(item, dict | list):
+            if key in {"text", "content", "instructions", "name", "description"} or isinstance(item, dict | list):
                 values.extend(_text_values(item))
         return values
     if isinstance(value, list):

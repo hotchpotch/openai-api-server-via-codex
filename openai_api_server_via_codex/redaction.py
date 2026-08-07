@@ -5,7 +5,6 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-
 MASK = "******"
 DEFAULT_PREFIX_LENGTH = 6
 

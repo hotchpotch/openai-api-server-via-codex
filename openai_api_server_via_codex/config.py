@@ -13,7 +13,6 @@ else:  # pragma: no cover - exercised on Python 3.10
 from .backend import CODEX_BASE_URL
 from .compat import DEFAULT_MAX_STORED_ITEMS, DEFAULT_MODEL
 
-
 APP_NAME = "openai-api-server-via-codex"
 CONFIG_ENV = "OPENAI_VIA_CODEX_CONFIG"
 DEFAULT_HOST = "127.0.0.1"
