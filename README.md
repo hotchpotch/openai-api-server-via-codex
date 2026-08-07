@@ -185,6 +185,24 @@ $ uv sync --dev
 $ uv run openai-api-server-via-codex --help
 ```
 
+### Run with Docker
+
+From this checkout, run the server with nothing but Docker installed:
+
+```console
+$ docker compose run --rm --service-ports codex-login   # once, if ~/.codex/auth.json does not exist yet
+$ docker compose up --build -d
+$ curl http://127.0.0.1:18080/healthz
+```
+
+The Compose setup bind-mounts `~/.codex` so the container borrows the Codex
+login and writes refreshed tokens back. The one-shot `codex-login` helper
+bundles the official Codex CLI for interactive login when Codex is not
+installed on the host; an existing login also works as-is, since `auth.json`
+can be copied from any machine. See [docs/docker.md](docs/docker.md) for the
+login options, configuration, plain `docker run` usage, and permission notes
+for Linux hosts.
+
 ## Requirements
 
 - Python 3.10+
