@@ -505,6 +505,18 @@ async def openai_client_with_backend():
 
 
 @pytest.mark.asyncio
+async def test_responses_create_uses_luna_default_with_openai_client(
+    openai_client_with_backend,
+):
+    client, backend = openai_client_with_backend
+
+    response = await client.responses.create(input="Use the default model.")
+
+    assert response.model == "gpt-5.6-luna"
+    assert backend.requests[0]["model"] == "gpt-5.6-luna"
+
+
+@pytest.mark.asyncio
 async def test_responses_create_round_trips_with_openai_client(
     openai_client_with_backend,
 ):

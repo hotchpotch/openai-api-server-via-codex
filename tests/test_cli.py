@@ -124,6 +124,7 @@ def test_server_settings_use_18080_as_default_port(monkeypatch) -> None:
     settings = server.server_settings_from_args(args)
 
     assert settings.port == 18080
+    assert settings.default_model == "gpt-5.6-luna"
     assert settings.timeout == 300.0
 
 

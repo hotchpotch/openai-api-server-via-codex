@@ -36,6 +36,7 @@ def test_default_config_toml_documents_core_options() -> None:
     assert "backend =" not in text
     assert 'host = "127.0.0.1"' in text
     assert "port = 18080" in text
+    assert 'default_model = "gpt-5.6-luna"' in text
     assert "timeout = 300.0" in text
     assert '# api_key = "change-me"' in text
     assert "max_stored_items = 1000" in text

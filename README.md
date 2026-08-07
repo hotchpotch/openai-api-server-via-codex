@@ -395,6 +395,16 @@ Default: `127.0.0.1`
 $ uvx openai-api-server-via-codex --host 0.0.0.0
 ```
 
+### `server.default_model`
+
+Default: `gpt-5.6-luna`
+
+This model is used only when a Responses or Chat Completions request omits
+`model`. Set `default_model`, `OPENAI_VIA_CODEX_DEFAULT_MODEL`, or
+`--default-model` to override it. Explicit request models are forwarded
+unchanged; the `gpt-5.5` request and configuration examples in this README
+remain the preferred documented model for callers that select one explicitly.
+
 > [!IMPORTANT]
 > If you bind to `0.0.0.0`, set `--api-key` or put the server behind another
 > trusted access-control layer. Otherwise anyone who can reach the port can use

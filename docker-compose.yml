@@ -18,7 +18,7 @@ services:
     #   OPENAI_VIA_CODEX_API_KEY: change-me
     #   # Debug-level logs:
     #   OPENAI_VIA_CODEX_VERBOSE: "1"
-    #   # Default model when a request omits one:
+    #   # Override the default model used when a request omits one:
     #   OPENAI_VIA_CODEX_DEFAULT_MODEL: gpt-5.5
     # On Linux, uncomment and set this to your host UID/GID if they are not
     # 1000:1000, so the container can read and update the mounted Codex login:
