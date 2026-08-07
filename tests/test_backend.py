@@ -79,6 +79,9 @@ def test_default_models_match_codex_http_fallback_catalog() -> None:
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
     ]
 
 

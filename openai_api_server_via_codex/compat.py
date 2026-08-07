@@ -6,7 +6,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
-DEFAULT_MODEL = "gpt-5.4"
+DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 DEFAULT_MAX_STORED_ITEMS = 1000
 

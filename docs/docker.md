@@ -115,7 +115,8 @@ block of `docker-compose.yml`, for example:
   `/v1/...` routes (`/healthz` stays open, so the container healthcheck keeps
   working).
 - `OPENAI_VIA_CODEX_VERBOSE=1` — debug-level logs.
-- `OPENAI_VIA_CODEX_DEFAULT_MODEL` — default model when a request omits one.
+- `OPENAI_VIA_CODEX_DEFAULT_MODEL` — override the default model used when a
+  request omits one (`gpt-5.6-luna`).
 - `OPENAI_VIA_CODEX_TIMEOUT`, `OPENAI_VIA_CODEX_MAX_STORED_ITEMS`,
   `OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS` — backend timeout and bounds.
 
