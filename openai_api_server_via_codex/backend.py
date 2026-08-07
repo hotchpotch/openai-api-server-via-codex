@@ -16,7 +16,6 @@ from openai import APIError, APIStatusError, AsyncOpenAI
 from .auth import BorrowKeyError, CodexAuthConfig, borrow_codex_key
 from .redaction import install_redacting_filter, redact_sensitive_text
 
-
 LOGGER = logging.getLogger("openai_api_server_via_codex.backend")
 install_redacting_filter(LOGGER)
 CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
@@ -408,8 +407,7 @@ def _resolve_proxy_url(base_url: str, path: str, query: bytes) -> httpx.URL:
 def _resolve_transcribe_url(base_url: str) -> httpx.URL:
     base = base_url.rstrip("/")
     codex_suffix = "/codex"
-    if base.endswith(codex_suffix):
-        base = base[: -len(codex_suffix)]
+    base = base.removesuffix(codex_suffix)
     return httpx.URL(f"{base}/transcribe")
 
 

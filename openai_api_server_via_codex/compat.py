@@ -6,7 +6,6 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, TypeAlias
 
-
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
 DEFAULT_MAX_STORED_ITEMS = 1000
@@ -547,10 +546,9 @@ def _chat_messages_to_response_input(messages: Any) -> list[Any]:
             )
             if legacy_function_call:
                 response_input.append(legacy_function_call)
-            for function_call in _chat_tool_calls_to_response_function_calls(
-                message.get("tool_calls")
-            ):
-                response_input.append(function_call)
+            response_input.extend(
+                _chat_tool_calls_to_response_function_calls(message.get("tool_calls"))
+            )
             content = _chat_content_to_text(message.get("content"))
             if content or not (message.get("tool_calls") or legacy_function_call):
                 response_input.append({"role": "assistant", "content": content})
@@ -644,11 +642,12 @@ def _chat_content_to_text(content: Any) -> str:
 
     texts: list[str] = []
     for part in content:
-        if isinstance(part, dict):
-            if part.get("type") in {"text", "input_text"}:
-                texts.append(str(part.get("text") or ""))
-            elif part.get("type") == "output_text":
-                texts.append(str(part.get("text") or ""))
+        if isinstance(part, dict) and part.get("type") in {
+            "text",
+            "input_text",
+            "output_text",
+        }:
+            texts.append(str(part.get("text") or ""))
     return "".join(texts)
 
 

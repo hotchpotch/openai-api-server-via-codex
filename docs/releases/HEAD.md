@@ -1,5 +1,7 @@
 # HEAD
 
+- Pinned Ruff 0.16.1 for local development and CI, and updated the codebase for
+  its lint rules.
 - Added a self-contained Docker setup (`Dockerfile`, `docker-compose.yml`,
   `.dockerignore`) that runs the server with only Docker installed, borrowing
   the host Codex login via a `~/.codex` bind mount. See `docs/docker.md`.

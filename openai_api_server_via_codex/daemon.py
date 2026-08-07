@@ -10,7 +10,6 @@ from typing import Any
 
 from .config import default_daemon_state_dir
 
-
 STATE_DIR_ENV = "OPENAI_VIA_CODEX_STATE_DIR"
 PID_FILE_ENV = "OPENAI_VIA_CODEX_PID_FILE"
 LOG_FILE_ENV = "OPENAI_VIA_CODEX_LOG_FILE"
