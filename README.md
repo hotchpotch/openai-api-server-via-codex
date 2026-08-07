@@ -73,7 +73,7 @@ from openai import OpenAI
 client = OpenAI()
 
 response = client.responses.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     input="Reply in one sentence.",
     reasoning={"effort": "low"},
 )
@@ -87,7 +87,7 @@ you configure `--api-key`, the local server accepts any incoming API key value.
 
 ```python
 chat = client.chat.completions.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     messages=[{"role": "user", "content": "Hello"}],
     reasoning_effort="low",
 )
@@ -98,7 +98,7 @@ print(chat.choices[0].message.content)
 
 ```python
 stream = client.responses.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     input="Stream a short reply.",
     stream=True,
     reasoning={"effort": "low"},
@@ -368,7 +368,7 @@ Example config:
 [server]
 host = "127.0.0.1"
 port = 18080
-default_model = "gpt-5.5"
+default_model = "gpt-5.6-luna"
 timeout = 300.0
 verbose = false
 max_stored_items = 1000
@@ -399,11 +399,9 @@ $ uvx openai-api-server-via-codex --host 0.0.0.0
 
 Default: `gpt-5.6-luna`
 
-This model is used only when a Responses or Chat Completions request omits
-`model`. Set `default_model`, `OPENAI_VIA_CODEX_DEFAULT_MODEL`, or
-`--default-model` to override it. Explicit request models are forwarded
-unchanged; the `gpt-5.5` request and configuration examples in this README
-remain the preferred documented model for callers that select one explicitly.
+This model is used when a Responses or Chat Completions request omits `model`.
+Set `default_model`, `OPENAI_VIA_CODEX_DEFAULT_MODEL`, or `--default-model` to
+override it. Explicit request models are forwarded unchanged.
 
 > [!IMPORTANT]
 > If you bind to `0.0.0.0`, set `--api-key` or put the server behind another
@@ -547,7 +545,7 @@ $ uvx openai-api-server-via-codex --config ./config.toml
 
 ```python
 stream = client.chat.completions.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     messages=[{"role": "user", "content": "Stream a short reply."}],
     stream=True,
     reasoning_effort="low",
@@ -562,7 +560,7 @@ for chunk in stream:
 
 ```python
 response = client.responses.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     input=[
         {
             "role": "user",
@@ -582,7 +580,7 @@ response = client.responses.create(
 
 ```python
 response = client.chat.completions.create(
-    model="gpt-5.5",
+    model="gpt-5.6-luna",
     messages=[{"role": "user", "content": "What is the weather in Tokyo?"}],
     tools=[
         {
