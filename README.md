@@ -1,31 +1,53 @@
 # OpenAI API Server via Codex
 
-A local server that exposes the Codex backend from your ChatGPT subscription as
-an OpenAI-compatible API, so OpenAI-compatible client libraries such as
-`openai-python` work without code changes.
+💰 Your ChatGPT subscription includes Codex, but that backend normally only
+talks to Codex clients. This server puts an OpenAI-compatible API in front of
+it, so any tool that already speaks to `api.openai.com` can use it by changing
+one environment variable.
 
 ```console
 $ uvx openai-api-server-via-codex
+$ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
+$ export OPENAI_API_KEY=dummy
 ```
 
-Point your client's `OPENAI_BASE_URL` at `http://127.0.0.1:18080/v1`. Both
-Responses and Chat Completions are supported, including streaming.
+Existing code keeps working as written:
+
+```python
+from openai import OpenAI
+
+client = OpenAI()
+response = client.responses.create(model="gpt-5.6-luna", input="Hello")
+```
+
+## 🎯 Why use it
+
+- **No platform API key, no per-token bill.** Requests go through the Codex
+  access already included in your ChatGPT plan, not through OpenAI Platform
+  billing.
+- **No client changes.** `openai-python`, LangChain, LiteLLM, and any tool with
+  a configurable base URL work as-is.
+- **Both APIs, not just chat.** Responses and Chat Completions, streaming, tool
+  calling, structured outputs, image input, and image generation.
+- **Local by default.** It binds to `127.0.0.1` and reads your existing
+  `~/.codex/auth.json`. Credentials go to the Codex backend and nowhere else.
+- **One command.** `uvx` runs it without installing anything permanent, and
+  `start`/`stop`/`status` manage it as a background daemon.
 
 ## Use cases
 
-- Run existing code or agents written with any OpenAI-compatible client
-  library (e.g. `openai-python`) through your ChatGPT subscription's Codex
-  instead of `api.openai.com`
-- Prototype locally or develop agents without rewriting any client code
-- Use your ChatGPT plan's Codex access in personal or trusted dev workflows
+- Call Codex-only models such as GPT-5.6 Luna from a notebook or a throwaway
+  script without setting up Platform billing.
+- Run an agent, eval, or batch job you already wrote for the OpenAI SDK against
+  Codex models by switching `OPENAI_BASE_URL`.
+- Drive editors and CLI tools that accept an OpenAI-compatible endpoint.
+- Give a trusted machine on your LAN access with
+  `--host 0.0.0.0 --api-key ...`.
 
-This is **not** the official OpenAI Platform API or a replacement for it — it
-is a compatibility layer that forwards requests to the Codex backend used by
-your ChatGPT subscription. Use it only with accounts and subscriptions you are
-allowed to use, and follow OpenAI's terms and usage policies. It does not
-bypass Codex or ChatGPT plan limits. Do not share your Codex credentials,
-resell access, power third-party services, or expose a public API backed by
-your ChatGPT account.
+It does not raise or bypass your Codex or ChatGPT plan limits, and it is not the
+official OpenAI Platform API. Use it only with accounts you are allowed to use,
+and follow OpenAI's terms and usage policies. Do not resell access, expose it
+publicly, or point third-party services at it.
 
 ## Usage
 

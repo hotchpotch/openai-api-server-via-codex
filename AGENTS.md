@@ -134,7 +134,7 @@ python scripts/release-notes.py vX.Y.Z
   fallback paths, config templates, README examples, and tests aligned when
   changing that value.
 - README examples should use the current preferred documented model. Keep the
-  examples on `gpt-5.5` unless there is a deliberate model guidance change.
+  examples on `gpt-5.6-luna` unless there is a deliberate model guidance change.
   Do not confuse README example models with the server's compatibility default;
   changing `DEFAULT_MODEL` requires tests and config-template updates.
 - Keep the package version in `pyproject.toml` and
