@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,6 +87,7 @@ class ServerSettings:
     client_version: str
     timeout: float
     default_model: str
+    drop_params_by_model: dict[str, tuple[str, ...]]
     max_stored_items: int
     max_concurrent_requests: int
     api_key: str | None = None
@@ -121,6 +122,7 @@ def create_app(
     max_stored_items: int | None = None,
     max_concurrent_requests: int | None = None,
     api_key: str | None = None,
+    drop_params_by_model: Mapping[str, Sequence[str]] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -164,6 +166,7 @@ def create_app(
         or os.environ.get("OPENAI_VIA_CODEX_CLIENT_VERSION", "1.0.0"),
         timeout=selected_timeout,
         auth_config=selected_auth_config,
+        drop_params_by_model=drop_params_by_model or {},
     )
     app.state.max_stored_items = selected_max_stored_items
     app.state.max_concurrent_requests = selected_max_concurrent_requests
@@ -875,12 +878,14 @@ def _build_backend(
     client_version: str,
     timeout: float,
     auth_config: CodexAuthConfig,
+    drop_params_by_model: Mapping[str, Sequence[str]],
 ) -> CodexBackend:
     return CodexHttpBackend(
         base_url=backend_base_url,
         client_version=client_version,
         timeout=timeout,
         auth_config=auth_config,
+        drop_params_by_model=drop_params_by_model,
     )
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1016,6 +1021,9 @@ def server_settings_from_args(
             "default_model",
             DEFAULT_MODEL,
         ),
+        drop_params_by_model=config_module.drop_params_by_model_from_config(
+            config_data
+        ),
         verbose=_arg_env_config_bool(
             args,
             "verbose",
@@ -1116,7 +1124,9 @@ def stop_timeout_from_args(
     )
 
 
-def serve_command(settings: ServerSettings) -> list[str]:
+def serve_command(
+    settings: ServerSettings, *, config_path: Path | None = None
+) -> list[str]:
     command = [
         sys.executable,
         "-m",
@@ -1139,6 +1149,8 @@ def serve_command(settings: ServerSettings) -> list[str]:
         "--default-model",
         settings.default_model,
     ]
+    if config_path is not None:
+        command.extend(["--config", str(config_path)])
     if settings.auth_json is not None:
         command.extend(["--auth-json", str(settings.auth_json)])
     if settings.verbose:
@@ -1146,8 +1158,10 @@ def serve_command(settings: ServerSettings) -> list[str]:
     return command
 
 
-def daemon_run_command(settings: ServerSettings) -> list[str]:
-    command = serve_command(settings)
+def daemon_run_command(
+    settings: ServerSettings, *, config_path: Path | None = None
+) -> list[str]:
+    command = serve_command(settings, config_path=config_path)
     command[3] = "daemon-run"
     return command
 
@@ -1186,11 +1200,12 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     loaded_config = load_config_for_args(args)
+    config_path = config_module.resolve_config_path(getattr(args, "config", None))
 
     if args.command == "serve":
         settings = server_settings_from_args(args, loaded_config)
         _configure_logging(settings.verbose)
-        _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
+        _log_settings(settings, config_path=config_path)
         if not _preflight_codex_auth_or_print(settings):
             return 1
         uvicorn.run(
@@ -1204,6 +1219,7 @@ def _main(argv: list[str] | None = None) -> int:
                 max_stored_items=settings.max_stored_items,
                 max_concurrent_requests=settings.max_concurrent_requests,
                 api_key=settings.api_key,
+                drop_params_by_model=settings.drop_params_by_model,
             ),
             host=settings.host,
             port=settings.port,
@@ -1215,12 +1231,14 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "daemon-run":
         settings = server_settings_from_args(args, loaded_config)
         _configure_logging(settings.verbose)
-        _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
-        return run_supervised(serve_command(settings), env=serve_env(settings))
+        _log_settings(settings, config_path=config_path)
+        return run_supervised(
+            serve_command(settings, config_path=config_path), env=serve_env(settings)
+        )
 
     settings = server_settings_from_args(args, loaded_config)
     _configure_logging(settings.verbose)
-    _log_settings(settings, config_path=config_module.resolve_config_path(getattr(args, "config", None)))
+    _log_settings(settings, config_path=config_path)
     selection = select_daemon_paths_from_args(args, settings, loaded_config)
     if selection.ambiguous_pid_files:
         _print_ambiguous_daemon_pid_files(settings, selection.ambiguous_pid_files)
@@ -1236,11 +1254,13 @@ def _main(argv: list[str] | None = None) -> int:
             settings.port,
             paths.pid_file,
             paths.log_file,
-            daemon_run_command(settings),
+            daemon_run_command(settings, config_path=config_path),
         )
         try:
             pid = start_background(
-                daemon_run_command(settings), paths, env=serve_env(settings)
+                daemon_run_command(settings, config_path=config_path),
+                paths,
+                env=serve_env(settings),
             )
         except DaemonError as exc:
             print(str(exc), file=sys.stderr)

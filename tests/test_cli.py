@@ -126,6 +126,7 @@ def test_server_settings_use_18080_as_default_port(monkeypatch) -> None:
     assert settings.port == 18080
     assert settings.default_model == "gpt-5.6-luna"
     assert settings.timeout == 300.0
+    assert settings.drop_params_by_model == {}
 
 
 def test_server_settings_read_config_file(tmp_path: Path) -> None:
@@ -147,6 +148,9 @@ api_key = "config-secret"
 auth_json = "{auth_json}"
 backend_base_url = "https://example.test/codex"
 client_version = "2.0.0"
+
+[compat.drop_params_by_model]
+"gpt-5.6-luna" = ["temperature"]
 """,
         encoding="utf-8",
     )
@@ -166,6 +170,9 @@ client_version = "2.0.0"
     assert settings.auth_json == auth_json.resolve()
     assert settings.backend_base_url == "https://example.test/codex"
     assert settings.client_version == "2.0.0"
+    assert settings.drop_params_by_model == {
+        "gpt-5.6-luna": ("temperature",)
+    }
 
 
 def test_server_settings_precedence_is_cli_then_env_then_config(
@@ -465,6 +472,20 @@ def test_daemon_run_command_wraps_selected_server_settings(monkeypatch) -> None:
     assert "--port" in command
     assert "8126" in command
     assert "--verbose" in command
+
+
+def test_daemon_run_command_preserves_selected_config_path(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setattr(server.sys, "executable", "/tmp/python")
+    config_path = tmp_path / "config.toml"
+    args = server.parse_args(["start", "--config", str(config_path)])
+    settings = server.server_settings_from_args(args)
+
+    command = server.daemon_run_command(settings, config_path=config_path.resolve())
+
+    assert command[3] == "daemon-run"
+    assert command[-2:] == ["--config", str(config_path.resolve())]
 
 
 def test_serve_uses_debug_log_level_when_verbose(monkeypatch) -> None:

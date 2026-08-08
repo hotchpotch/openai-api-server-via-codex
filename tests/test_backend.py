@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 from openai import APIStatusError
@@ -16,6 +18,7 @@ from openai_api_server_via_codex.backend import (
     _resolve_transcribe_url,
     _status_error_message,
 )
+from openai_api_server_via_codex.compat import chat_request_to_response_payload
 
 
 def test_prepare_codex_payload_adds_codex_http_defaults_without_overwriting() -> None:
@@ -29,6 +32,7 @@ def test_prepare_codex_payload_adds_codex_http_defaults_without_overwriting() ->
         "include": ["file_search_call.results"],
         "tool_choice": "none",
         "parallel_tool_calls": False,
+        "temperature": 0.2,
     }
 
     prepared = _prepare_codex_payload(payload)
@@ -49,6 +53,7 @@ def test_prepare_codex_payload_adds_codex_http_defaults_without_overwriting() ->
     assert payload["stream"] is False
     assert payload["text"] == {"format": {"type": "json_object"}}
     assert payload["max_output_tokens"] == 20
+    assert prepared["temperature"] == 0.2
 
 
 def test_prepare_codex_payload_adds_missing_tool_and_reasoning_defaults() -> None:
@@ -65,6 +70,94 @@ def test_prepare_codex_payload_adds_missing_tool_and_reasoning_defaults() -> Non
     assert prepared["parallel_tool_calls"] is True
     assert prepared["text"] == {"verbosity": "low"}
     assert prepared["include"] == ["reasoning.encrypted_content"]
+
+
+def test_prepare_codex_payload_drops_params_for_exact_matching_model() -> None:
+    payload = {
+        "model": "gpt-5.6-luna",
+        "input": "hello",
+        "temperature": 0.2,
+        "metadata": {"temperature": "nested-value"},
+    }
+
+    prepared = _prepare_codex_payload(
+        payload,
+        drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
+    )
+
+    assert "temperature" not in prepared
+    assert prepared["metadata"] == {"temperature": "nested-value"}
+    assert payload["temperature"] == 0.2
+
+
+def test_prepare_codex_payload_retains_params_for_non_matching_model() -> None:
+    prepared = _prepare_codex_payload(
+        {
+            "model": "gpt-5.6-luna-preview",
+            "input": "hello",
+            "temperature": 0.2,
+        },
+        drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
+    )
+
+    assert prepared["temperature"] == 0.2
+
+
+def test_prepare_codex_payload_drops_multiple_params_and_ignores_absent() -> None:
+    prepared = _prepare_codex_payload(
+        {
+            "model": "gpt-5.6-terra",
+            "input": "hello",
+            "temperature": 0.2,
+            "top_p": 0.9,
+        },
+        drop_params_by_model={
+            "gpt-5.6-terra": ("temperature", "top_p", "service_tier")
+        },
+    )
+
+    assert "temperature" not in prepared
+    assert "top_p" not in prepared
+    assert "service_tier" not in prepared
+
+
+def test_prepare_codex_payload_filters_translated_chat_request() -> None:
+    translated = chat_request_to_response_payload(
+        {
+            "model": "gpt-5.6-luna",
+            "messages": [{"role": "user", "content": "hello"}],
+            "temperature": 0.2,
+            "top_p": 0.9,
+        }
+    )
+
+    prepared = _prepare_codex_payload(
+        translated,
+        drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
+    )
+
+    assert prepared["model"] == "gpt-5.6-luna"
+    assert prepared["input"] == [{"role": "user", "content": "hello"}]
+    assert "temperature" not in prepared
+    assert prepared["top_p"] == 0.9
+
+
+def test_prepare_codex_payload_logs_names_without_values(caplog) -> None:
+    with caplog.at_level(
+        logging.DEBUG, logger="openai_api_server_via_codex.backend"
+    ):
+        _prepare_codex_payload(
+            {
+                "model": "gpt-5.6-luna",
+                "input": "hello",
+                "temperature": "secret-request-value",
+            },
+            drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
+        )
+
+    assert "compat.drop_params model=gpt-5.6-luna" in caplog.text
+    assert "temperature" in caplog.text
+    assert "secret-request-value" not in caplog.text
 
 
 def test_default_models_match_codex_http_fallback_catalog() -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from openai_api_server_via_codex import config
 
 
@@ -45,6 +47,66 @@ def test_default_config_toml_documents_core_options() -> None:
     assert "state_dir" in text
     assert "[codex]" in text
     assert "auth_json" in text
+    assert "# [compat.drop_params_by_model]" in text
+    assert '# "gpt-5.6-luna" = ["temperature"]' in text
+
+
+def test_drop_params_by_model_defaults_to_no_rules() -> None:
+    assert config.drop_params_by_model_from_config({}) == {}
+
+
+def test_drop_params_by_model_loads_and_normalizes_toml(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        """
+[compat.drop_params_by_model]
+"gpt-5.6-luna" = ["temperature"]
+"gpt-5.6-terra" = ["temperature", "top_p"]
+""",
+        encoding="utf-8",
+    )
+
+    loaded = config.load_config(config_path)
+
+    assert config.drop_params_by_model_from_config(loaded) == {
+        "gpt-5.6-luna": ("temperature",),
+        "gpt-5.6-terra": ("temperature", "top_p"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("toml", "error_type", "message"),
+    [
+        (
+            '[compat]\ndrop_params_by_model = "temperature"\n',
+            TypeError,
+            "compat.drop_params_by_model must be a TOML table",
+        ),
+        (
+            '[compat.drop_params_by_model]\n"gpt-5.6-luna" = "temperature"\n',
+            TypeError,
+            "compat.drop_params_by_model.gpt-5.6-luna must be an array of strings",
+        ),
+        (
+            '[compat.drop_params_by_model]\n"gpt-5.6-luna" = ["temperature", 1]\n',
+            TypeError,
+            "compat.drop_params_by_model.gpt-5.6-luna must contain only non-empty strings",
+        ),
+        (
+            '[compat.drop_params_by_model]\n"gpt-5.6-luna" = [" "]\n',
+            ValueError,
+            "compat.drop_params_by_model.gpt-5.6-luna must contain only non-empty strings",
+        ),
+    ],
+)
+def test_drop_params_by_model_rejects_malformed_config(
+    tmp_path: Path, toml: str, error_type: type[Exception], message: str
+) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(toml, encoding="utf-8")
+
+    with pytest.raises(error_type, match=message):
+        config.drop_params_by_model_from_config(config.load_config(config_path))
 
 
 def test_load_config_reads_existing_toml(tmp_path: Path) -> None:

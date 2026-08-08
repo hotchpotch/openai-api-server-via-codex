@@ -5,7 +5,7 @@ import copy
 import logging
 import platform
 import time
-from collections.abc import AsyncIterator, Mapping
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import unquote
@@ -120,11 +120,16 @@ class CodexHttpBackend:
         client_version: str = "1.0.0",
         timeout: float = 300.0,
         auth_config: CodexAuthConfig | None = None,
+        drop_params_by_model: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.client_version = client_version
         self.timeout = timeout
         self.auth_config = auth_config or CodexAuthConfig()
+        self.drop_params_by_model = {
+            model: tuple(params)
+            for model, params in (drop_params_by_model or {}).items()
+        }
 
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         stream = self.stream_response(payload)
@@ -142,7 +147,10 @@ class CodexHttpBackend:
             self.timeout,
         )
         token, account_id = await self._borrow_key()
-        codex_payload = _prepare_codex_payload(payload)
+        codex_payload = _prepare_codex_payload(
+            payload,
+            drop_params_by_model=self.drop_params_by_model,
+        )
         request_id = codex_payload.get("prompt_cache_key")
         headers = self._headers(
             account_id,
@@ -450,8 +458,22 @@ def _list_len(value: Any) -> int:
     return len(value) if isinstance(value, list) else 0
 
 
-def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def _prepare_codex_payload(
+    payload: dict[str, Any],
+    *,
+    drop_params_by_model: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
     codex_payload = copy.deepcopy(payload)
+    removed = _drop_configured_params(
+        codex_payload,
+        drop_params_by_model=drop_params_by_model or {},
+    )
+    if removed:
+        LOGGER.debug(
+            "compat.drop_params model=%s params=%s",
+            payload.get("model"),
+            removed,
+        )
     codex_payload.pop("max_output_tokens", None)
     codex_payload["stream"] = True
     codex_payload["store"] = False
@@ -469,6 +491,23 @@ def _prepare_codex_payload(payload: dict[str, Any]) -> dict[str, Any]:
         include_values.append(CODEX_REASONING_INCLUDE)
     codex_payload["include"] = include_values
     return codex_payload
+
+
+def _drop_configured_params(
+    payload: dict[str, Any],
+    *,
+    drop_params_by_model: Mapping[str, Sequence[str]],
+) -> list[str]:
+    model = payload.get("model")
+    if not isinstance(model, str):
+        return []
+
+    removed = []
+    for name in drop_params_by_model.get(model, ()):
+        if name in payload:
+            payload.pop(name)
+            removed.append(name)
+    return removed
 
 
 def _normalize_codex_stream_event(event: dict[str, Any]) -> dict[str, Any]:
