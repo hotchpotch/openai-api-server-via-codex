@@ -8,6 +8,8 @@ one environment variable.
 ```console
 $ uvx openai-api-server-via-codex
 $ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
+$ # this server requires no key by default, but the OpenAI SDK
+$ # fails its own validation without one, so any value works
 $ export OPENAI_API_KEY=dummy
 ```
 
