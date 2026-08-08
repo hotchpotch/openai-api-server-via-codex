@@ -68,6 +68,12 @@ auth_json = "~/.codex/auth.json"
 backend_base_url = "{CODEX_BASE_URL}"
 client_version = "{DEFAULT_CLIENT_VERSION}"
 
+# Optional compatibility overrides for models whose Codex backend rejects
+# otherwise valid OpenAI-compatible parameters. Model IDs match exactly.
+#
+# [compat.drop_params_by_model]
+# "gpt-5.6-luna" = ["temperature"]
+
 [daemon]
 state_dir = {state_dir}
 # pid_file = "/path/to/openai-api-server-via-codex.pid"
@@ -83,6 +89,48 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     with config_path.open("rb") as file:
         loaded = tomllib.load(file)
     return loaded if isinstance(loaded, dict) else {}
+
+
+def drop_params_by_model_from_config(
+    config_data: dict[str, Any],
+) -> dict[str, tuple[str, ...]]:
+    compat = config_data.get("compat")
+    if compat is None:
+        return {}
+    if not isinstance(compat, dict):
+        raise TypeError("compat must be a TOML table")
+
+    configured = compat.get("drop_params_by_model")
+    if configured is None:
+        return {}
+    if not isinstance(configured, dict):
+        raise TypeError("compat.drop_params_by_model must be a TOML table")
+
+    normalized: dict[str, tuple[str, ...]] = {}
+    for model, params in configured.items():
+        if not isinstance(model, str):
+            raise TypeError(
+                "compat.drop_params_by_model model IDs must be non-empty strings"
+            )
+        if not model.strip():
+            raise ValueError(
+                "compat.drop_params_by_model model IDs must be non-empty strings"
+            )
+        if not isinstance(params, list):
+            raise TypeError(
+                f"compat.drop_params_by_model.{model} must be an array of strings"
+            )
+        for param in params:
+            if not isinstance(param, str):
+                raise TypeError(
+                    f"compat.drop_params_by_model.{model} must contain only non-empty strings"
+                )
+            if not param.strip():
+                raise ValueError(
+                    f"compat.drop_params_by_model.{model} must contain only non-empty strings"
+                )
+        normalized[model] = tuple(params)
+    return normalized
 
 
 def write_default_config(path: str | Path | None = None, *, force: bool = False) -> Path:
