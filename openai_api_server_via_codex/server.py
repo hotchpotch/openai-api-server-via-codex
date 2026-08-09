@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -87,7 +87,7 @@ class ServerSettings:
     client_version: str
     timeout: float
     default_model: str
-    drop_params_by_model: dict[str, tuple[str, ...]]
+    drop_params: tuple[str, ...]
     max_stored_items: int
     max_concurrent_requests: int
     api_key: str | None = None
@@ -122,7 +122,7 @@ def create_app(
     max_stored_items: int | None = None,
     max_concurrent_requests: int | None = None,
     api_key: str | None = None,
-    drop_params_by_model: Mapping[str, Sequence[str]] | None = None,
+    drop_params: Sequence[str] | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -166,7 +166,7 @@ def create_app(
         or os.environ.get("OPENAI_VIA_CODEX_CLIENT_VERSION", "1.0.0"),
         timeout=selected_timeout,
         auth_config=selected_auth_config,
-        drop_params_by_model=drop_params_by_model or {},
+        drop_params=drop_params or (),
     )
     app.state.max_stored_items = selected_max_stored_items
     app.state.max_concurrent_requests = selected_max_concurrent_requests
@@ -878,14 +878,14 @@ def _build_backend(
     client_version: str,
     timeout: float,
     auth_config: CodexAuthConfig,
-    drop_params_by_model: Mapping[str, Sequence[str]],
+    drop_params: Sequence[str],
 ) -> CodexBackend:
     return CodexHttpBackend(
         base_url=backend_base_url,
         client_version=client_version,
         timeout=timeout,
         auth_config=auth_config,
-        drop_params_by_model=drop_params_by_model,
+        drop_params=drop_params,
     )
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1021,9 +1021,7 @@ def server_settings_from_args(
             "default_model",
             DEFAULT_MODEL,
         ),
-        drop_params_by_model=config_module.drop_params_by_model_from_config(
-            config_data
-        ),
+        drop_params=config_module.drop_params_from_config(config_data),
         verbose=_arg_env_config_bool(
             args,
             "verbose",
@@ -1219,7 +1217,7 @@ def _main(argv: list[str] | None = None) -> int:
                 max_stored_items=settings.max_stored_items,
                 max_concurrent_requests=settings.max_concurrent_requests,
                 api_key=settings.api_key,
-                drop_params_by_model=settings.drop_params_by_model,
+                drop_params=settings.drop_params,
             ),
             host=settings.host,
             port=settings.port,

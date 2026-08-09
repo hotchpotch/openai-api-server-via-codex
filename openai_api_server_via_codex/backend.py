@@ -120,16 +120,13 @@ class CodexHttpBackend:
         client_version: str = "1.0.0",
         timeout: float = 300.0,
         auth_config: CodexAuthConfig | None = None,
-        drop_params_by_model: Mapping[str, Sequence[str]] | None = None,
+        drop_params: Sequence[str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.client_version = client_version
         self.timeout = timeout
         self.auth_config = auth_config or CodexAuthConfig()
-        self.drop_params_by_model = {
-            model: tuple(params)
-            for model, params in (drop_params_by_model or {}).items()
-        }
+        self.drop_params = tuple(drop_params or ())
 
     async def create_response(self, payload: dict[str, Any]) -> dict[str, Any]:
         stream = self.stream_response(payload)
@@ -149,7 +146,7 @@ class CodexHttpBackend:
         token, account_id = await self._borrow_key()
         codex_payload = _prepare_codex_payload(
             payload,
-            drop_params_by_model=self.drop_params_by_model,
+            drop_params=self.drop_params,
         )
         request_id = codex_payload.get("prompt_cache_key")
         headers = self._headers(
@@ -461,12 +458,12 @@ def _list_len(value: Any) -> int:
 def _prepare_codex_payload(
     payload: dict[str, Any],
     *,
-    drop_params_by_model: Mapping[str, Sequence[str]] | None = None,
+    drop_params: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     codex_payload = copy.deepcopy(payload)
     removed = _drop_configured_params(
         codex_payload,
-        drop_params_by_model=drop_params_by_model or {},
+        drop_params=drop_params or (),
     )
     if removed:
         LOGGER.debug(
@@ -496,14 +493,10 @@ def _prepare_codex_payload(
 def _drop_configured_params(
     payload: dict[str, Any],
     *,
-    drop_params_by_model: Mapping[str, Sequence[str]],
+    drop_params: Sequence[str],
 ) -> list[str]:
-    model = payload.get("model")
-    if not isinstance(model, str):
-        return []
-
     removed = []
-    for name in drop_params_by_model.get(model, ()):
+    for name in drop_params:
         if name in payload:
             payload.pop(name)
             removed.append(name)

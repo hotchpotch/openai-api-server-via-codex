@@ -126,7 +126,7 @@ def test_server_settings_use_18080_as_default_port(monkeypatch) -> None:
     assert settings.port == 18080
     assert settings.default_model == "gpt-5.6-luna"
     assert settings.timeout == 300.0
-    assert settings.drop_params_by_model == {}
+    assert settings.drop_params == ()
 
 
 def test_server_settings_read_config_file(tmp_path: Path) -> None:
@@ -149,8 +149,8 @@ auth_json = "{auth_json}"
 backend_base_url = "https://example.test/codex"
 client_version = "2.0.0"
 
-[compat.drop_params_by_model]
-"gpt-5.6-luna" = ["temperature"]
+[compat]
+drop_params = ["temperature", "top_p"]
 """,
         encoding="utf-8",
     )
@@ -170,9 +170,7 @@ client_version = "2.0.0"
     assert settings.auth_json == auth_json.resolve()
     assert settings.backend_base_url == "https://example.test/codex"
     assert settings.client_version == "2.0.0"
-    assert settings.drop_params_by_model == {
-        "gpt-5.6-luna": ("temperature",)
-    }
+    assert settings.drop_params == ("temperature", "top_p")
 
 
 def test_server_settings_precedence_is_cli_then_env_then_config(

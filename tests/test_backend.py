@@ -72,9 +72,10 @@ def test_prepare_codex_payload_adds_missing_tool_and_reasoning_defaults() -> Non
     assert prepared["include"] == ["reasoning.encrypted_content"]
 
 
-def test_prepare_codex_payload_drops_params_for_exact_matching_model() -> None:
+@pytest.mark.parametrize("model", ["gpt-5.4", "gpt-5.6-luna"])
+def test_prepare_codex_payload_drops_params_for_all_models(model: str) -> None:
     payload = {
-        "model": "gpt-5.6-luna",
+        "model": model,
         "input": "hello",
         "temperature": 0.2,
         "metadata": {"temperature": "nested-value"},
@@ -82,25 +83,12 @@ def test_prepare_codex_payload_drops_params_for_exact_matching_model() -> None:
 
     prepared = _prepare_codex_payload(
         payload,
-        drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
+        drop_params=("temperature",),
     )
 
     assert "temperature" not in prepared
     assert prepared["metadata"] == {"temperature": "nested-value"}
     assert payload["temperature"] == 0.2
-
-
-def test_prepare_codex_payload_retains_params_for_non_matching_model() -> None:
-    prepared = _prepare_codex_payload(
-        {
-            "model": "gpt-5.6-luna-preview",
-            "input": "hello",
-            "temperature": 0.2,
-        },
-        drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
-    )
-
-    assert prepared["temperature"] == 0.2
 
 
 def test_prepare_codex_payload_drops_multiple_params_and_ignores_absent() -> None:
@@ -111,9 +99,7 @@ def test_prepare_codex_payload_drops_multiple_params_and_ignores_absent() -> Non
             "temperature": 0.2,
             "top_p": 0.9,
         },
-        drop_params_by_model={
-            "gpt-5.6-terra": ("temperature", "top_p", "service_tier")
-        },
+        drop_params=("temperature", "top_p", "service_tier"),
     )
 
     assert "temperature" not in prepared
@@ -133,7 +119,7 @@ def test_prepare_codex_payload_filters_translated_chat_request() -> None:
 
     prepared = _prepare_codex_payload(
         translated,
-        drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
+        drop_params=("temperature",),
     )
 
     assert prepared["model"] == "gpt-5.6-luna"
@@ -152,7 +138,7 @@ def test_prepare_codex_payload_logs_names_without_values(caplog) -> None:
                 "input": "hello",
                 "temperature": "secret-request-value",
             },
-            drop_params_by_model={"gpt-5.6-luna": ("temperature",)},
+            drop_params=("temperature",),
         )
 
     assert "compat.drop_params model=gpt-5.6-luna" in caplog.text

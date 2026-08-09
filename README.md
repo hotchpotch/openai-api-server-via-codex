@@ -380,8 +380,8 @@ auth_json = "~/.codex/auth.json"
 backend_base_url = "https://chatgpt.com/backend-api/codex"
 client_version = "1.0.0"
 
-# [compat.drop_params_by_model]
-# "gpt-5.6-luna" = ["temperature"]
+[compat]
+drop_params = []
 
 [daemon]
 state_dir = "~/.config/openai-api-server-via-codex/run"
@@ -494,22 +494,22 @@ Default: `~/.codex/auth.json`
 Selects the Codex ChatGPT OAuth credentials that the server borrows when it
 calls the Codex backend.
 
-### `compat.drop_params_by_model`
+### `compat.drop_params`
 
 Default: no rules
 
-Use this table when a Codex model rejects an otherwise valid top-level
-OpenAI-compatible request parameter:
+Use this setting when the Codex backend rejects otherwise valid top-level
+OpenAI-compatible request parameters:
 
 ```toml
-[compat.drop_params_by_model]
-"gpt-5.6-luna" = ["temperature"]
+[compat]
+drop_params = ["temperature", "top_p"]
 ```
 
-Model IDs are matched exactly. Configured fields are silently removed before
-the Responses request is sent to Codex, for both native Responses and translated
+Configured fields are silently removed from requests for every model before the
+Responses request is sent to Codex, for both native Responses and translated
 Chat Completions requests. Only configure parameters known to be unsupported by
-that model.
+the Codex backend.
 
 ### `daemon.state_dir`
 
