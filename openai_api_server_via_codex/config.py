@@ -68,6 +68,10 @@ auth_json = "~/.codex/auth.json"
 backend_base_url = "{CODEX_BASE_URL}"
 client_version = "{DEFAULT_CLIENT_VERSION}"
 
+[compat]
+# Top-level OpenAI-compatible parameters to remove from all Codex requests (array of strings).
+drop_params = []
+
 [daemon]
 state_dir = {state_dir}
 # pid_file = "/path/to/openai-api-server-via-codex.pid"
@@ -83,6 +87,27 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     with config_path.open("rb") as file:
         loaded = tomllib.load(file)
     return loaded if isinstance(loaded, dict) else {}
+
+
+def drop_params_from_config(config_data: dict[str, Any]) -> tuple[str, ...]:
+    compat = config_data.get("compat")
+    if compat is None:
+        return ()
+    if not isinstance(compat, dict):
+        raise TypeError("compat must be a TOML table")
+
+    configured = compat.get("drop_params")
+    if configured is None:
+        return ()
+    if not isinstance(configured, list):
+        raise TypeError("compat.drop_params must be an array of strings")
+
+    for param in configured:
+        if not isinstance(param, str):
+            raise TypeError("compat.drop_params must contain only non-empty strings")
+        if not param.strip():
+            raise ValueError("compat.drop_params must contain only non-empty strings")
+    return tuple(configured)
 
 
 def write_default_config(path: str | Path | None = None, *, force: bool = False) -> Path:

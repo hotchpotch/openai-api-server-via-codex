@@ -10,7 +10,8 @@ import httpx
 import pytest
 from openai import AsyncOpenAI, NotFoundError
 
-from openai_api_server_via_codex.backend import CodexProxyResponse
+from openai_api_server_via_codex import backend as backend_module
+from openai_api_server_via_codex.backend import CodexHttpBackend, CodexProxyResponse
 from openai_api_server_via_codex.server import create_app
 
 
@@ -534,6 +535,69 @@ async def test_responses_create_round_trips_with_openai_client(
     assert response.usage.input_tokens == 3
     assert backend.requests[0]["reasoning"] == {"effort": "low"}
     assert backend.requests[0]["store"] is False
+
+
+@pytest.mark.asyncio
+async def test_chat_completions_drop_configured_params_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upstream_requests: list[dict[str, Any]] = []
+
+    class FakeResponses:
+        async def create(self, **payload: Any):
+            upstream_requests.append(payload)
+            recorder = RecordingBackend()
+            recorder.requests.append(payload)
+            response = recorder._response_for_payload(payload)
+
+            async def events():
+                yield {"type": "response.completed", "response": response}
+
+            return events()
+
+    class FakeCodexClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.responses = FakeResponses()
+
+        async def close(self) -> None:
+            return None
+
+    app = create_app(drop_params=("temperature", "top_p"))
+    backend = app.state.backend
+    assert isinstance(backend, CodexHttpBackend)
+
+    async def fake_borrow_key() -> tuple[str, str]:
+        return "test-token", "test-account"
+
+    monkeypatch.setattr(backend, "_borrow_key", fake_borrow_key)
+    monkeypatch.setattr(backend_module, "AsyncOpenAI", FakeCodexClient)
+
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://testserver",
+    )
+    client = AsyncOpenAI(
+        api_key="test",
+        base_url="http://testserver/v1",
+        http_client=http_client,
+    )
+    try:
+        completion = await client.chat.completions.create(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Reply with PONG."}],
+            temperature=0.2,
+            top_p=0.9,
+        )
+    finally:
+        await http_client.aclose()
+
+    assert completion.choices[0].message.content == "fake: Reply with PONG."
+    assert upstream_requests[0]["model"] == "gpt-5.4"
+    assert upstream_requests[0]["input"] == [
+        {"role": "user", "content": "Reply with PONG."}
+    ]
+    assert "temperature" not in upstream_requests[0]
+    assert "top_p" not in upstream_requests[0]
 
 
 @pytest.mark.asyncio
