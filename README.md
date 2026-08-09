@@ -5,6 +5,8 @@ talks to Codex clients. This server puts an OpenAI-compatible API in front of
 it, so any tool that already speaks to `api.openai.com` can use it by changing
 one environment variable.
 
+![Start the server with uvx, then call the OpenAI-compatible Responses API with curl](https://storage.googleapis.com/secons-site-images/other/blog_images/20260809-openai-api-server-via-codex-quick-start.webp)
+
 ```console
 $ uvx openai-api-server-via-codex
 $ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
