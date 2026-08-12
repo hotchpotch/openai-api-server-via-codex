@@ -153,4 +153,6 @@ $ docker run --rm -p 127.0.0.1:18080:18080 \
   in Docker the container itself is the daemon, so the image runs `serve` in
   the foreground and Compose manages restarts.
 - The container healthcheck polls `/healthz`, so `docker ps` shows the
-  service as `healthy` once the server is up.
+  service as `healthy` once the server is up. Override the container port with
+  `OPENAI_VIA_CODEX_PORT`; passing only `serve --port ...` would leave the
+  healthcheck pointed at the environment-configured port.

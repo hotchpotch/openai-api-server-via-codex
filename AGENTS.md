@@ -59,6 +59,10 @@ go test ./test/e2e -v
 go test -race ./...
 ```
 
+CI additionally installs each of the six native platform wheels and reruns the
+spawned-server E2E through the packaged Python launcher. It uses only synthetic
+auth and the local fake Codex backend.
+
 Run the broad Codex HTTP OpenAI client compatibility matrix by itself when
 investigating API surface regressions:
 

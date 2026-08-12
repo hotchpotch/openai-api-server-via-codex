@@ -31,7 +31,7 @@ TARGETS = (
     Target("windows", "amd64", "win_amd64", "openai-api-server-via-codex.exe"),
     Target("windows", "arm64", "win_arm64", "openai-api-server-via-codex.exe"),
 )
-LAUNCHER_MODULES = {"__init__.py", "__main__.py", "launcher.py"}
+LAUNCHER_FILES = {"__init__.py", "__main__.py", "launcher.py"}
 
 
 def digest(path: Path) -> tuple[str, int]:
@@ -66,16 +66,16 @@ def archive_wheel(root: Path, output: Path) -> None:
 
 def validate_launcher_package(root: Path) -> None:
     package = root / "openai_api_server_via_codex"
-    modules = {
+    files = {
         path.relative_to(package).as_posix()
-        for path in package.rglob("*.py")
+        for path in package.rglob("*")
         if path.is_file()
     }
-    if modules != LAUNCHER_MODULES:
-        unexpected = sorted(modules - LAUNCHER_MODULES)
-        missing = sorted(LAUNCHER_MODULES - modules)
+    if files != LAUNCHER_FILES:
+        unexpected = sorted(files - LAUNCHER_FILES)
+        missing = sorted(LAUNCHER_FILES - files)
         raise RuntimeError(
-            "base wheel must contain only the Python launcher modules; "
+            "base wheel must contain only the Python launcher files; "
             f"unexpected={unexpected}, missing={missing}. "
             "Remove stale build/ output and rebuild the base wheel."
         )
@@ -87,6 +87,7 @@ def build_binary(target: Target, output: Path, version: str) -> None:
         [
             "go",
             "build",
+            "-mod=readonly",
             "-trimpath",
             "-ldflags",
             f"-s -w -X main.version={version}",
@@ -98,7 +99,27 @@ def build_binary(target: Target, output: Path, version: str) -> None:
         env=env,
         check=True,
     )
+    if not output.is_file() or output.stat().st_size == 0:
+        raise RuntimeError(f"go build produced no usable binary for {target.wheel_tag}")
     output.chmod(0o755)
+
+
+def validate_distribution_set(output_dir: Path, outputs: list[Path]) -> None:
+    expected = {path.resolve() for path in outputs}
+    actual = {path.resolve() for path in output_dir.iterdir() if path.is_file()}
+    missing = sorted(path.name for path in expected - actual)
+    unexpected = sorted(path.name for path in actual - expected)
+    source_archives = sorted(
+        path.name
+        for path in output_dir.iterdir()
+        if path.is_file() and (path.name.endswith(".tar.gz") or path.suffix == ".zip")
+    )
+    if missing or unexpected or source_archives:
+        raise RuntimeError(
+            "distribution directory must contain only the requested platform wheels; "
+            f"missing={missing}, unexpected={unexpected}, "
+            f"source_archives={source_archives}"
+        )
 
 
 def platform_wheel(base_wheel: Path, output_dir: Path, target: Target, version: str) -> Path:
@@ -144,7 +165,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wheel", type=Path, required=True, help="base py3-none-any wheel")
     parser.add_argument("--output-dir", type=Path, default=Path("dist"))
     parser.add_argument("--version", required=True)
-    parser.add_argument("--keep-base", action="store_true")
+    parser.add_argument(
+        "--target",
+        action="append",
+        choices=[target.wheel_tag for target in TARGETS],
+        help="build only this wheel tag; may be repeated (default: all targets)",
+    )
     return parser.parse_args()
 
 
@@ -153,12 +179,19 @@ def main() -> None:
     base_wheel = args.wheel.resolve()
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    selected_tags = set(args.target or ())
+    targets = [
+        target
+        for target in TARGETS
+        if not selected_tags or target.wheel_tag in selected_tags
+    ]
     outputs = [
         platform_wheel(base_wheel, output_dir, target, args.version)
-        for target in TARGETS
+        for target in targets
     ]
-    if not args.keep_base and base_wheel.parent == output_dir:
+    if base_wheel.parent == output_dir:
         base_wheel.unlink()
+    validate_distribution_set(output_dir, outputs)
     for output in outputs:
         print(output)
 

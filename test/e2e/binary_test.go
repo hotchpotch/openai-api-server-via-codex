@@ -135,6 +135,20 @@ func TestGoBinaryForegroundE2E(t *testing.T) {
 
 func buildBinary(t *testing.T) string {
 	t.Helper()
+	if configured := os.Getenv("OPENAI_VIA_CODEX_E2E_EXECUTABLE"); configured != "" {
+		binary, err := filepath.Abs(configured)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(binary)
+		if err != nil {
+			t.Fatalf("stat configured E2E executable: %v", err)
+		}
+		if info.IsDir() || info.Size() == 0 {
+			t.Fatalf("configured E2E executable is not a nonempty file: %s", binary)
+		}
+		return binary
+	}
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
 		t.Fatal(err)

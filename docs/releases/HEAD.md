@@ -30,3 +30,8 @@
   `uvx` launcher and as an `openai-python` compatibility test client.
 - Changed Docker images to build and run the static Go executable directly,
   and changed releases to publish only binary-bearing platform wheels.
+- Added native installed-wheel E2E on Linux, macOS, and Windows for x86_64 and
+  ARM64. CI now exercises the Python launcher, bundled Go server, API request,
+  and process lifecycle entirely against a deterministic local fake backend.
+- Hardened platform-wheel builds against generic wheels, source archives,
+  stale package files, empty binaries, and mutable Go module metadata.

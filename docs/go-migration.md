@@ -62,10 +62,12 @@ challenge. In that case the live test verifies transparent reachability and
 the deterministic fake-upstream contract remains responsible for the 2xx
 response shape.
 
-CI runs native Go tests and vet on Linux, macOS, and Windows, the race detector
-on Linux, and builds the packaged x86_64 and ARM64 binaries through the platform
-wheel job. Live tests stay manual. ARM hardware is a release sign-off rather
-than an emulation-only claim.
+CI runs native Go tests and vet plus an installed-wheel spawned-server E2E on
+Linux, macOS, and Windows for x86_64 and ARM64. Each E2E launches the packaged
+Python entry point, which execs the bundled Go server, and sends requests through
+a local fake Codex HTTP backend. It neither reads real Codex credentials nor
+contacts the real backend. The race detector runs on Linux; live tests stay
+manual.
 
 ## Post-removal invariants
 
@@ -79,8 +81,8 @@ Keep these conditions true:
    must never silently fall back to Python.
 4. Releases publish only the six supported platform wheels. A generic wheel is
    an intermediate build input and must not be uploaded to PyPI.
-5. Linux race detection, native Linux/macOS/Windows CI, x86_64/ARM64 package
-   builds, and periodic real ARM64 sign-off remain green.
+5. Linux race detection and native installed-wheel E2E on Linux/macOS/Windows
+   x86_64/ARM64 remain green.
 
 ## ARM64 sign-off record
 

@@ -48,6 +48,9 @@ wheel is only an intermediate input and must be removed before publishing; no
 source distribution is published because it cannot contain a prebuilt binary
 for the install target. No artifact may contain `.codex`, `auth.json`, `.env`,
 `.venv`, `.tox`, caches, logs, generated reports, or nested `dist/` artifacts.
+The platform-wheel builder rejects generic wheels, source archives, unexpected
+wheel tags, stale package files, and missing or empty Go binaries before the
+release workflow can upload the directory.
 
 ## Version Bump
 
