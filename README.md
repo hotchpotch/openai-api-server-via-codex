@@ -16,7 +16,9 @@ the standard Responses and Chat Completions APIs by changing their base URL.
 ## Quick start
 
 Make sure Codex is logged in and `~/.codex/auth.json` exists, then start the Go
-server:
+server with either `uvx` or Docker.
+
+### `uvx`
 
 ```console
 $ uvx openai-api-server-via-codex
@@ -28,6 +30,23 @@ Until `0.2.0` is published, select the Go beta explicitly:
 ```console
 $ uvx --from openai-api-server-via-codex==0.1.6b1 openai-api-server-via-codex
 ```
+
+### Docker
+
+The public image needs no registry login. The current amd64 image is only about
+21 MB, and idle memory use is a few MiB (roughly 4–7 MiB in local measurements;
+the exact value depends on the host and container runtime).
+
+Until stable `v0.2.0` is published, use the beta tag:
+
+```console
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b1
+$ docker run --rm -p 127.0.0.1:18080:18080 \
+    -v ~/.codex:/home/app/.codex \
+    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b1
+```
+
+For stable releases, replace `v0.1.6b1` with `latest`.
 
 Point an OpenAI client at the local endpoint:
 
@@ -79,7 +98,7 @@ Choose one of these paths:
 | Method | Host requirements | Server runtime |
 | --- | --- | --- |
 | `uvx openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
-| `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest` | Docker, Codex login | Published Go/Alpine image |
+| `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest` | Docker, Codex login | Public Go/Alpine image (~21 MB; a few MiB idle memory) |
 | `docker compose up --build -d` | Docker, Codex login | Go on Alpine Linux |
 | Build from source | Go 1.23+, Codex login | Locally built Go executable |
 
