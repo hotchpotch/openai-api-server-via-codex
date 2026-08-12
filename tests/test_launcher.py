@@ -20,17 +20,37 @@ def test_launcher_execs_bundled_go_binary(
     class Executed(Exception):
         pass
 
-    def fake_exec(path: Path) -> None:
+    def fake_launch(path: Path) -> None:
         calls.append((path, [str(path), "--version"]))
         raise Executed
 
-    monkeypatch.setattr(launcher, "_exec_go", fake_exec)
+    monkeypatch.setattr(launcher, "_launch_go", fake_launch)
     monkeypatch.setattr(launcher.sys, "argv", ["command", "--version"])
 
     with pytest.raises(Executed):
         launcher.main()
 
     assert calls == [(binary, [str(binary), "--version"])]
+
+
+def test_windows_launcher_waits_for_go_and_propagates_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "openai-api-server-via-codex.exe"
+    calls: list[list[str]] = []
+    monkeypatch.setattr(launcher.sys, "argv", ["command", "serve", "--port", "0"])
+
+    def fake_call(arguments: list[str]) -> int:
+        calls.append(arguments)
+        return 23
+
+    monkeypatch.setattr(launcher.subprocess, "call", fake_call)
+
+    with pytest.raises(SystemExit) as raised:
+        launcher._launch_go(binary, "nt")
+
+    assert raised.value.code == 23
+    assert calls == [[str(binary), "serve", "--port", "0"]]
 
 
 def test_launcher_rejects_install_without_bundled_binary(
@@ -69,7 +89,7 @@ def test_launcher_reports_exec_failure(
     monkeypatch.setattr(launcher, "bundled_binary", lambda: binary)
     monkeypatch.setattr(
         launcher,
-        "_exec_go",
+        "_launch_go",
         lambda path: (_ for _ in ()).throw(OSError("exec format error")),
     )
 

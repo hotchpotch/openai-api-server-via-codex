@@ -23,6 +23,28 @@ def environment_command(environment: Path) -> Path:
     return environment / directory / executable
 
 
+def installed_binary(python: Path) -> Path:
+    result = subprocess.run(
+        [
+            str(python),
+            "-I",
+            "-c",
+            (
+                "from openai_api_server_via_codex.launcher import bundled_binary; "
+                "print(bundled_binary())"
+            ),
+        ],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    binary = Path(result.stdout.strip()).resolve()
+    if not binary.is_file() or binary.stat().st_size == 0:
+        raise RuntimeError(f"installed Go binary is missing or empty: {binary}")
+    return binary
+
+
 def select_wheel(directory: Path, wheel_tag: str) -> Path:
     wheels = list(directory.glob(f"*-py3-none-{wheel_tag}.whl"))
     if len(wheels) != 1:
@@ -55,10 +77,36 @@ def main() -> None:
         if not command.is_file():
             raise RuntimeError(f"installed console command is missing: {command}")
         subprocess.run([str(command), "--version"], cwd=ROOT, check=True)
+        missing_auth = Path(temporary) / "missing-auth.json"
+        preflight = subprocess.run(
+            [
+                str(command),
+                "serve",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--auth-json",
+                str(missing_auth),
+            ],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        preflight_output = preflight.stdout + preflight.stderr
+        if (
+            preflight.returncode == 0
+            or "authentication preflight failed" not in preflight_output
+        ):
+            raise RuntimeError(
+                "installed console command did not propagate preflight failure: "
+                f"returncode={preflight.returncode} output={preflight_output!r}"
+            )
 
         child_env = {
             **os.environ,
-            "OPENAI_VIA_CODEX_E2E_EXECUTABLE": str(command),
+            "OPENAI_VIA_CODEX_E2E_EXECUTABLE": str(installed_binary(python)),
         }
         subprocess.run(
             [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -20,6 +21,13 @@ def _exec_go(binary: Path) -> NoReturn:
     os.execv(str(binary), [str(binary), *sys.argv[1:]])
 
 
+def _launch_go(binary: Path, platform_name: str | None = None) -> NoReturn:
+    platform_name = os.name if platform_name is None else platform_name
+    if platform_name == "nt":
+        raise SystemExit(subprocess.call([str(binary), *sys.argv[1:]]))
+    _exec_go(binary)
+
+
 def main() -> None:
     binary = bundled_binary()
     if not binary.is_file():
@@ -31,6 +39,6 @@ def main() -> None:
     if os.name != "nt" and not os.access(binary, os.X_OK):
         raise SystemExit(f"The bundled Go server is not executable: {binary}")
     try:
-        _exec_go(binary)
+        _launch_go(binary)
     except OSError as error:
         raise SystemExit(f"Failed to execute the bundled Go server: {error}") from error
