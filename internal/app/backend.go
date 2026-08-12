@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"runtime"
@@ -49,8 +51,10 @@ func (b *backend) headers(cred credentials, stream bool) http.Header {
 }
 
 func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {
+	b.debugf("codex.stream.start model=%s endpoint=%s/responses", stringValue(payload["model"]), b.cfg.BackendURL)
 	cred, err := b.auth.borrow()
 	if err != nil {
+		b.debugf("codex.stream.auth_error message=%s", redactSensitive(err.Error()))
 		return &backendError{401, err.Error()}
 	}
 	prepared := cloneMap(payload)
@@ -95,6 +99,7 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	var data strings.Builder
+	events := 0
 	flush := func() error {
 		if data.Len() == 0 {
 			return nil
@@ -111,6 +116,7 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 		if event["type"] == "response.done" {
 			event["type"] = "response.completed"
 		}
+		events++
 		return fn(event)
 	}
 	for scanner.Scan() {
@@ -131,7 +137,12 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 	if err := flush(); err != nil {
 		return err
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		b.debugf("codex.stream.error message=%s", redactSensitive(err.Error()))
+		return err
+	}
+	b.debugf("codex.stream.end events=%d", events)
+	return nil
 }
 
 func (b *backend) collect(ctx context.Context, payload map[string]any) (map[string]any, error) {
@@ -174,17 +185,20 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 func (b *backend) listModels(ctx context.Context) []string {
 	cred, err := b.auth.borrow()
 	if err != nil {
+		b.debugf("codex.models.fallback reason=auth_error")
 		return append([]string(nil), defaultModels...)
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.BackendURL+"/models?client_version="+url.QueryEscape(b.cfg.ClientVersion), nil)
 	req.Header = b.headers(cred, false)
 	resp, err := b.client.Do(req)
 	if err != nil {
+		b.debugf("codex.models.fallback reason=request_error")
 		return append([]string(nil), defaultModels...)
 	}
 	defer resp.Body.Close()
 	var doc map[string]any
 	if resp.StatusCode/100 != 2 || json.NewDecoder(resp.Body).Decode(&doc) != nil {
+		b.debugf("codex.models.fallback reason=invalid_response status=%d", resp.StatusCode)
 		return append([]string(nil), defaultModels...)
 	}
 	var result []string
@@ -195,8 +209,10 @@ func (b *backend) listModels(ctx context.Context) []string {
 		}
 	}
 	if len(result) == 0 {
+		b.debugf("codex.models.fallback reason=empty_model_list")
 		return append([]string(nil), defaultModels...)
 	}
+	b.debugf("codex.models.loaded count=%d", len(result))
 	return result
 }
 
@@ -205,18 +221,16 @@ func (b *backend) proxy(ctx context.Context, method, path, query string, headers
 }
 
 func (b *backend) proxyTo(ctx context.Context, method, baseURL, path, query string, headers http.Header, body io.Reader) (*http.Response, error) {
+	target, err := resolveProxyURL(baseURL, path, query)
+	if err != nil {
+		return nil, &backendError{400, "Invalid proxy path."}
+	}
+	b.debugf("codex.proxy.start method=%s path=%s", method, redactSensitive(target.EscapedPath()))
 	cred, err := b.auth.borrow()
 	if err != nil {
 		return nil, &backendError{401, err.Error()}
 	}
-	if invalidProxyPath(path) {
-		return nil, &backendError{400, "Invalid proxy path."}
-	}
-	target := strings.TrimRight(baseURL, "/") + "/" + strings.TrimLeft(path, "/")
-	if query != "" {
-		target += "?" + query
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, body)
+	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +244,14 @@ func (b *backend) proxyTo(ctx context.Context, method, baseURL, path, query stri
 	if err != nil {
 		return nil, &backendError{502, "Codex backend proxy request failed."}
 	}
+	b.debugf("codex.proxy.headers status=%d", resp.StatusCode)
 	return resp, nil
+}
+
+func (b *backend) debugf(format string, args ...any) {
+	if b.cfg.Verbose {
+		log.Printf(format, args...)
+	}
 }
 
 func (b *backend) transcribe(ctx context.Context, headers http.Header, body io.Reader) (*http.Response, error) {
@@ -250,11 +271,44 @@ func decodeBackendError(resp *http.Response) error {
 	return &backendError{resp.StatusCode, redactSensitive(message)}
 }
 func invalidProxyPath(path string) bool {
-	decoded, _ := url.PathUnescape(path)
-	for _, p := range strings.Split(decoded, "/") {
-		if p == ".." {
-			return true
+	_, err := cleanProxyPath(path)
+	return err != nil
+}
+
+func cleanProxyPath(path string) (string, error) {
+	decoded, err := url.PathUnescape(path)
+	if err != nil || strings.Contains(decoded, "\\") {
+		return "", errors.New("invalid proxy path")
+	}
+	for _, r := range decoded {
+		if r == 0 || r < 0x20 || r == 0x7f {
+			return "", errors.New("invalid proxy path")
 		}
 	}
-	return false
+	var segments []string
+	for _, p := range strings.Split(decoded, "/") {
+		if p == ".." {
+			return "", errors.New("invalid proxy path")
+		}
+		if p != "" && p != "." {
+			segments = append(segments, p)
+		}
+	}
+	return strings.Join(segments, "/"), nil
+}
+
+func resolveProxyURL(baseURL, path, query string) (*url.URL, error) {
+	cleaned, err := cleanProxyPath(path)
+	if err != nil {
+		return nil, err
+	}
+	target, err := url.Parse(baseURL)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.Host == "" || target.RawQuery != "" || target.Fragment != "" {
+		return nil, errors.New("invalid backend base URL")
+	}
+	target.Path = strings.TrimRight(target.Path, "/") + "/" + cleaned
+	target.RawPath = ""
+	target.RawQuery = query
+	target.Fragment = ""
+	return target, nil
 }

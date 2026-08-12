@@ -44,6 +44,13 @@ func serve(cfg config, version string) error {
 	}
 	httpServer := &http.Server{Addr: address, Handler: s, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("openai-api-server-via-codex %s (Go) listening on http://%s", version, httpServer.Addr)
+	if cfg.Verbose {
+		log.Printf(
+			"settings.resolved host=%s port=%d model=%s timeout=%s max_stored_items=%d max_concurrent_requests=%d auth_json=%s backend_base_url=%s api_key_configured=%t",
+			cfg.Host, cfg.Port, cfg.Model, cfg.Timeout, cfg.MaxStored, cfg.Concurrency,
+			cfg.AuthJSON, cfg.BackendURL, cfg.APIKey != "",
+		)
+	}
 	serveResult := make(chan error, 1)
 	go func() { serveResult <- httpServer.Serve(listener) }()
 
@@ -76,12 +83,83 @@ func serve(cfg config, version string) error {
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/healthz" {
-		writeJSON(w, 200, map[string]any{"status": "ok"})
+	capture := &responseCapture{ResponseWriter: w}
+	started := time.Now()
+	if s.cfg.Verbose {
+		log.Printf("request.start method=%s path=%s query=%s", r.Method, redactSensitive(r.URL.Path), redactSensitive(r.URL.RawQuery))
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			log.Printf("request.unhandled_error method=%s path=%s panic_type=%T", r.Method, redactSensitive(r.URL.Path), recovered)
+			if !capture.wroteHeader {
+				writeError(capture, 500, "Internal server error.", "api_error", nil, nil)
+			}
+		}
+		if s.cfg.Verbose {
+			log.Printf("request.end method=%s path=%s status=%d bytes=%d duration_ms=%.1f", r.Method, redactSensitive(r.URL.Path), capture.statusCode(), capture.bytes, float64(time.Since(started).Microseconds())/1000)
+		}
+	}()
+	s.serveHTTP(capture, r)
+}
+
+type responseCapture struct {
+	http.ResponseWriter
+	status      int
+	bytes       int64
+	wroteHeader bool
+}
+
+func (w *responseCapture) WriteHeader(status int) {
+	if w.wroteHeader {
 		return
 	}
-	if strings.HasPrefix(r.URL.Path, "/v1/") && s.cfg.APIKey != "" && !validBearer(r.Header.Get("Authorization"), s.cfg.APIKey) {
+	w.status = status
+	w.wroteHeader = true
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *responseCapture) Write(data []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	written, err := w.ResponseWriter.Write(data)
+	w.bytes += int64(written)
+	return written, err
+}
+
+func (w *responseCapture) Flush() {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	_ = http.NewResponseController(w.ResponseWriter).Flush()
+}
+
+func (w *responseCapture) statusCode() int {
+	if w.status == 0 {
+		return http.StatusOK
+	}
+	return w.status
+}
+
+func (s *server) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/healthz" {
+		if r.Method == http.MethodGet {
+			writeJSON(w, 200, map[string]any{"status": "ok"})
+		} else {
+			methodNotAllowed(w)
+		}
+		return
+	}
+	if r.URL.Path != "/v1" && !strings.HasPrefix(r.URL.Path, "/v1/") {
+		http.NotFound(w, r)
+		return
+	}
+	if s.cfg.APIKey != "" && !validBearer(r.Header.Get("Authorization"), s.cfg.APIKey) {
 		writeError(w, 401, "Incorrect API key provided.", "invalid_request_error", nil, "invalid_api_key")
+		return
+	}
+	if r.URL.Path == "/v1" {
+		http.Redirect(w, r, "/v1/", http.StatusTemporaryRedirect)
 		return
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -129,11 +207,11 @@ func isChatResourceRoute(method, resource string) bool {
 }
 
 func validBearer(header, key string) bool {
-	const prefix = "Bearer "
-	if !strings.HasPrefix(header, prefix) {
+	scheme, token, ok := strings.Cut(strings.TrimSpace(header), " ")
+	if !ok || !strings.EqualFold(scheme, "bearer") {
 		return false
 	}
-	got := []byte(strings.TrimSpace(strings.TrimPrefix(header, prefix)))
+	got := []byte(strings.TrimSpace(token))
 	want := []byte(key)
 	return len(got) == len(want) && subtle.ConstantTimeCompare(got, want) == 1
 }
@@ -578,9 +656,6 @@ func (s *server) chatResource(w http.ResponseWriter, r *http.Request, resource s
 	if len(parts) == 2 && parts[1] == "messages" && r.Method == http.MethodGet {
 		items := stored.Messages
 		more := hasMoreQuery(len(items), r.URL.Query())
-		if r.URL.Query().Get("order") == "desc" {
-			reverseMaps(items)
-		}
 		items = pageMaps(items, r.URL.Query())
 		writeJSON(w, 200, cursorPage(items, more))
 		return
@@ -616,8 +691,8 @@ func (s *server) audio(w http.ResponseWriter, r *http.Request) {
 	if s.acquire(r.Context()) != nil {
 		return
 	}
+	defer s.release()
 	resp, err := s.backend.transcribe(r.Context(), r.Header, r.Body)
-	s.release()
 	if err != nil {
 		writeBackendError(w, err)
 		return
@@ -687,8 +762,8 @@ func (s *server) proxy(w http.ResponseWriter, r *http.Request, path string) {
 	if s.acquire(r.Context()) != nil {
 		return
 	}
+	defer s.release()
 	resp, err := s.backend.proxy(r.Context(), r.Method, path, r.URL.RawQuery, r.Header, r.Body)
-	s.release()
 	if err != nil {
 		writeBackendError(w, err)
 		return
@@ -703,6 +778,16 @@ func decodeObject(r *http.Request) (map[string]any, error) {
 	decoder.UseNumber()
 	var body map[string]any
 	if err := decoder.Decode(&body); err != nil {
+		return nil, err
+	}
+	if body == nil {
+		return nil, errors.New("expected a JSON object")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("unexpected data after JSON object")
+		}
 		return nil, err
 	}
 	return body, nil

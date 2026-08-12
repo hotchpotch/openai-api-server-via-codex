@@ -1683,7 +1683,9 @@ def _install_api_key_auth(app: FastAPI) -> None:
     @app.middleware("http")
     async def _api_key_auth(request: Request, call_next: Any) -> Response:
         api_key = getattr(request.app.state, "api_key", None)
-        if not api_key or not request.url.path.startswith("/v1/"):
+        if not api_key or not (
+            request.url.path == "/v1" or request.url.path.startswith("/v1/")
+        ):
             return await call_next(request)
         if _authorization_matches_api_key(
             request.headers.get("authorization"), str(api_key)

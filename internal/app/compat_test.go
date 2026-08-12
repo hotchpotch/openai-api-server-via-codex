@@ -63,6 +63,17 @@ func TestResponseAndChatStoresAreBoundedAndIsolated(t *testing.T) {
 	}
 }
 
+func TestResponseStoreRefreshesExistingEntryEvictionOrder(t *testing.T) {
+	responses := newResponseStore(2)
+	responses.remember("one", []any{}, map[string]any{"id": "one", "output": []any{}})
+	responses.remember("two", []any{}, map[string]any{"id": "two", "output": []any{}})
+	responses.remember("one", []any{}, map[string]any{"id": "one", "output": []any{}})
+	responses.remember("three", []any{}, map[string]any{"id": "three", "output": []any{}})
+	if responses.get("one") == nil || responses.get("two") != nil || responses.get("three") == nil {
+		t.Fatalf("unexpected eviction order: %#v", responses.order)
+	}
+}
+
 func TestPrepareResponseNormalizesReasoningAndDefaults(t *testing.T) {
 	got := prepareResponse(map[string]any{"input": []any{
 		map[string]any{"type": "reasoning", "summary": []any{}},

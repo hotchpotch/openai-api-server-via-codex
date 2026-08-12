@@ -201,7 +201,13 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
 
     def _proxy_response(self) -> None:
         self._json(
-            {"object": "list", "data": [], "has_more": False},
+            {
+                "object": "list",
+                "data": [],
+                "has_more": False,
+                "request_method": self.command,
+                "request_path": self.path,
+            },
             headers={"x-upstream-request-id": "contract-upstream"},
         )
 
@@ -329,15 +335,34 @@ async def test_contract_health_and_models(runtime_server: tuple[str, str]) -> No
     runtime, base_url = runtime_server
     async with httpx.AsyncClient(base_url=base_url) as direct:
         health = await direct.get("/healthz")
+        invalid_health_method = await direct.post("/healthz")
+        outside_v1 = await direct.get("/outside-v1")
         unauthorized = await direct.get("/v1/models")
+        unauthorized_v1_root = await direct.get("/v1")
     assert health.json() == {"status": "ok"}, runtime
+    assert invalid_health_method.status_code == 405, runtime
+    assert outside_v1.status_code == 404, runtime
     assert unauthorized.status_code == 401, runtime
     assert unauthorized.json()["error"]["code"] == "invalid_api_key", runtime
+    assert unauthorized_v1_root.status_code == 401, runtime
     async with AsyncOpenAI(
         api_key="contract-server-key", base_url=f"{base_url}/v1"
     ) as client:
         models = await client.models.list()
     assert [model.id for model in models.data] == ["gpt-5.6-luna"], runtime
+
+    async with httpx.AsyncClient(
+        base_url=base_url,
+        headers={"Authorization": "bearer contract-server-key"},
+    ) as direct:
+        root = await direct.get("/v1")
+        root_with_slash = await direct.get("/v1/")
+    assert root.status_code == 307, runtime
+    assert root.headers["location"].endswith("/v1/"), runtime
+    assert root_with_slash.status_code == 200, runtime
+    assert root_with_slash.json()["request_path"].endswith(
+        "/backend-api/codex/"
+    ), runtime
 
 
 async def test_contract_responses_lifecycle_and_streaming(
@@ -403,6 +428,7 @@ async def test_contract_chat_lifecycle_streaming_and_tools(
     completion = await contract_client.chat.completions.create(
         model="gpt-5.6-luna",
         messages=[{"role": "user", "content": "chat lifecycle marker"}],
+        n=2,
         store=True,
         metadata={"suite": "contract"},
     )
@@ -420,6 +446,13 @@ async def test_contract_chat_lifecycle_streaming_and_tools(
     assert updated.model_dump().get("metadata") == {"suite": "updated"}, runtime
     messages = await contract_client.chat.completions.messages.list(completion.id)
     assert messages.data[0].role == "assistant", runtime
+    descending_messages = await contract_client.chat.completions.messages.list(
+        completion.id, order="desc"
+    )
+    assert [message.id for message in descending_messages.data] == [
+        f"{completion.id}_msg_1",
+        f"{completion.id}_msg_0",
+    ], runtime
 
     stream = await contract_client.chat.completions.create(
         model="gpt-5.6-luna",
@@ -482,5 +515,9 @@ async def test_contract_images_audio_and_unknown_proxy(
         base_url=base_url, headers={"Authorization": "Bearer contract-server-key"}
     ) as direct:
         proxied = await direct.get("/v1/batches?limit=3")
+        encoded_delimiters = await direct.get("/v1/files/report%3Fformat%23section?limit=1")
     assert proxied.json()["object"] == "list", runtime
     assert proxied.headers["x-openai-via-codex-proxy"] == "codex-http", runtime
+    assert encoded_delimiters.json()["request_path"].endswith(
+        "/backend-api/codex/files/report%3Fformat%23section?limit=1"
+    ), runtime

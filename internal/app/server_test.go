@@ -1,8 +1,11 @@
 package app
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -20,6 +23,77 @@ func TestAPIKeyProtectsV1ButNotHealth(t *testing.T) {
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status = %d", unauthorized.Code)
 	}
+
+	exactV1 := httptest.NewRecorder()
+	s.ServeHTTP(exactV1, httptest.NewRequest(http.MethodGet, "/v1", nil))
+	if exactV1.Code != http.StatusUnauthorized {
+		t.Fatalf("exact /v1 status = %d", exactV1.Code)
+	}
+
+	if !validBearer("bearer expected-secret", "expected-secret") {
+		t.Fatal("bearer scheme should be case-insensitive")
+	}
+}
+
+func TestRouterRejectsNonV1AndNonGETHealthRequests(t *testing.T) {
+	s := &server{cfg: config{}}
+	for _, test := range []struct {
+		method string
+		path   string
+		status int
+	}{
+		{http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/outside", http.StatusNotFound},
+	} {
+		response := httptest.NewRecorder()
+		s.ServeHTTP(response, httptest.NewRequest(test.method, test.path, nil))
+		if response.Code != test.status {
+			t.Errorf("%s %s status = %d, want %d", test.method, test.path, response.Code, test.status)
+		}
+	}
+}
+
+func TestUnhandledPanicReturnsRedactedOpenAIError(t *testing.T) {
+	s := &server{cfg: config{}}
+	response := httptest.NewRecorder()
+	s.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Internal server error.") {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+}
+
+func TestVerboseRequestLogRedactsQuerySecrets(t *testing.T) {
+	var output bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
+
+	s := &server{cfg: config{Verbose: true}}
+	response := httptest.NewRecorder()
+	s.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/outside?api_key=do-not-log", nil))
+	if strings.Contains(output.String(), "do-not-log") {
+		t.Fatalf("secret leaked in log: %s", output.String())
+	}
+	if !strings.Contains(output.String(), "[REDACTED]") {
+		t.Fatalf("redaction marker missing: %s", output.String())
+	}
+}
+
+func TestDecodeObjectRejectsNullAndTrailingData(t *testing.T) {
+	for _, body := range []string{"null", `{"ok":true} {"extra":true}`} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+		if _, err := decodeObject(request); err == nil {
+			t.Fatalf("decodeObject(%q) succeeded", body)
+		}
+	}
 }
 
 func TestInvalidProxyTraversalIsRejectedBeforeBackend(t *testing.T) {
@@ -29,6 +103,35 @@ func TestInvalidProxyTraversalIsRejectedBeforeBackend(t *testing.T) {
 	s.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestResolveProxyURLPreservesEncodedPathDelimiters(t *testing.T) {
+	target, err := resolveProxyURL(
+		"https://example.test/backend-api/codex",
+		"files/report?format#section",
+		"limit=1",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := target.String(); got != "https://example.test/backend-api/codex/files/report%3Fformat%23section?limit=1" {
+		t.Fatalf("target = %q", got)
+	}
+}
+
+func TestResolveProxyURLRejectsAmbiguousOrEscapingPaths(t *testing.T) {
+	for _, path := range []string{
+		"../auth",
+		"%2e%2e/auth",
+		"files%2f..%2fauth",
+		`files\..\auth`,
+		"files/%00auth",
+		"files/%zz",
+	} {
+		if _, err := resolveProxyURL("https://example.test/backend-api/codex", path, ""); err == nil {
+			t.Errorf("resolveProxyURL accepted %q", path)
+		}
 	}
 }
 

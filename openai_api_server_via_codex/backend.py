@@ -8,7 +8,7 @@ import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 import httpx
 from openai import APIError, APIStatusError, AsyncOpenAI
@@ -394,16 +394,21 @@ class CodexHttpBackend:
 
 def _validate_proxy_path(path: str) -> str:
     decoded = unquote(path)
-    if any(segment == ".." for segment in decoded.split("/")):
+    if (
+        "\\" in decoded
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded)
+        or any(segment == ".." for segment in decoded.split("/"))
+    ):
         raise CodexBackendError("Invalid proxy path.", status_code=400)
-    segments = [segment for segment in path.split("/") if segment and segment != "."]
+    segments = [segment for segment in decoded.split("/") if segment and segment != "."]
     return "/".join(segments)
 
 
 def _resolve_proxy_url(base_url: str, path: str, query: bytes) -> httpx.URL:
     cleaned_path = _validate_proxy_path(path)
     base = base_url.rstrip("/")
-    candidate = f"{base}/{cleaned_path}" if cleaned_path else f"{base}/"
+    escaped_path = quote(cleaned_path, safe="/@:!$&'()*+,;=-._~")
+    candidate = f"{base}/{escaped_path}" if escaped_path else f"{base}/"
     url = httpx.URL(candidate)
     if query:
         url = url.copy_with(query=query)

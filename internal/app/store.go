@@ -34,9 +34,15 @@ func (s *responseStore) remember(id string, input []any, response map[string]any
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.values[id]; !ok {
-		s.order = append(s.order, id)
+	if _, ok := s.values[id]; ok {
+		for i, existing := range s.order {
+			if existing == id {
+				s.order = append(s.order[:i], s.order[i+1:]...)
+				break
+			}
+		}
 	}
+	s.order = append(s.order, id)
 	effective := cloneSlice(input)
 	s.values[id] = &storedResponse{EffectiveInput: effective, Context: append(cloneSlice(effective), responseContext(response)...), Response: cloneMap(response)}
 	for len(s.order) > s.max {

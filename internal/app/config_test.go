@@ -58,6 +58,40 @@ func TestConfigEnvironmentOverridesFileValues(t *testing.T) {
 	}
 }
 
+func TestConfigUsesFullTOMLSyntax(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	data := `[server]
+api_key = 'value#with-comment-character'
+
+[compat]
+drop_params = ["parameter,with,commas", "top_p"] # an actual comment
+`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaultConfig()
+	if err := cfg.applyConfigFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.APIKey != "value#with-comment-character" {
+		t.Fatalf("api key = %q", cfg.APIKey)
+	}
+	if len(cfg.DropParams) != 2 || cfg.DropParams[0] != "parameter,with,commas" {
+		t.Fatalf("drop params = %#v", cfg.DropParams)
+	}
+}
+
+func TestConfigRejectsInvalidKnownValueTypes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("[server]\nport = \"not-an-integer\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := defaultConfig()
+	if err := cfg.applyConfigFile(path); err == nil {
+		t.Fatal("invalid port type was accepted")
+	}
+}
+
 func TestHelpReturnsSuccess(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"start", "--help"}, {"stop", "--help"}, {"config-generate", "--help"}} {
 		if err := Run(args, "test-version"); err != nil {
