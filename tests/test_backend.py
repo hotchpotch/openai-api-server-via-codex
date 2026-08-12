@@ -10,6 +10,7 @@ from openai_api_server_via_codex.backend import (
     DEFAULT_MODELS,
     CodexBackendError,
     CodexHttpBackend,
+    _collect_streamed_response,
     _forward_proxy_request_headers,
     _forward_proxy_response_headers,
     _normalize_codex_stream_event,
@@ -225,6 +226,17 @@ def test_resolve_proxy_url_strips_redundant_slashes_and_dot_segments() -> None:
     assert str(url) == "https://chatgpt.com/backend-api/codex/responses/compact"
 
 
+def test_resolve_proxy_url_preserves_percent_in_decoded_path() -> None:
+    url = _resolve_proxy_url(
+        "https://chatgpt.com/backend-api/codex",
+        "files/100%done",
+        b"",
+        path_is_decoded=True,
+    )
+
+    assert str(url) == "https://chatgpt.com/backend-api/codex/files/100%25done"
+
+
 def test_resolve_proxy_url_rejects_dotdot_segment() -> None:
     with pytest.raises(CodexBackendError) as excinfo:
         _resolve_proxy_url(
@@ -297,7 +309,7 @@ def test_proxy_request_rejects_invalid_path_before_borrowing_codex_key(
         asyncio.run(
             backend.proxy_request(
                 "GET",
-                "%2e%2e/auth/me",
+                "../auth/me",
                 query=b"",
                 headers={},
                 body=b"",
@@ -351,6 +363,24 @@ def test_normalize_codex_stream_event_drops_unknown_status() -> None:
     normalized = _normalize_codex_stream_event(event)
 
     assert normalized["response"] == {"id": "resp_1"}
+
+
+async def test_collect_streamed_response_preserves_failed_terminal_response() -> None:
+    async def events():
+        yield {
+            "type": "response.failed",
+            "response": {
+                "id": "resp_failed",
+                "object": "response",
+                "status": "failed",
+                "output": [],
+            },
+        }
+
+    response = await _collect_streamed_response(events(), {"model": "gpt-test"})
+
+    assert response["id"] == "resp_failed"
+    assert response["status"] == "failed"
 
 
 def test_status_error_message_formats_chatgpt_usage_limit() -> None:

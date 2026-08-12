@@ -15,6 +15,7 @@ import (
 
 const refreshURL = "https://auth.openai.com/oauth/token"
 const codexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+const authRefreshTimeout = 30 * time.Second
 
 type credentials struct{ AccessToken, AccountID string }
 type authCacheEntry struct {
@@ -24,10 +25,10 @@ type authCacheEntry struct {
 	Exp     float64
 }
 type authProvider struct {
-	path   string
-	client *http.Client
-	mu     sync.Mutex
-	cache  *authCacheEntry
+	path          string
+	refreshClient *http.Client
+	mu            sync.Mutex
+	cache         *authCacheEntry
 }
 
 func (a *authProvider) borrow() (credentials, error) {
@@ -94,7 +95,7 @@ func (a *authProvider) refresh(token string) (map[string]any, error) {
 	body, _ := json.Marshal(map[string]string{"client_id": codexClientID, "grant_type": "refresh_token", "refresh_token": token})
 	req, _ := http.NewRequest(http.MethodPost, refreshURL, strings.NewReader(string(body)))
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := a.client.Do(req)
+	resp, err := a.refreshClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token refresh failed: %w", err)
 	}

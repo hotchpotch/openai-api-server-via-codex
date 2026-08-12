@@ -797,7 +797,7 @@ def create_app(
         backend = _get_backend(request)
         method = request.method.upper()
         try:
-            _validate_proxy_path(proxy_path)
+            _validate_proxy_path(proxy_path, path_is_decoded=True)
         except CodexBackendError as exc:
             message = redact_sensitive_text(str(exc))
             _log_verbose(

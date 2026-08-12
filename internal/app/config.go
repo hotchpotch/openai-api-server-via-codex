@@ -107,6 +107,10 @@ func Run(args []string, version string) error {
 	fs.IntVar(&cfg.MaxStored, "max-stored-items", cfg.MaxStored, "maximum in-memory stored items")
 	fs.IntVar(&cfg.Concurrency, "max-concurrent-requests", cfg.Concurrency, "maximum Codex requests")
 	fs.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "verbose logging")
+	stopTimeout := cfg.StopTimeout.Seconds()
+	if command == "daemon-run" {
+		fs.Float64Var(&stopTimeout, "stop-timeout", stopTimeout, "seconds to wait before force kill")
+	}
 	var dropParams string
 	fs.StringVar(&dropParams, "drop-params", "", "comma-separated downstream parameters to drop")
 	if err := fs.Parse(args); err != nil {
@@ -115,10 +119,11 @@ func Run(args []string, version string) error {
 		}
 		return err
 	}
-	if cfg.MaxStored < 0 || cfg.Concurrency < 0 || cfg.Port < 1 || cfg.Port > 65535 || timeout <= 0 {
-		return errors.New("port, timeout, max-stored-items, or max-concurrent-requests is invalid")
+	if cfg.MaxStored < 0 || cfg.Concurrency < 0 || cfg.Port < 1 || cfg.Port > 65535 || timeout <= 0 || stopTimeout <= 0 {
+		return errors.New("port, timeout, max-stored-items, max-concurrent-requests, or stop-timeout is invalid")
 	}
 	cfg.Timeout = time.Duration(timeout * float64(time.Second))
+	cfg.StopTimeout = time.Duration(stopTimeout * float64(time.Second))
 	if dropParams != "" {
 		for _, value := range strings.Split(dropParams, ",") {
 			if value = strings.TrimSpace(value); value != "" {

@@ -370,9 +370,14 @@ async def test_contract_responses_lifecycle_and_streaming(
 ) -> None:
     runtime, _ = runtime_server
     created = await contract_client.responses.create(
-        model="gpt-5.6-luna", input="response lifecycle marker"
+        model="gpt-5.6-luna",
+        input=[
+            {"role": "user", "content": "response lifecycle marker"},
+            {"role": "user", "content": "second input marker"},
+        ],
     )
     assert "response lifecycle marker" in created.output_text, runtime
+    assert "second input marker" in created.output_text, runtime
 
     retrieved = await contract_client.responses.retrieve(created.id)
     assert retrieved.output_text == created.output_text, runtime
@@ -380,8 +385,20 @@ async def test_contract_responses_lifecycle_and_streaming(
     with pytest.raises(ConflictError):
         await contract_client.responses.cancel(created.id)
 
-    input_items = await contract_client.responses.input_items.list(created.id)
-    assert input_items.data[0].model_dump().get("role") == "user", runtime
+    input_items = await contract_client.responses.input_items.list(created.id, limit=1)
+    assert input_items.has_more is True, runtime
+    assert input_items.data[0].model_dump(mode="json", exclude_none=True) == {
+        "id": "input_0",
+        "type": "message",
+        "role": "user",
+        "status": "completed",
+        "content": [{"type": "input_text", "text": "response lifecycle marker"}],
+    }, runtime
+    next_input_items = await contract_client.responses.input_items.list(
+        created.id, after="input_0", limit=2
+    )
+    assert next_input_items.has_more is False, runtime
+    assert [item.id for item in next_input_items.data] == ["input_1"], runtime
 
     counted = await contract_client.responses.input_tokens.count(
         model="gpt-5.6-luna", input="count this input"
@@ -453,18 +470,33 @@ async def test_contract_chat_lifecycle_streaming_and_tools(
         f"{completion.id}_msg_1",
         f"{completion.id}_msg_0",
     ], runtime
+    remaining_messages = await contract_client.chat.completions.messages.list(
+        completion.id, after=f"{completion.id}_msg_0", limit=2
+    )
+    assert remaining_messages.has_more is False, runtime
+    assert [message.id for message in remaining_messages.data] == [
+        f"{completion.id}_msg_1"
+    ], runtime
 
     stream = await contract_client.chat.completions.create(
         model="gpt-5.6-luna",
         messages=[{"role": "user", "content": "chat stream marker"}],
+        n=2,
         stream=True,
         stream_options={"include_usage": True},
     )
     chunks = [chunk async for chunk in stream]
-    assert "chat stream marker" in "".join(
-        choice.delta.content or ""
-        for chunk in chunks
-        for choice in chunk.choices
+    streamed_by_choice = {
+        index: "".join(
+            choice.delta.content or ""
+            for chunk in chunks
+            for choice in chunk.choices
+            if choice.index == index
+        )
+        for index in (0, 1)
+    }
+    assert all(
+        "chat stream marker" in text for text in streamed_by_choice.values()
     ), runtime
     assert any(chunk.usage is not None for chunk in chunks), runtime
 
@@ -516,8 +548,14 @@ async def test_contract_images_audio_and_unknown_proxy(
     ) as direct:
         proxied = await direct.get("/v1/batches?limit=3")
         encoded_delimiters = await direct.get("/v1/files/report%3Fformat%23section?limit=1")
+        literal_percent = await direct.get("/v1/files/100%25done")
+        encoded_traversal = await direct.get("/v1/files/%2e%2e/auth")
     assert proxied.json()["object"] == "list", runtime
     assert proxied.headers["x-openai-via-codex-proxy"] == "codex-http", runtime
     assert encoded_delimiters.json()["request_path"].endswith(
         "/backend-api/codex/files/report%3Fformat%23section?limit=1"
     ), runtime
+    assert literal_percent.json()["request_path"].endswith(
+        "/backend-api/codex/files/100%25done"
+    ), runtime
+    assert encoded_traversal.status_code == 400, runtime

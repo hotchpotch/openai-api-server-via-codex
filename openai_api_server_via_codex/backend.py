@@ -254,7 +254,7 @@ class CodexHttpBackend:
             self.base_url,
             self.timeout,
         )
-        url = _resolve_proxy_url(self.base_url, path, query)
+        url = _resolve_proxy_url(self.base_url, path, query, path_is_decoded=True)
         token, account_id = await self._borrow_key()
         upstream_headers = self._headers(
             account_id,
@@ -392,8 +392,8 @@ class CodexHttpBackend:
         return headers
 
 
-def _validate_proxy_path(path: str) -> str:
-    decoded = unquote(path)
+def _validate_proxy_path(path: str, *, path_is_decoded: bool = False) -> str:
+    decoded = path if path_is_decoded else unquote(path)
     if (
         "\\" in decoded
         or any(ord(char) < 0x20 or ord(char) == 0x7F for char in decoded)
@@ -404,8 +404,10 @@ def _validate_proxy_path(path: str) -> str:
     return "/".join(segments)
 
 
-def _resolve_proxy_url(base_url: str, path: str, query: bytes) -> httpx.URL:
-    cleaned_path = _validate_proxy_path(path)
+def _resolve_proxy_url(
+    base_url: str, path: str, query: bytes, *, path_is_decoded: bool = False
+) -> httpx.URL:
+    cleaned_path = _validate_proxy_path(path, path_is_decoded=path_is_decoded)
     base = base_url.rstrip("/")
     escaped_path = quote(cleaned_path, safe="/@:!$&'()*+,;=-._~")
     candidate = f"{base}/{escaped_path}" if escaped_path else f"{base}/"
@@ -549,10 +551,16 @@ async def _collect_streamed_response(
             item = _event_value(normalized, "item")
             if item is not None:
                 output_items.append(_dump_openai_model(item))
-        elif event_type in {"response.completed", "response.incomplete"}:
+        elif event_type in {
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        }:
             response = _event_value(normalized, "response")
             if response is not None:
                 completed_response = _dump_openai_model(response)
+            elif event_type == "response.failed":
+                raise CodexBackendError("Codex backend response failed.")
 
     if completed_response is not None:
         if output_items and not completed_response.get("output"):

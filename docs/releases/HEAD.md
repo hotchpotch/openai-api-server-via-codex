@@ -18,5 +18,6 @@
   without installing the Python web stack; source installs retain the Python
   fallback during migration.
 - Added Go implementations of `start`, `stop`, and `status`, including shared
-  config-backed PID/log discovery, automatic server restart, and graceful HTTP
-  shutdown behavior.
+  config-backed PID/log discovery, backoff-controlled automatic server restart,
+  and graceful HTTP shutdown on Linux and macOS. Windows daemon shutdown is
+  best-effort and may interrupt in-flight streams.

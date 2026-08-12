@@ -270,8 +270,8 @@ func (s *server) createResponse(w http.ResponseWriter, r *http.Request) {
 	if s.acquire(r.Context()) != nil {
 		return
 	}
+	defer s.release()
 	response, err := s.backend.collect(r.Context(), downstream)
-	s.release()
 	if err != nil {
 		writeBackendError(w, err)
 		return
@@ -328,7 +328,7 @@ func (s *server) streamResponse(w http.ResponseWriter, r *http.Request, prepared
 		return nil
 	})
 	if err != nil {
-		writeSSE(w, map[string]any{"type": "error", "sequence_number": seq, "code": nil, "message": err.Error(), "param": nil})
+		writeSSE(w, map[string]any{"type": "error", "sequence_number": seq, "code": nil, "message": publicStreamError(err), "param": nil})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -410,25 +410,81 @@ func streamStoredResponse(w http.ResponseWriter, response map[string]any) {
 func (s *server) responseInputItems(w http.ResponseWriter, r *http.Request, stored *storedResponse) {
 	items := make([]map[string]any, 0, len(stored.EffectiveInput))
 	for i, raw := range stored.EffectiveInput {
-		item := mapAny(raw)
-		if item == nil {
-			item = map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": stringValue(raw)}}}
-		} else {
-			item = cloneMap(item)
-			if item["type"] == nil && item["role"] != nil {
-				item["type"] = "message"
-				content := item["content"]
-				if _, ok := content.(string); ok {
-					item["content"] = []any{map[string]any{"type": "input_text", "text": content}}
-				}
-			}
-		}
-		setDefault(item, "id", fmt.Sprintf("input_%d", i))
-		items = append(items, item)
+		items = append(items, responseInputPageItem(raw, i))
 	}
-	more := hasMoreQuery(len(items), r.URL.Query())
-	items = pageMaps(items, r.URL.Query())
+	items, more := paginateMaps(items, r.URL.Query())
 	writeJSON(w, 200, cursorPage(items, more))
+}
+
+func responseInputPageItem(raw any, index int) map[string]any {
+	item := mapAny(raw)
+	if item == nil {
+		return map[string]any{
+			"id":      fmt.Sprintf("input_%d", index),
+			"type":    "message",
+			"role":    "user",
+			"status":  "completed",
+			"content": []any{map[string]any{"type": "input_text", "text": stringValue(raw)}},
+		}
+	}
+	item = cloneMap(item)
+	itemType := stringValue(item["type"])
+	role := stringValue(item["role"])
+	id := inputItemID(item, index)
+	switch role {
+	case "user", "system", "developer":
+		return map[string]any{
+			"id":      id,
+			"type":    "message",
+			"role":    role,
+			"status":  valueOr(item["status"], "completed"),
+			"content": responseInputContent(item["content"]),
+		}
+	case "assistant":
+		page := map[string]any{
+			"id": id, "type": "message", "role": role,
+			"status": valueOr(item["status"], "completed"),
+			"content": []any{map[string]any{
+				"type": "output_text", "text": contentText(item["content"]), "annotations": []any{},
+			}},
+		}
+		if item["phase"] != nil && item["phase"] != "" {
+			page["phase"] = item["phase"]
+		}
+		return page
+	}
+	if itemType == "function_call" || itemType == "function_call_output" {
+		setDefault(item, "id", id)
+		setDefault(item, "status", "completed")
+	}
+	return item
+}
+
+func inputItemID(item map[string]any, index int) string {
+	if id := stringValue(valueOr(item["id"], item["call_id"])); id != "" {
+		return id
+	}
+	return fmt.Sprintf("input_%d", index)
+}
+
+func responseInputContent(value any) []any {
+	if value == nil {
+		return []any{map[string]any{"type": "input_text", "text": ""}}
+	}
+	if text, ok := value.(string); ok {
+		return []any{map[string]any{"type": "input_text", "text": text}}
+	}
+	parts, ok := value.([]any)
+	if !ok {
+		return []any{map[string]any{"type": "input_text", "text": stringValue(value)}}
+	}
+	result := make([]any, 0, len(parts))
+	for _, raw := range parts {
+		if part := mapAny(raw); part != nil {
+			result = append(result, cloneMap(part))
+		}
+	}
+	return result
 }
 
 func (s *server) chatCollection(w http.ResponseWriter, r *http.Request) {
@@ -450,8 +506,8 @@ func (s *server) chatCollection(w http.ResponseWriter, r *http.Request) {
 	if s.acquire(r.Context()) != nil {
 		return
 	}
+	defer s.release()
 	response, err := s.backend.collect(r.Context(), responsePayload)
-	s.release()
 	if err != nil {
 		writeBackendError(w, err)
 		return
@@ -568,7 +624,7 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 		return nil
 	})
 	if err != nil {
-		emit(map[string]any{"error": map[string]any{"message": err.Error(), "type": "api_error", "param": nil, "code": nil}})
+		emit(map[string]any{"error": map[string]any{"message": publicStreamError(err), "type": "api_error", "param": nil, "code": nil}})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -655,8 +711,7 @@ func (s *server) chatResource(w http.ResponseWriter, r *http.Request, resource s
 	}
 	if len(parts) == 2 && parts[1] == "messages" && r.Method == http.MethodGet {
 		items := stored.Messages
-		more := hasMoreQuery(len(items), r.URL.Query())
-		items = pageMaps(items, r.URL.Query())
+		items, more := paginateMaps(items, r.URL.Query())
 		writeJSON(w, 200, cursorPage(items, more))
 		return
 	}
@@ -812,6 +867,13 @@ func writeBackendError(w http.ResponseWriter, err error) {
 		writeError(w, 500, "Internal server error.", "api_error", nil, nil)
 	}
 }
+func publicStreamError(err error) string {
+	var be *backendError
+	if errors.As(err, &be) {
+		return be.Message
+	}
+	return "Internal server error."
+}
 func setSSE(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -865,7 +927,7 @@ func reverseMaps[T any](v []T) {
 		v[i], v[j] = v[j], v[i]
 	}
 }
-func pageMaps[T interface{ map[string]any }](items []T, q url.Values) []T {
+func paginateMaps[T interface{ map[string]any }](items []T, q url.Values) ([]T, bool) {
 	if q.Get("order") == "desc" {
 		reverseMaps(items)
 	}
@@ -877,14 +939,12 @@ func pageMaps[T interface{ map[string]any }](items []T, q url.Values) []T {
 			}
 		}
 	}
-	if limit := positiveInt(q.Get("limit")); limit > 0 && len(items) > limit {
+	limit := positiveInt(q.Get("limit"))
+	more := limit > 0 && len(items) > limit
+	if more {
 		items = items[:limit]
 	}
-	return items
-}
-func hasMoreQuery(length int, q url.Values) bool {
-	limit := positiveInt(q.Get("limit"))
-	return limit > 0 && length > limit
+	return items, more
 }
 func cursorPage[T interface{ map[string]any }](items []T, more bool) map[string]any {
 	var first, last any

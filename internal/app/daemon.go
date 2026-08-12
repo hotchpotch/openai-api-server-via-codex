@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+const (
+	initialRestartDelay = time.Second
+	maxRestartDelay     = 30 * time.Second
+	healthyRunDuration  = 30 * time.Second
+)
+
 type daemonPaths struct{ StateDir, PIDFile, LogFile string }
 
 func runDaemonCommand(command string, args []string) error {
@@ -184,6 +190,9 @@ func startDaemon(cfg config, paths daemonPaths) error {
 
 func serverCommandArgs(command string, cfg config) []string {
 	args := []string{command, "--host", cfg.Host, "--port", strconv.Itoa(cfg.Port), "--backend-base-url", cfg.BackendURL, "--client-version", cfg.ClientVersion, "--auth-json", cfg.AuthJSON, "--timeout", formatSeconds(cfg.Timeout), "--max-stored-items", strconv.Itoa(cfg.MaxStored), "--max-concurrent-requests", strconv.Itoa(cfg.Concurrency), "--default-model", cfg.Model}
+	if command == "daemon-run" {
+		args = append(args, "--stop-timeout", formatSeconds(cfg.StopTimeout))
+	}
 	if cfg.Verbose {
 		args = append(args, "--verbose")
 	}
@@ -202,6 +211,7 @@ func runSupervised(cfg config, version string) error {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
+	restartDelay := initialRestartDelay
 	for {
 		child := exec.Command(executable, serverCommandArgs("serve", cfg)...)
 		child.Stdin = nil
@@ -212,6 +222,7 @@ func runSupervised(cfg config, version string) error {
 		if err := child.Start(); err != nil {
 			return err
 		}
+		started := time.Now()
 		done := make(chan error, 1)
 		go func() { done <- child.Wait() }()
 		select {
@@ -226,14 +237,33 @@ func runSupervised(cfg config, version string) error {
 				return nil
 			}
 		case childErr := <-done:
-			fmt.Fprintf(os.Stderr, "daemon supervisor server exited (%v); restarting in 1s\n", childErr)
+			runDuration := time.Since(started)
+			if runDuration >= healthyRunDuration {
+				restartDelay = initialRestartDelay
+			}
+			delay := restartDelay
+			restartDelay = nextRestartDelay(restartDelay, runDuration)
+			fmt.Fprintf(os.Stderr, "daemon supervisor server exited (%v); restarting in %s\n", childErr, delay)
+			timer := time.NewTimer(delay)
 			select {
 			case <-signals:
+				timer.Stop()
 				return nil
-			case <-time.After(time.Second):
+			case <-timer.C:
 			}
 		}
 	}
+}
+
+func nextRestartDelay(current, runtime time.Duration) time.Duration {
+	if runtime >= healthyRunDuration {
+		return initialRestartDelay
+	}
+	next := current * 2
+	if next > maxRestartDelay {
+		return maxRestartDelay
+	}
+	return next
 }
 
 func stopDaemon(paths daemonPaths, timeout time.Duration) error {

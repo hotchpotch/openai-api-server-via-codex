@@ -17,6 +17,8 @@ import (
 
 var defaultModels = []string{"gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 
+const maxSSEEventBytes = 128 << 20
+
 type backend struct {
 	cfg    config
 	client *http.Client
@@ -31,10 +33,17 @@ func (e *backendError) Error() string { return e.Message }
 
 func newBackend(cfg config) *backend {
 	client := &http.Client{Timeout: cfg.Timeout}
-	return &backend{cfg: cfg, client: client, auth: &authProvider{path: cfg.AuthJSON, client: client}}
+	return &backend{
+		cfg:    cfg,
+		client: client,
+		auth: &authProvider{
+			path:          cfg.AuthJSON,
+			refreshClient: &http.Client{Timeout: authRefreshTimeout},
+		},
+	}
 }
 
-func (b *backend) headers(cred credentials, stream bool) http.Header {
+func (b *backend) headers(cred credentials, stream bool, requestID string) http.Header {
 	h := make(http.Header)
 	h.Set("Authorization", "Bearer "+cred.AccessToken)
 	h.Set("originator", "openai-api-server-via-codex")
@@ -46,6 +55,10 @@ func (b *backend) headers(cred credentials, stream bool) http.Header {
 		h.Set("Accept", "text/event-stream")
 		h.Set("Content-Type", "application/json")
 		h.Set("OpenAI-Beta", "responses=experimental")
+	}
+	if requestID != "" {
+		h.Set("session_id", requestID)
+		h.Set("x-client-request-id", requestID)
 	}
 	return h
 }
@@ -87,7 +100,7 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 	if err != nil {
 		return err
 	}
-	req.Header = b.headers(cred, true)
+	req.Header = b.headers(cred, true, stringValue(prepared["prompt_cache_key"]))
 	resp, err := b.client.Do(req)
 	if err != nil {
 		return &backendError{502, "Codex backend request failed."}
@@ -96,8 +109,7 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 	if resp.StatusCode/100 != 2 {
 		return decodeBackendError(resp)
 	}
-	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
+	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 	var data strings.Builder
 	events := 0
 	flush := func() error {
@@ -113,36 +125,87 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 		if json.Unmarshal([]byte(raw), &event) != nil {
 			return nil
 		}
-		if event["type"] == "response.done" {
-			event["type"] = "response.completed"
-		}
+		normalizeBackendEvent(event)
 		events++
 		return fn(event)
 	}
-	for scanner.Scan() {
-		line := scanner.Text()
+	for {
+		line, readErr := readSSELine(reader, maxSSEEventBytes)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			b.debugf("codex.stream.error message=%s", redactSensitive(readErr.Error()))
+			return readErr
+		}
 		if line == "" {
 			if err := flush(); err != nil {
 				return err
 			}
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
 			continue
 		}
 		if strings.HasPrefix(line, "data:") {
+			part := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			if data.Len()+len(part)+1 > maxSSEEventBytes {
+				return fmt.Errorf("Codex SSE event exceeds %d bytes", maxSSEEventBytes)
+			}
 			if data.Len() > 0 {
 				data.WriteByte('\n')
 			}
-			data.WriteString(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			data.WriteString(part)
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
 		}
 	}
 	if err := flush(); err != nil {
 		return err
 	}
-	if err := scanner.Err(); err != nil {
-		b.debugf("codex.stream.error message=%s", redactSensitive(err.Error()))
-		return err
-	}
 	b.debugf("codex.stream.end events=%d", events)
 	return nil
+}
+
+func readSSELine(reader *bufio.Reader, limit int) (string, error) {
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(line)+len(fragment) > limit {
+			return "", fmt.Errorf("Codex SSE line exceeds %d bytes", limit)
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", err
+		}
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		return string(line), err
+	}
+}
+
+func normalizeBackendEvent(event map[string]any) {
+	if event["type"] == "response.done" {
+		event["type"] = "response.completed"
+	}
+	response := mapAny(event["response"])
+	if response == nil {
+		return
+	}
+	status := stringValue(response["status"])
+	if status != "" && !validResponseStatus(status) {
+		delete(response, "status")
+	}
+}
+
+func validResponseStatus(status string) bool {
+	switch status {
+	case "completed", "failed", "in_progress", "cancelled", "queued", "incomplete":
+		return true
+	default:
+		return false
+	}
 }
 
 func (b *backend) collect(ctx context.Context, payload map[string]any) (map[string]any, error) {
@@ -164,6 +227,11 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 			}
 		case "response.completed", "response.incomplete":
 			completed = cloneMap(mapAny(event["response"]))
+		case "response.failed":
+			completed = cloneMap(mapAny(event["response"]))
+			if completed == nil {
+				return &backendError{502, "Codex backend response failed."}
+			}
 		}
 		return nil
 	})
@@ -189,7 +257,7 @@ func (b *backend) listModels(ctx context.Context) []string {
 		return append([]string(nil), defaultModels...)
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.BackendURL+"/models?client_version="+url.QueryEscape(b.cfg.ClientVersion), nil)
-	req.Header = b.headers(cred, false)
+	req.Header = b.headers(cred, false, "")
 	resp, err := b.client.Do(req)
 	if err != nil {
 		b.debugf("codex.models.fallback reason=request_error")
@@ -234,7 +302,7 @@ func (b *backend) proxyTo(ctx context.Context, method, baseURL, path, query stri
 	if err != nil {
 		return nil, err
 	}
-	req.Header = b.headers(cred, false)
+	req.Header = b.headers(cred, false, "")
 	for _, name := range []string{"Accept", "Content-Type", "Idempotency-Key", "OpenAI-Beta", "OpenAI-Organization", "OpenAI-Project", "OpenAI-Version"} {
 		if v := headers.Get(name); v != "" {
 			req.Header.Set(name, v)
@@ -276,17 +344,16 @@ func invalidProxyPath(path string) bool {
 }
 
 func cleanProxyPath(path string) (string, error) {
-	decoded, err := url.PathUnescape(path)
-	if err != nil || strings.Contains(decoded, "\\") {
+	if strings.Contains(path, "\\") {
 		return "", errors.New("invalid proxy path")
 	}
-	for _, r := range decoded {
+	for _, r := range path {
 		if r == 0 || r < 0x20 || r == 0x7f {
 			return "", errors.New("invalid proxy path")
 		}
 	}
 	var segments []string
-	for _, p := range strings.Split(decoded, "/") {
+	for _, p := range strings.Split(path, "/") {
 		if p == ".." {
 			return "", errors.New("invalid proxy path")
 		}

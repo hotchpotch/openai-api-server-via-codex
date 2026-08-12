@@ -172,6 +172,10 @@ $ uvx openai-api-server-via-codex status
 $ uvx openai-api-server-via-codex stop
 ```
 
+On Linux and macOS, `stop` drains in-flight HTTP requests up to
+`--stop-timeout`. Windows stops the daemon process tree on a best-effort basis;
+in-flight streams may be interrupted.
+
 Expose the server to other machines only with access control:
 
 ```console

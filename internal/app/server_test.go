@@ -1,10 +1,14 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -120,19 +124,113 @@ func TestResolveProxyURLPreservesEncodedPathDelimiters(t *testing.T) {
 	}
 }
 
+func TestResolveProxyURLPreservesLiteralPercentInDecodedPath(t *testing.T) {
+	target, err := resolveProxyURL("https://example.test/backend-api/codex", "files/100%done", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := target.String(); got != "https://example.test/backend-api/codex/files/100%25done" {
+		t.Fatalf("target = %q", got)
+	}
+}
+
 func TestResolveProxyURLRejectsAmbiguousOrEscapingPaths(t *testing.T) {
 	for _, path := range []string{
 		"../auth",
-		"%2e%2e/auth",
-		"files%2f..%2fauth",
+		"files/../auth",
 		`files\..\auth`,
-		"files/%00auth",
-		"files/%zz",
+		"files/\x00auth",
 	} {
 		if _, err := resolveProxyURL("https://example.test/backend-api/codex", path, ""); err == nil {
 			t.Errorf("resolveProxyURL accepted %q", path)
 		}
 	}
+}
+
+func TestResponseInputPageItemsMatchCompatibilityShape(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  any
+		want map[string]any
+	}{
+		{
+			name: "user message",
+			raw:  map[string]any{"role": "user", "content": "hello"},
+			want: map[string]any{"id": "input_0", "type": "message", "role": "user", "status": "completed", "content": []any{map[string]any{"type": "input_text", "text": "hello"}}},
+		},
+		{
+			name: "assistant message",
+			raw:  map[string]any{"role": "assistant", "content": "answer", "phase": "final_answer"},
+			want: map[string]any{"id": "input_0", "type": "message", "role": "assistant", "status": "completed", "phase": "final_answer", "content": []any{map[string]any{"type": "output_text", "text": "answer", "annotations": []any{}}}},
+		},
+		{
+			name: "function output",
+			raw:  map[string]any{"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+			want: map[string]any{"id": "call_1", "type": "function_call_output", "call_id": "call_1", "output": "sunny", "status": "completed"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := responseInputPageItem(test.raw, 0); !mapsEqual(got, test.want) {
+				t.Fatalf("item = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPaginateMapsComputesHasMoreAfterCursor(t *testing.T) {
+	items := []map[string]any{{"id": "one"}, {"id": "two"}, {"id": "three"}}
+	page, more := paginateMaps(items, url.Values{"after": {"two"}, "limit": {"2"}})
+	if more || len(page) != 1 || page[0]["id"] != "three" {
+		t.Fatalf("page = %#v, has_more = %t", page, more)
+	}
+}
+
+func TestReadSSELineSupportsLinesLargerThanReaderBuffer(t *testing.T) {
+	line := strings.Repeat("x", 1024)
+	reader := bufio.NewReaderSize(strings.NewReader(line+"\n"), 16)
+	got, err := readSSELine(reader, 2048)
+	if err != nil || got != line {
+		t.Fatalf("line length = %d, err = %v", len(got), err)
+	}
+	reader = bufio.NewReaderSize(strings.NewReader(line+"\n"), 16)
+	if _, err := readSSELine(reader, 100); err == nil {
+		t.Fatal("oversized line was accepted")
+	}
+}
+
+func TestBackendHeadersForwardPromptCacheKey(t *testing.T) {
+	b := newBackend(defaultConfig())
+	if b.auth.refreshClient.Timeout != authRefreshTimeout {
+		t.Fatalf("refresh timeout = %s", b.auth.refreshClient.Timeout)
+	}
+	headers := b.headers(credentials{AccessToken: "token"}, true, "request-123")
+	if headers.Get("session_id") != "request-123" || headers.Get("x-client-request-id") != "request-123" {
+		t.Fatalf("headers = %#v", headers)
+	}
+}
+
+func TestNormalizeBackendEventDropsUnknownStatus(t *testing.T) {
+	event := map[string]any{"type": "response.done", "response": map[string]any{"id": "resp_1", "status": "mystery"}}
+	normalizeBackendEvent(event)
+	if event["type"] != "response.completed" || mapAny(event["response"])["status"] != nil {
+		t.Fatalf("event = %#v", event)
+	}
+}
+
+func TestPublicStreamErrorMasksInternalDetails(t *testing.T) {
+	if got := publicStreamError(errors.New("secret internal detail")); got != "Internal server error." {
+		t.Fatalf("message = %q", got)
+	}
+	if got := publicStreamError(&backendError{Status: 502, Message: "redacted upstream"}); got != "redacted upstream" {
+		t.Fatalf("backend message = %q", got)
+	}
+}
+
+func mapsEqual(left, right map[string]any) bool {
+	leftJSON, _ := json.Marshal(left)
+	rightJSON, _ := json.Marshal(right)
+	return bytes.Equal(leftJSON, rightJSON)
 }
 
 func TestImageGenerationUsesCompatibilityModelAndCodexPayload(t *testing.T) {

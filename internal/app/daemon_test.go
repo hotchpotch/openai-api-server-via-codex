@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveDaemonPathsAndDiscoverUniquePID(t *testing.T) {
@@ -92,12 +93,24 @@ func TestServerCommandArgsPreserveDaemonSettings(t *testing.T) {
 	cfg.Verbose = true
 	args := serverCommandArgs("daemon-run", cfg)
 	joined := strings.Join(args, " ")
-	for _, expected := range []string{"daemon-run", "--host 127.0.0.2", "--port 19193", "--drop-params temperature,top_p", "--verbose"} {
+	for _, expected := range []string{"daemon-run", "--host 127.0.0.2", "--port 19193", "--stop-timeout 10", "--drop-params temperature,top_p", "--verbose"} {
 		if !strings.Contains(joined, expected) {
 			t.Fatalf("args %q do not contain %q", joined, expected)
 		}
 	}
 	if strings.Contains(joined, cfg.APIKey) {
 		t.Fatalf("API key leaked into args: %q", joined)
+	}
+}
+
+func TestNextRestartDelayBacksOffAndResetsAfterHealthyRun(t *testing.T) {
+	if got := nextRestartDelay(time.Second, time.Second); got != 2*time.Second {
+		t.Fatalf("next delay = %s", got)
+	}
+	if got := nextRestartDelay(maxRestartDelay, time.Second); got != maxRestartDelay {
+		t.Fatalf("capped delay = %s", got)
+	}
+	if got := nextRestartDelay(16*time.Second, healthyRunDuration); got != initialRestartDelay {
+		t.Fatalf("reset delay = %s", got)
 	}
 }
