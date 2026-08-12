@@ -13,13 +13,9 @@
     <text x="46" y="112" fill="#81778f">server</text>
     <text x="46" y="158" fill="#73dfa5">$</text>
     <text x="78" y="158" fill="#f7f3fb">uvx openai-api-server-via-codex</text>
-    <text x="46" y="204" fill="#dfd473">Codex auth preflight OK</text>
-    <text x="46" y="248" fill="#b8afc5">INFO:     Started server process [98099]</text>
-    <text x="46" y="292" fill="#b8afc5">INFO:     Application startup complete.</text>
-    <text x="46" y="336" fill="#b8afc5">INFO:     Uvicorn running on </text>
-    <text x="444" y="336" fill="#73dfa5">http://127.0.0.1:18080</text>
-    <text x="46" y="394" fill="#b8afc5">INFO:     127.0.0.1:59193 - "POST /v1/responses HTTP/1.1" </text>
-    <text x="950" y="394" fill="#73dfa5" font-weight="700">200 OK</text>
+    <text x="46" y="204" fill="#b8afc5">2026/08/12 12:34:56 openai-api-server-via-codex</text>
+    <text x="46" y="248" fill="#dfd473">0.1.5 (Go) listening on</text>
+    <text x="340" y="248" fill="#73dfa5">http://127.0.0.1:18080</text>
 
     <line x1="0" y1="438" x2="1400" y2="438" stroke="#40384a" stroke-width="2"/>
 

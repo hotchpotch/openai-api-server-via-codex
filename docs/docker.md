@@ -142,6 +142,8 @@ $ docker run --rm -p 127.0.0.1:18080:18080 \
 
 ## Notes
 
+- The runtime image executes the statically linked Go server directly; Python
+  is not installed in the server image.
 - Both the server and the `codex-login` helper run as non-root users with
   UID/GID 1000. On Linux hosts where your user is not 1000:1000, set
   `user: "<uid>:<gid>"` in `docker-compose.yml` (or `--user` for `docker run`)

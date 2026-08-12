@@ -62,8 +62,7 @@ If Codex is already logged in on the machine, start the server with one command:
 
 ```console
 $ uvx openai-api-server-via-codex
-Codex auth preflight OK: /home/you/.codex/auth.json (account_id_present=True)
-INFO:     Uvicorn running on http://127.0.0.1:18080 (Press CTRL+C to quit)
+2026/08/12 12:34:56 openai-api-server-via-codex 0.1.5 (Go) listening on http://127.0.0.1:18080
 ```
 
 The default server URL is `http://127.0.0.1:18080`. OpenAI-compatible API
@@ -243,8 +242,8 @@ Published wheels include the Go server for Linux (x86_64/ARM64), macOS
 (Intel/Apple silicon), and Windows (x86_64/ARM64). `uvx` installs one small
 platform wheel and its lightweight Python entry point immediately replaces
 itself with the bundled Go executable. A system Go installation is not needed.
-Python 3.10+ remains the development/reference runtime and the fallback when a
-supported platform wheel is unavailable.
+There is no Python server fallback. Source installations and platforms without
+a published wheel require building `./cmd/openai-api-server-via-codex` with Go.
 
 Use an explicit Codex auth file when needed:
 
@@ -507,7 +506,7 @@ Timeout in seconds for Codex backend calls.
 
 Default: `false`
 
-Verbose mode enables debug-level uvicorn logs and application diagnostics:
+Verbose mode enables Go server debug logs and application diagnostics:
 
 - resolved settings
 - request start/end status and latency
@@ -667,29 +666,28 @@ $ uv run tox
 Run focused tests while changing request/response compatibility:
 
 ```console
-$ uv run python -m pytest tests/test_openai_compat_server.py -q
+$ uv run python -m pytest tests/test_openai_client_contract.py -q
+$ go test ./internal/app
 $ uv run ruff check .
 $ uv run ty check
 ```
 
-### Go runtime and parity gate
+### Go runtime and client compatibility gate
 
-The packaged runtime on supported platforms is the Go HTTP server under
-`cmd/openai-api-server-via-codex`. The Python implementation remains in the
-repository as an executable reference contract during the migration. Build
-and run Go directly with:
+The only HTTP server implementation is Go under
+`cmd/openai-api-server-via-codex`. Build and run it directly with:
 
 ```console
 $ go build -o ./openai-api-server-via-codex-go ./cmd/openai-api-server-via-codex
 $ ./openai-api-server-via-codex-go serve
 ```
 
-The process-level contract suite starts the Python and Go servers separately,
-puts the same deterministic fake Codex HTTP backend behind each one, and calls
-both through `openai-python`:
+The process-level contract suite starts the real Go binary, puts a deterministic
+fake Codex HTTP backend behind it, and calls every supported route through
+`openai-python`:
 
 ```console
-$ uv run python -m pytest tests/test_cross_runtime_contract.py -q
+$ uv run python -m pytest tests/test_openai_client_contract.py -q
 $ go test ./...
 ```
 
@@ -706,13 +704,11 @@ $ go test -race ./...
 ```
 
 New public API behavior should be added to both the Go contract suite and the
-shared `openai-python` process suite. The former is the runtime's fast canonical
-wire-level contract; the latter remains the client-compatibility and Python
-oracle gate while Python is still in the repository.
+`openai-python` process suite. The former is the runtime's fast canonical
+wire-level contract; the latter verifies the public SDK surface independently.
 
 For proxy CPU, memory, latency, and throughput measurements, see
-[the runtime performance report](docs/performance.md). The benchmark command is
-`uv run python scripts/benchmark-runtimes.py`.
+[the historical runtime performance report](docs/performance.md).
 
 Run live Codex integration tests only when real network/auth testing is
 intended:
@@ -723,9 +719,6 @@ $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_comp
 $ RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
 ```
 
-Set `OPENAI_VIA_CODEX_TEST_RUNTIME=go` to run those same live tests against a
-freshly built Go server instead of the Python server.
-
 The live tests use the machine's existing Codex credentials and make real model
 requests. The main live integration test also exercises image generation through
 `client.images.generate(...)`: it decodes the returned base64 PNG, verifies the
@@ -735,7 +728,7 @@ The Go-authored live matrix starts a freshly built Go binary on an OS-assigned
 port and covers the same major API categories without a Python test runner. Set
 `OPENAI_VIA_CODEX_TEST_MODEL` to override its default live model.
 
-The staged ownership and Python-removal criteria are documented in
+The post-removal ownership and test invariants are documented in
 [the Go migration test policy](docs/go-migration.md).
 
 ## Release

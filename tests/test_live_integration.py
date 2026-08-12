@@ -5,7 +5,6 @@ import base64
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -24,26 +23,19 @@ ONE_PIXEL_PNG_DATA_URL = (
     os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
     reason="Set RUN_CODEX_LIVE_TESTS=1 to call the real Codex backend.",
 )
-async def test_live_openai_client_requests_through_runtime_server() -> None:
+async def test_live_openai_client_requests_through_go_server() -> None:
     configured_port = os.environ.get("OPENAI_VIA_CODEX_TEST_PORT")
     port = int(configured_port) if configured_port else _free_port()
     host = os.environ.get("OPENAI_VIA_CODEX_TEST_HOST", "127.0.0.1")
     base_url = f"http://{host}:{port}"
-    runtime = os.environ.get("OPENAI_VIA_CODEX_TEST_RUNTIME", "python")
-    build_dir: tempfile.TemporaryDirectory[str] | None = None
-    if runtime == "go":
-        build_dir = tempfile.TemporaryDirectory(prefix="openai-via-codex-go-live-")
-        binary = Path(build_dir.name) / "openai-api-server-via-codex"
-        await asyncio.to_thread(
-            subprocess.run,
-            ["go", "build", "-o", str(binary), "./cmd/openai-api-server-via-codex"],
-            check=True,
-        )
-        command = [str(binary)]
-    elif runtime == "python":
-        command = [sys.executable, "-m", "openai_api_server_via_codex"]
-    else:
-        raise AssertionError(f"Unknown OPENAI_VIA_CODEX_TEST_RUNTIME: {runtime}")
+    build_dir = tempfile.TemporaryDirectory(prefix="openai-via-codex-go-live-")
+    binary = Path(build_dir.name) / "openai-api-server-via-codex"
+    await asyncio.to_thread(
+        subprocess.run,
+        ["go", "build", "-o", str(binary), "./cmd/openai-api-server-via-codex"],
+        check=True,
+    )
+    command = [str(binary)]
     process = subprocess.Popen(
         [
             *command,
@@ -275,8 +267,7 @@ async def test_live_openai_client_requests_through_runtime_server() -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
-        if build_dir is not None:
-            build_dir.cleanup()
+        build_dir.cleanup()
 
 
 def _free_port() -> int:

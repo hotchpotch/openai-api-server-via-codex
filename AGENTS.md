@@ -2,9 +2,10 @@
 
 ## Project
 
-This repository implements an OpenAI-compatible FastAPI server that forwards
+This repository implements an OpenAI-compatible Go HTTP server that forwards
 `/v1/responses` and `/v1/chat/completions` requests through the local Codex
-HTTP backend credentials.
+HTTP backend credentials. Python is only the `uvx` launcher and an
+`openai-python` test client; do not add a Python server fallback.
 
 Keep compatibility behavior aligned with the official `openai-python` client.
 When changing request or response shapes, add or update tests that exercise the
@@ -33,7 +34,8 @@ requests through `.github/workflows/ci.yml`.
 Run focused compatibility tests while iterating on request/response behavior:
 
 ```bash
-uv run python -m pytest tests/test_openai_compat_server.py -q
+uv run python -m pytest tests/test_openai_client_contract.py -q
+go test ./internal/app
 uv run ruff check .
 uv run ty check
 ```
@@ -64,30 +66,31 @@ investigating API surface regressions:
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py::test_live_codex_http_handles_openai_client_compatibility_matrix -q -s
 ```
 
-Run the server locally:
+Run the server locally from a checkout:
 
 ```bash
-uv run openai-api-server-via-codex
-uv run openai-api-server-via-codex --port 18080
-uv run openai-api-server-via-codex --verbose
-uv run openai-api-server-via-codex --config ~/.config/openai-api-server-via-codex/config.toml
+go run ./cmd/openai-api-server-via-codex serve
+go run ./cmd/openai-api-server-via-codex serve --port 18080
+go run ./cmd/openai-api-server-via-codex serve --verbose
+go run ./cmd/openai-api-server-via-codex serve --config ~/.config/openai-api-server-via-codex/config.toml
 ```
 
 Generate a config template:
 
 ```bash
-uv run openai-api-server-via-codex config-generate
-uv run openai-api-server-via-codex config-generate --stdout
+go run ./cmd/openai-api-server-via-codex config-generate
+go run ./cmd/openai-api-server-via-codex config-generate --stdout
 ```
 
 Validate package artifacts before a PyPI release:
 
 ```bash
 uv run tox
-rm -rf dist
-uv build --no-sources
+rm -rf build dist
+uv build --wheel --no-sources
+uv run python scripts/build-platform-wheels.py --wheel "$(ls dist/*-py3-none-any.whl)" --output-dir dist --version "$(uv run python -c 'import openai_api_server_via_codex as p; print(p.__version__)')"
 uv run twine check --strict dist/*
-uv run --with "$(ls dist/*.whl)" --no-project openai-api-server-via-codex --help
+uv run --with "$(ls dist/*manylinux_2_17_x86_64.whl)" --no-project openai-api-server-via-codex --help
 ```
 
 Generate release note text from the draft or finalized release notes:
@@ -173,9 +176,9 @@ python scripts/release-notes.py vX.Y.Z
   port or spawning the daemon. Missing auth files, invalid JSON, wrong
   `auth_mode`, missing access tokens, expired tokens without refresh tokens, or
   refresh failures should fail the command with a redacted stderr message and
-  must not start uvicorn or the background daemon.
+  must not bind the HTTP listener or start the background daemon.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
-  debug-level uvicorn logs and be preserved when `start` launches the
+  Go application debug logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit
   application diagnostics for resolved config/settings, request lifecycle,
   endpoint summaries, model-list fallbacks, and Codex HTTP stream/auth behavior.
@@ -183,12 +186,13 @@ python scripts/release-notes.py vX.Y.Z
   upstream errors, request query strings, or auth-related values.
 - For Chat Completions, translate Responses stream events into
   `chat.completion.chunk` events.
-- Prefer structured parsing and Pydantic/FastAPI/OpenAI SDK models over ad hoc
-  string handling.
+- Prefer structured Go parsing and the official OpenAI SDK consumer tests over
+  ad hoc string handling.
 
 ## Testing Expectations
 
-- Add focused unit or contract tests under `tests/` for compatibility behavior.
+- Add focused Go unit or contract tests under `internal/app/`. Add public SDK
+  compatibility cases under `tests/test_openai_client_contract.py`.
 - Add or update redaction tests when changing auth, logging, upstream error
   handling, or request logging code. Raw `access_token`, `refresh_token`,
   `id_token`, bearer tokens, JWTs, and client `api_key` values must not appear

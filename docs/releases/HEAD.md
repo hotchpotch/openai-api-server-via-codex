@@ -1,22 +1,19 @@
 # HEAD
 
-- Added a Go HTTP server with the same Responses, Chat
-  Completions, Models, Images, Audio, stored-object, and fallback proxy API
-  surface as the Python server.
-- Added process-level OpenAI SDK contract tests that run unchanged against
-  both the Python and Go servers, backed by the same deterministic fake Codex
-  HTTP service. This is the migration gate for eventually removing the Python
-  runtime.
+- Added a Go HTTP server for Responses, Chat Completions, Models, Images,
+  Audio, stored objects, and fallback proxying.
+- Added process-level OpenAI SDK contract tests that start Go with a
+  deterministic fake Codex HTTP service and exercise it through
+  `openai-python`.
 - Made the existing live Codex compatibility and image-generation E2E suites
-  selectable between Python and Go runtimes. Go now passes the full live SDK
-  matrix and the generated-image round trip.
+  always start Go. Go passes the full live SDK matrix and generated-image round
+  trip.
 - Added a reproducible Linux `/proc` benchmark and recorded Go/Python startup,
   RSS, CPU, throughput, and latency results for non-streaming Responses and
   streaming Chat requests.
 - Published-platform wheels now bundle the standalone Go server for Linux,
   macOS, and Windows on x86_64 and ARM64. `uvx` transparently execs that binary
-  without installing the Python web stack; source installs retain the Python
-  fallback during migration.
+  without installing a Python web stack.
 - Added Go implementations of `start`, `stop`, and `status`, including shared
   config-backed PID/log discovery, backoff-controlled automatic server restart,
   and graceful HTTP shutdown on Linux and macOS. Windows daemon shutdown is
@@ -28,3 +25,8 @@
   Python test runner.
 - Added dynamic-port foreground startup with a stable, machine-readable listen
   log, stronger auth refresh/cache coverage, and Linux race-detector CI.
+- Removed the Python HTTP server, its FastAPI/Uvicorn runtime dependencies, and
+  its implementation-only tests. Python remains only as the dependency-free
+  `uvx` launcher and as an `openai-python` compatibility test client.
+- Changed Docker images to build and run the static Go executable directly,
+  and changed releases to publish only binary-bearing platform wheels.

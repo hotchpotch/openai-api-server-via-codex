@@ -31,6 +31,7 @@ TARGETS = (
     Target("windows", "amd64", "win_amd64", "openai-api-server-via-codex.exe"),
     Target("windows", "arm64", "win_arm64", "openai-api-server-via-codex.exe"),
 )
+LAUNCHER_MODULES = {"__init__.py", "__main__.py", "launcher.py"}
 
 
 def digest(path: Path) -> tuple[str, int]:
@@ -63,6 +64,23 @@ def archive_wheel(root: Path, output: Path) -> None:
             wheel.writestr(info, path.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
 
 
+def validate_launcher_package(root: Path) -> None:
+    package = root / "openai_api_server_via_codex"
+    modules = {
+        path.relative_to(package).as_posix()
+        for path in package.rglob("*.py")
+        if path.is_file()
+    }
+    if modules != LAUNCHER_MODULES:
+        unexpected = sorted(modules - LAUNCHER_MODULES)
+        missing = sorted(LAUNCHER_MODULES - modules)
+        raise RuntimeError(
+            "base wheel must contain only the Python launcher modules; "
+            f"unexpected={unexpected}, missing={missing}. "
+            "Remove stale build/ output and rebuild the base wheel."
+        )
+
+
 def build_binary(target: Target, output: Path, version: str) -> None:
     env = {**os.environ, "CGO_ENABLED": "0", "GOOS": target.goos, "GOARCH": target.goarch}
     subprocess.run(
@@ -88,6 +106,7 @@ def platform_wheel(base_wheel: Path, output_dir: Path, target: Target, version: 
         root = Path(temporary)
         with zipfile.ZipFile(base_wheel) as source:
             source.extractall(root)
+        validate_launcher_package(root)
         dist_infos = list(root.glob("*.dist-info"))
         if len(dist_infos) != 1:
             raise RuntimeError(f"expected one dist-info directory in {base_wheel}")

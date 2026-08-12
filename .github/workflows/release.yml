@@ -74,8 +74,8 @@ jobs:
 
       - name: Build distributions
         run: |
-          rm -rf dist
-          uv build --no-sources
+          rm -rf build dist
+          uv build --wheel --no-sources
           base_wheel="$(ls dist/*-py3-none-any.whl)"
           uv run python scripts/build-platform-wheels.py \
             --wheel "${base_wheel}" \
@@ -93,7 +93,7 @@ jobs:
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
-          name: python-package-distributions
+          name: platform-wheel-distributions
           path: dist/
           if-no-files-found: error
 
@@ -113,7 +113,7 @@ jobs:
       - name: Download distributions
         uses: actions/download-artifact@v4
         with:
-          name: python-package-distributions
+          name: platform-wheel-distributions
           path: dist/
 
       - name: Publish package distributions to PyPI

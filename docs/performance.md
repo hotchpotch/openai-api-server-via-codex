@@ -1,9 +1,8 @@
 # Runtime performance
 
-The repository includes a reproducible local benchmark for comparing the
-Python reference server and the Go server. It uses the same deterministic SSE
-backend, request payloads, concurrency, client, and host interface for both
-runtimes.
+This page preserves the benchmark used to choose the Go server over the former
+Python implementation. It used the same deterministic SSE backend, request
+payloads, concurrency, client, and host interface for both runtimes.
 
 This benchmark measures proxy overhead. It deliberately removes real model
 latency, network variance, local response storage, and the default Codex
@@ -26,29 +25,21 @@ and Go 1.23.5. Each scenario used 500 requests at concurrency 32 with
 
 Under this proxy-bound workload, Go used about one-seventh of the idle RSS,
 one-fifteenth of the peak RSS, and roughly one-thirtieth of the measured server
-CPU time. It handled 8.3–10.8 times as many requests per second. The Python
-peak includes its current per-request `AsyncOpenAI` client construction and
-connection lifecycle; that is part of the reference implementation being
+CPU time. It handled 8.3–10.8 times as many requests per second. The former
+Python peak included per-request `AsyncOpenAI` client construction and
+connection lifecycle; that was part of the implementation the Go server
 replaced, not an intrinsic limit of every possible Python proxy.
 
 The complete machine metadata and unrounded workload configuration are kept in
 [the raw benchmark result](benchmarks/go-vs-python-linux-amd64.json).
 
-## Reproduce
+## Historical methodology
 
-The benchmark currently reads Linux `/proc` for process RSS, high-water RSS,
-and user-plus-system CPU ticks:
-
-```console
-$ uv run python scripts/benchmark-runtimes.py \
-    --requests 500 \
-    --concurrency 32 \
-    --output docs/benchmarks/go-vs-python-linux-amd64.json
-```
-
-When binding outside localhost, pass the exact safe host explicitly. The four
-runtime processes use `--server-port` through `--server-port + 3`; the fake
-backend uses `--upstream-port`.
+The benchmark harness was removed with the Python HTTP implementation because
+it could no longer reproduce both sides from the current tree. The raw result
+retains the complete machine metadata and workload configuration. The harness
+read Linux `/proc` for process RSS, high-water RSS, and user-plus-system CPU
+ticks.
 
 Metrics are defined as follows:
 

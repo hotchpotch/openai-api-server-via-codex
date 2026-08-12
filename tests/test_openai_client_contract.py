@@ -5,7 +5,6 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -252,15 +251,14 @@ def go_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return binary
 
 
-@pytest.fixture(scope="module", params=["python", "go"])
+@pytest.fixture(scope="module")
 def runtime_server(
-    request: pytest.FixtureRequest,
     fake_codex_url: str,
     go_binary: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> Iterator[tuple[str, str]]:
-    runtime = str(request.param)
-    work = tmp_path_factory.mktemp(f"contract-{runtime}")
+    runtime = "go"
+    work = tmp_path_factory.mktemp("contract-go")
     auth_json = work / "auth.json"
     auth_json.write_text(
         json.dumps(
@@ -274,11 +272,8 @@ def runtime_server(
         )
     )
     port = _free_port()
-    executable = [sys.executable, "-m", "openai_api_server_via_codex"]
-    if runtime == "go":
-        executable = [str(go_binary)]
     command = [
-        *executable,
+        str(go_binary),
         "serve",
         "--host",
         "127.0.0.1",

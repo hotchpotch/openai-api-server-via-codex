@@ -74,6 +74,7 @@ jobs:
 
       - name: Build and smoke-test platform wheels
         run: |
+          rm -rf build
           mkdir -p "${RUNNER_TEMP}/wheel-test"
           uv build --wheel --no-sources --out-dir "${RUNNER_TEMP}/wheel-test"
           base_wheel="$(ls "${RUNNER_TEMP}"/wheel-test/*-py3-none-any.whl)"

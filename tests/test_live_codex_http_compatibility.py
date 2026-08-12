@@ -5,7 +5,6 @@ import json
 import os
 import socket
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import Any, cast
@@ -295,21 +294,14 @@ async def _start_server() -> _RunningServer:
     host = os.environ.get("OPENAI_VIA_CODEX_TEST_HOST", "127.0.0.1")
     base_url = f"http://{host}:{port}"
     env = os.environ.copy()
-    runtime = os.environ.get("OPENAI_VIA_CODEX_TEST_RUNTIME", "python")
-    build_dir: tempfile.TemporaryDirectory[str] | None = None
-    if runtime == "go":
-        build_dir = tempfile.TemporaryDirectory(prefix="openai-via-codex-go-live-")
-        binary = Path(build_dir.name) / "openai-api-server-via-codex"
-        await asyncio.to_thread(
-            subprocess.run,
-            ["go", "build", "-o", str(binary), "./cmd/openai-api-server-via-codex"],
-            check=True,
-        )
-        command = [str(binary)]
-    elif runtime == "python":
-        command = [sys.executable, "-m", "openai_api_server_via_codex.server"]
-    else:
-        raise AssertionError(f"Unknown OPENAI_VIA_CODEX_TEST_RUNTIME: {runtime}")
+    build_dir = tempfile.TemporaryDirectory(prefix="openai-via-codex-go-live-")
+    binary = Path(build_dir.name) / "openai-api-server-via-codex"
+    await asyncio.to_thread(
+        subprocess.run,
+        ["go", "build", "-o", str(binary), "./cmd/openai-api-server-via-codex"],
+        check=True,
+    )
+    command = [str(binary)]
     process = subprocess.Popen(
         [
             *command,

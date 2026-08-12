@@ -25,8 +25,8 @@ Run these checks before creating a release tag:
 ```console
 $ uv sync --locked --dev
 $ uv run tox
-$ rm -rf dist
-$ uv build --no-sources
+$ rm -rf build dist
+$ uv build --wheel --no-sources
 $ uv run python scripts/build-platform-wheels.py \
     --wheel "$(ls dist/*-py3-none-any.whl)" \
     --output-dir dist \
@@ -38,16 +38,16 @@ $ uv run --with "$(ls dist/*manylinux_2_17_x86_64.whl)" --no-project openai-api-
 Inspect the distribution contents:
 
 ```console
-$ tar -tzf dist/openai_api_server_via_codex-X.Y.Z.tar.gz
 $ python -m zipfile -l dist/openai_api_server_via_codex-X.Y.Z-py3-none-manylinux_2_17_x86_64.whl
 ```
 
-The release should contain the source distribution and six platform wheels:
-Linux x86_64/ARM64, macOS Intel/Apple silicon, and Windows x86_64/ARM64. Each
-wheel should contain `openai_api_server_via_codex/bin/` with its Go executable;
-the source distribution should contain the Python package and Go sources. No
-artifact may contain `.codex`, `auth.json`, `.env`, `.venv`, `.tox`, caches,
-logs, generated reports, or nested `dist/` artifacts.
+The release should contain exactly six platform wheels: Linux x86_64/ARM64,
+macOS Intel/Apple silicon, and Windows x86_64/ARM64. Each wheel must contain
+`openai_api_server_via_codex/bin/` with its Go executable. The generic pure
+wheel is only an intermediate input and must be removed before publishing; no
+source distribution is published because it cannot contain a prebuilt binary
+for the install target. No artifact may contain `.codex`, `auth.json`, `.env`,
+`.venv`, `.tox`, caches, logs, generated reports, or nested `dist/` artifacts.
 
 ## Version Bump
 
@@ -85,7 +85,7 @@ $ git push origin vX.Y.Z
 ```
 
 The release workflow checks that the tag matches the package version, runs
-`tox`, builds the source distribution plus all six Go platform wheels, validates
+`tox`, builds all six Go platform wheels, validates
 metadata with `twine`, smoke tests the bundled Go console command, publishes to
 PyPI only from the `pypi` environment, and creates a GitHub Release from
 `docs/releases`.

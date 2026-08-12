@@ -1,8 +1,8 @@
 # Go migration test policy
 
-The published server runtime is moving to Go, while the Python package remains
-the `uvx` installation and launch shim. Removing the Python HTTP implementation
-is intentionally a later release decision, not part of the initial Go port.
+The published and source server runtime is Go. The Python package remains only
+as the `uvx` installation/launch shim and as an `openai-python` test consumer.
+There is no Python HTTP implementation or fallback.
 
 ## Test ownership
 
@@ -22,13 +22,12 @@ interface is used only for failures that cannot be represented faithfully over
 HTTP. Fake payloads use synthetic IDs and valid future-expiry test JWTs; tests
 must never copy production tokens or authentication files.
 
-Python has two deliberate roles during the migration:
+Python has two deliberate roles:
 
 - the package entry point selects and execs the bundled platform-specific Go
   executable for `uvx` installations;
-- `openai-python` remains a consumer-level compatibility gate. The same
-  process-level suite runs against both implementations while the Python server
-  is retained as a behavioral oracle.
+- `openai-python` remains a consumer-level compatibility gate that starts the
+  Go binary and exercises it through the public SDK.
 
 Go wire-level tests are canonical for the server itself. An `openai-go` SDK
 dependency is not required: direct `net/http` assertions make JSON, headers,
@@ -68,27 +67,20 @@ on Linux, and builds the packaged x86_64 and ARM64 binaries through the platform
 wheel job. Live tests stay manual. ARM hardware is a release sign-off rather
 than an emulation-only claim.
 
-## Python HTTP server removal gate
+## Post-removal invariants
 
-Delete the Python HTTP implementation only in a separate change after all of
-the following are true:
+The Python HTTP server and its implementation-only tests have been retired.
+Keep these conditions true:
 
-1. Every public route and lifecycle operation has a deterministic Go contract,
-   including non-streaming and streaming Responses and Chat, Images, Audio,
-   Models, stored objects, auth, fallback proxying, and error redaction.
-2. The unchanged `openai-python` cross-runtime suite is green against Go.
-3. The Go-authored real live matrix and the existing broad Python-authored live
-   matrix are green against Go for at least one released version.
-4. Linux race detection, native Linux/macOS/Windows CI, x86_64/ARM64 package
-   builds, and a real ARM64 smoke/live run are green.
-5. `uvx` install, configuration, daemon commands, upgrades, and platform-binary
-   selection are covered independently of the Python server implementation.
-6. Release notes announce the fallback removal and identify unsupported source
-   installation platforms before the code is deleted.
-
-The `openai-python` consumer tests and lightweight `uvx` launcher remain after
-that removal. Only the Python HTTP server and its implementation-only tests are
-retired.
+1. Every public route and lifecycle operation has a deterministic Go contract.
+2. The `openai-python` process contract and both Python-authored live suites
+   always start Go; they must not grow a second server implementation.
+3. The launcher either execs a bundled platform binary or exits clearly. It
+   must never silently fall back to Python.
+4. Releases publish only the six supported platform wheels. A generic wheel is
+   an intermediate build input and must not be uploaded to PyPI.
+5. Linux race detection, native Linux/macOS/Windows CI, x86_64/ARM64 package
+   builds, and periodic real ARM64 sign-off remain green.
 
 ## ARM64 sign-off record
 
