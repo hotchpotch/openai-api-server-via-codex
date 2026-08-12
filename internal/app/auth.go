@@ -98,6 +98,13 @@ func (a *authProvider) borrow() (credentials, error) {
 	return cred, nil
 }
 
+func (a *authProvider) reload() (credentials, error) {
+	a.mu.Lock()
+	a.cache = nil
+	a.mu.Unlock()
+	return a.borrow()
+}
+
 func (a *authProvider) refresh(token string) (map[string]any, error) {
 	body, _ := json.Marshal(map[string]string{"client_id": codexClientID, "grant_type": "refresh_token", "refresh_token": token})
 	req, _ := http.NewRequest(http.MethodPost, refreshURL, strings.NewReader(string(body)))

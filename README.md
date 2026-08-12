@@ -190,6 +190,12 @@ The server borrows a Codex ChatGPT login, normally from
 HTTP port. Invalid, missing, expired, or unrefreshable credentials fail startup
 with a redacted error.
 
+The server notices external changes to `auth.json` without a restart. If an
+upstream request receives `401 Unauthorized` before any streaming response has
+started, it discards its credential cache, reloads the file, and retries that
+request once. This covers Codex CLI or another process rotating the token
+between requests; a second `401` is returned without another retry.
+
 Select another auth file when needed:
 
 ```console

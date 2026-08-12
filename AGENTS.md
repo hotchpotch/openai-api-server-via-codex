@@ -224,6 +224,10 @@ python scripts/release-notes.py vX.Y.Z
   `auth_mode`, missing access tokens, expired tokens without refresh tokens, or
   refresh failures should fail the command with a redacted stderr message and
   must not bind the HTTP listener or start the background daemon.
+- When Codex returns `401` before a response stream begins, invalidate the
+  in-process auth cache, reload `auth.json`, and retry the authenticated request
+  at most once. Keep request bodies replayable for this retry and never retry
+  after response events have been forwarded to the client.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
   Go application debug logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit

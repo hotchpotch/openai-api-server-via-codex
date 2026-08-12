@@ -12,3 +12,5 @@
   `latest` unchanged. Existing release tags can be backfilled through a guarded
   manual Actions dispatch without republishing PyPI, and public images can be
   pulled anonymously.
+- Reloaded externally rotated Codex credentials after an upstream `401` and
+  retried the request once before any response stream reaches the client.

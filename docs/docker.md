@@ -138,6 +138,13 @@ The `serve` command validates the Codex auth file before binding the port. If
 the file is missing or invalid, the container exits with a redacted error —
 check `docker compose logs` and create a login using one of the paths above.
 
+Changes written to the mounted `auth.json` by another process are picked up
+without restarting the container. If Codex returns `401 Unauthorized` before a
+streaming response begins, the server clears its credential cache, reloads the
+mounted file, and retries the request once. Proxy request bodies are replayed
+unchanged; bodies larger than 1 MiB use a temporary file instead of remaining
+entirely in memory. A second `401` is returned without another retry.
+
 ## Configuration
 
 The image sets `OPENAI_VIA_CODEX_HOST=0.0.0.0` so the server is reachable

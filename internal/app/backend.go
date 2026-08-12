@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"runtime"
 	"strings"
 )
@@ -18,6 +19,7 @@ import (
 var defaultModels = []string{"gpt-5.1", "gpt-5.1-codex-max", "gpt-5.1-codex-mini", "gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex", "gpt-5.3-codex-spark", "gpt-5.4", "gpt-5.4-mini", "gpt-5.5", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
 
 const maxSSEEventBytes = 128 << 20
+const replayBodyMemoryLimit = 1 << 20
 
 type backend struct {
 	cfg    config
@@ -63,13 +65,37 @@ func (b *backend) headers(cred credentials, stream bool, requestID string) http.
 	return h
 }
 
-func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {
-	b.debugf("codex.stream.start model=%s endpoint=%s/responses", stringValue(payload["model"]), b.cfg.BackendURL)
+func (b *backend) doAuthenticated(makeRequest func(credentials) (*http.Request, error)) (*http.Response, error) {
 	cred, err := b.auth.borrow()
 	if err != nil {
-		b.debugf("codex.stream.auth_error message=%s", redactSensitive(err.Error()))
-		return &backendError{401, err.Error()}
+		return nil, &backendError{401, err.Error()}
 	}
+	for attempt := 0; attempt < 2; attempt++ {
+		req, err := makeRequest(cred)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := b.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 {
+			return resp, nil
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		_ = resp.Body.Close()
+		previousAccessToken := cred.AccessToken
+		cred, err = b.auth.reload()
+		if err != nil {
+			return nil, &backendError{401, err.Error()}
+		}
+		b.debugf("codex.auth.reloaded_after_unauthorized credentials_changed=%t", previousAccessToken != cred.AccessToken)
+	}
+	panic("unreachable")
+}
+
+func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {
+	b.debugf("codex.stream.start model=%s endpoint=%s/responses", stringValue(payload["model"]), b.cfg.BackendURL)
 	prepared := cloneMap(payload)
 	for _, name := range b.cfg.DropParams {
 		delete(prepared, name)
@@ -96,13 +122,20 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 	}
 	prepared["include"] = include
 	body, _ := json.Marshal(prepared)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.cfg.BackendURL+"/responses", bytes.NewReader(body))
+	resp, err := b.doAuthenticated(func(cred credentials) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.cfg.BackendURL+"/responses", bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header = b.headers(cred, true, stringValue(prepared["prompt_cache_key"]))
+		return req, nil
+	})
 	if err != nil {
-		return err
-	}
-	req.Header = b.headers(cred, true, stringValue(prepared["prompt_cache_key"]))
-	resp, err := b.client.Do(req)
-	if err != nil {
+		var backendErr *backendError
+		if errors.As(err, &backendErr) {
+			b.debugf("codex.stream.auth_error message=%s", redactSensitive(err.Error()))
+			return err
+		}
 		return &backendError{502, "Codex backend request failed."}
 	}
 	defer resp.Body.Close()
@@ -251,16 +284,16 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 }
 
 func (b *backend) listModels(ctx context.Context) []string {
-	cred, err := b.auth.borrow()
+	resp, err := b.doAuthenticated(func(cred credentials) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.BackendURL+"/models?client_version="+url.QueryEscape(b.cfg.ClientVersion), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header = b.headers(cred, false, "")
+		return req, nil
+	})
 	if err != nil {
-		b.debugf("codex.models.fallback reason=auth_error")
-		return append([]string(nil), defaultModels...)
-	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, b.cfg.BackendURL+"/models?client_version="+url.QueryEscape(b.cfg.ClientVersion), nil)
-	req.Header = b.headers(cred, false, "")
-	resp, err := b.client.Do(req)
-	if err != nil {
-		b.debugf("codex.models.fallback reason=request_error")
+		b.debugf("codex.models.fallback reason=request_or_auth_error")
 		return append([]string(nil), defaultModels...)
 	}
 	defer resp.Body.Close()
@@ -294,26 +327,85 @@ func (b *backend) proxyTo(ctx context.Context, method, baseURL, path, query stri
 		return nil, &backendError{400, "Invalid proxy path."}
 	}
 	b.debugf("codex.proxy.start method=%s path=%s", method, redactSensitive(target.EscapedPath()))
-	cred, err := b.auth.borrow()
+	replay, err := newReplayBody(body)
 	if err != nil {
-		return nil, &backendError{401, err.Error()}
+		return nil, &backendError{400, "Read proxy request body failed."}
 	}
-	req, err := http.NewRequestWithContext(ctx, method, target.String(), body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header = b.headers(cred, false, "")
-	for _, name := range []string{"Accept", "Content-Type", "Idempotency-Key", "OpenAI-Beta", "OpenAI-Organization", "OpenAI-Project", "OpenAI-Version"} {
-		if v := headers.Get(name); v != "" {
-			req.Header.Set(name, v)
+	defer replay.Close()
+	resp, err := b.doAuthenticated(func(cred credentials) (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, method, target.String(), replay.Reader())
+		if err != nil {
+			return nil, err
 		}
-	}
-	resp, err := b.client.Do(req)
+		req.Header = b.headers(cred, false, "")
+		for _, name := range []string{"Accept", "Content-Type", "Idempotency-Key", "OpenAI-Beta", "OpenAI-Organization", "OpenAI-Project", "OpenAI-Version"} {
+			if v := headers.Get(name); v != "" {
+				req.Header.Set(name, v)
+			}
+		}
+		return req, nil
+	})
 	if err != nil {
+		var backendErr *backendError
+		if errors.As(err, &backendErr) {
+			return nil, err
+		}
 		return nil, &backendError{502, "Codex backend proxy request failed."}
 	}
 	b.debugf("codex.proxy.headers status=%d", resp.StatusCode)
 	return resp, nil
+}
+
+type replayBody struct {
+	data []byte
+	file *os.File
+	size int64
+}
+
+func newReplayBody(body io.Reader) (*replayBody, error) {
+	if body == nil {
+		return &replayBody{}, nil
+	}
+	var memory bytes.Buffer
+	if _, err := io.Copy(&memory, io.LimitReader(body, replayBodyMemoryLimit+1)); err != nil {
+		return nil, err
+	}
+	if memory.Len() <= replayBodyMemoryLimit {
+		return &replayBody{data: memory.Bytes()}, nil
+	}
+	file, err := os.CreateTemp("", "openai-via-codex-request-*")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() {
+		_ = file.Close()
+		_ = os.Remove(file.Name())
+	}
+	if _, err := file.Write(memory.Bytes()); err != nil {
+		cleanup()
+		return nil, err
+	}
+	written, err := io.Copy(file, body)
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
+	return &replayBody{file: file, size: int64(memory.Len()) + written}, nil
+}
+
+func (b *replayBody) Reader() io.Reader {
+	if b.file == nil {
+		return bytes.NewReader(b.data)
+	}
+	return io.NewSectionReader(b.file, 0, b.size)
+}
+
+func (b *replayBody) Close() {
+	if b.file != nil {
+		name := b.file.Name()
+		_ = b.file.Close()
+		_ = os.Remove(name)
+	}
 }
 
 func (b *backend) debugf(format string, args ...any) {
