@@ -150,10 +150,12 @@ $ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex 
 $ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --help
 ```
 
-On the first GHCR publish, open the package settings and change its visibility
-to **Public** if anonymous pulls are intended. GitHub creates personal-account
-container packages as private by default, and making a package public cannot be
-reversed. Then verify both architectures and the versioned aliases:
+The OCI source label links the package to this public repository before its
+first push, so the workflow-created GHCR package inherits public visibility and
+supports anonymous pulls. If the namespace was already occupied by a separately
+configured package, confirm its Package settings before publishing; changing a
+private package to public cannot be reversed. Verify anonymous access, both
+architectures, and the versioned aliases:
 
 ```console
 $ docker buildx imagetools inspect ghcr.io/hotchpotch/openai-api-server-via-codex:vX.Y.Z
@@ -161,6 +163,9 @@ $ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:vX.Y.Z
 $ docker run --rm ghcr.io/hotchpotch/openai-api-server-via-codex:vX.Y.Z --version
 $ docker buildx imagetools inspect ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
+
+Run the inspect and pull checks from a Docker configuration without GHCR
+credentials when explicitly validating anonymous access.
 
 For a prerelease, confirm that the exact tag exists and that the digest behind
 `latest` has not changed.

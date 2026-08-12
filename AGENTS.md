@@ -109,7 +109,8 @@ Release container images use
 `ghcr.io/hotchpotch/openai-api-server-via-codex`. Stable release tags publish
 both `vX.Y.Z` and `latest`; prerelease tags publish only `vX.Y.Z...`. Keep the
 manifest on `linux/amd64` and `linux/arm64`, and preserve the OCI source label
-that links the GHCR package to this repository.
+that links the public GHCR package to this repository. Published images must be
+pullable anonymously.
 
 Generate a config template:
 

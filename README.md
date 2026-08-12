@@ -117,7 +117,8 @@ Stable releases are published for Linux x86_64 and ARM64 at
 `ghcr.io/hotchpotch/openai-api-server-via-codex`. `latest` always points to the
 newest stable release; an exact Git tag such as `v0.2.0` remains available for
 reproducible deployments. Prereleases publish only their exact version tag and
-do not move `latest`.
+do not move `latest`. The package is public, so pulls do not require a registry
+login.
 
 ```console
 $ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest

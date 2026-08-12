@@ -49,7 +49,8 @@ $ docker compose down
 ## Published image
 
 Stable releases are published to GitHub Container Registry as a multi-platform
-Linux image for x86_64 and ARM64:
+public Linux image for x86_64 and ARM64. No registry login is required to pull
+it:
 
 ```console
 $ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
