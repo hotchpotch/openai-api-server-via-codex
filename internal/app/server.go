@@ -110,7 +110,7 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeError(capture, 500, "Internal server error.", "api_error", nil, nil)
 			}
 		}
-		if s.cfg.Verbose {
+		if r.URL.Path != "/healthz" || s.cfg.Verbose {
 			log.Printf("request.end method=%s path=%s status=%d bytes=%d duration_ms=%.1f", r.Method, redactSensitive(r.URL.Path), capture.statusCode(), capture.bytes, float64(time.Since(started).Microseconds())/1000)
 		}
 	}()

@@ -235,6 +235,9 @@ python scripts/release-notes.py vX.Y.Z
   endpoint summaries, model-list fallbacks, and Codex HTTP stream/auth behavior.
   Never log raw auth tokens. Use the shared redaction helpers when logging
   upstream errors, request query strings, or auth-related values.
+- Emit a redacted request completion/access log for API requests even when
+  verbose mode is disabled. Keep routine `/healthz` probes quiet by default and
+  include them only in verbose request lifecycle logs.
 - For Chat Completions, translate Responses stream events into
   `chat.completion.chunk` events.
 - Prefer structured Go parsing and the official OpenAI SDK consumer tests over

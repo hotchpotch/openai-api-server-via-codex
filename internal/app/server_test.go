@@ -99,6 +99,41 @@ func TestVerboseRequestLogRedactsQuerySecrets(t *testing.T) {
 	}
 }
 
+func TestRequestCompletionLogIsEnabledWithoutVerbose(t *testing.T) {
+	var output bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
+
+	s := &server{cfg: config{}, backend: faultBackend{}}
+	response := httptest.NewRecorder()
+	s.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	logs := output.String()
+	for _, expected := range []string{"request.end", "method=GET", "path=/v1/models", "status=200", "bytes="} {
+		if !strings.Contains(logs, expected) {
+			t.Fatalf("log missing %q: %s", expected, logs)
+		}
+	}
+	if strings.Contains(logs, "request.start") {
+		t.Fatalf("non-verbose log contains request start: %s", logs)
+	}
+
+	output.Reset()
+	health := httptest.NewRecorder()
+	s.ServeHTTP(health, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if output.Len() != 0 {
+		t.Fatalf("default health check produced access-log noise: %s", output.String())
+	}
+}
+
 func TestDecodeObjectRejectsNullAndTrailingData(t *testing.T) {
 	for _, body := range []string{"null", `{"ok":true} {"extra":true}`} {
 		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))

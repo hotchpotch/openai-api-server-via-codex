@@ -162,6 +162,10 @@ block of `docker-compose.yml`, for example:
 - `OPENAI_VIA_CODEX_TIMEOUT`, `OPENAI_VIA_CODEX_MAX_STORED_ITEMS`,
   `OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS` — backend timeout and bounds.
 
+Every API request emits a redacted completion line visible through
+`docker compose logs`; routine healthcheck probes stay quiet. Verbose mode adds
+request-start, configuration, endpoint, backend stream, and auth diagnostics.
+
 Alternatively, mount a `config.toml` and point the server at it:
 
 ```yaml

@@ -130,6 +130,12 @@ func TestGoBinaryForegroundE2E(t *testing.T) {
 		}
 		reader.Close()
 		<-drainDone
+		serverLogs := readLogs(&logs, &logsMu)
+		for _, expected := range []string{"request.end method=POST", "path=/v1/responses", "status=200"} {
+			if !strings.Contains(serverLogs, expected) {
+				t.Fatalf("server access log missing %q; logs=%s", expected, serverLogs)
+			}
+		}
 	})
 }
 

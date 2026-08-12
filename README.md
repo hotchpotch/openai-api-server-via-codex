@@ -477,9 +477,11 @@ backend:
 drop_params = ["temperature", "top_p"]
 ```
 
-Verbose logs include resolved settings, request lifecycle, endpoint summaries,
-and Codex stream/auth activity. Raw credentials and token-like values are
-redacted.
+Normal operation logs one completion line per API request with its method,
+redacted path, status, response size, and duration. Routine `/healthz` probes
+stay quiet. Verbose logs additionally include request starts and redacted query
+strings, resolved settings, endpoint summaries, and Codex stream/auth activity.
+Raw credentials and token-like values are redacted.
 
 </details>
 

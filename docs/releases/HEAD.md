@@ -14,3 +14,6 @@
   pulled anonymously.
 - Reloaded externally rotated Codex credentials after an upstream `401` and
   retried the request once before any response stream reaches the client.
+- Restored default API request completion logs in the Go server while keeping
+  routine container health checks quiet, and updated the quick-start preview to
+  show the Go access log.
