@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
 
     steps:
       - name: Check out repository
@@ -65,8 +66,10 @@ jobs:
           if ref_type == "tag" and ref_name != f"v{pyproject_version}":
               raise SystemExit(f"tag {ref_name!r} does not match package version {pyproject_version!r}")
 
+          is_prerelease = bool(re.search(r"(?:a|b|rc)\d+(?:\.dev\d+)?$", pyproject_version))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"version={pyproject_version}\n")
+              output.write(f"prerelease={str(is_prerelease).lower()}\n")
           PY
 
       - name: Run validation suite
@@ -139,14 +142,21 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
+          release_flags=()
+          if [[ "${IS_PRERELEASE}" == "true" ]]; then
+            release_flags+=(--prerelease)
+          fi
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             gh release edit "${GITHUB_REF_NAME}" \
               --title "${GITHUB_REF_NAME}" \
-              --notes-file release-notes.md
+              --notes-file release-notes.md \
+              "${release_flags[@]}"
           else
             gh release create "${GITHUB_REF_NAME}" \
               --title "${GITHUB_REF_NAME}" \
               --notes-file release-notes.md \
+              "${release_flags[@]}" \
               --verify-tag
           fi

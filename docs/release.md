@@ -66,6 +66,11 @@ Then update:
 - `tests/test_package_metadata.py`
 - `README.md`, if it mentions the current release version
 
+For a beta, use a PEP 440 version such as `0.1.6b1` and a matching tag such as
+`v0.1.6b1`. The release workflow publishes the wheels normally to PyPI and
+marks the corresponding GitHub Release as a pre-release. Publishing a beta does
+not imply that the same implementation will be promoted to a stable release.
+
 Move the completed changelog from `docs/releases/HEAD.md` to
 `docs/releases/vX.Y.Z.md`, then reset `HEAD.md` to:
 

@@ -14,7 +14,7 @@ from openai_api_server_via_codex import __version__
 def test_package_version_metadata_is_consistent() -> None:
     pyproject = tomllib.loads(Path("pyproject.toml").read_text())
 
-    assert pyproject["project"]["version"] == "0.1.5"
+    assert pyproject["project"]["version"] == "0.1.6b1"
     assert __version__ == pyproject["project"]["version"]
 
 

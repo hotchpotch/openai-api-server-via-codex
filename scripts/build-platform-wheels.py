@@ -32,6 +32,7 @@ TARGETS = (
     Target("windows", "arm64", "win_arm64", "openai-api-server-via-codex.exe"),
 )
 LAUNCHER_FILES = {"__init__.py", "__main__.py", "launcher.py"}
+IGNORED_OUTPUT_FILES = {".gitignore"}
 
 
 def digest(path: Path) -> tuple[str, int]:
@@ -106,7 +107,11 @@ def build_binary(target: Target, output: Path, version: str) -> None:
 
 def validate_distribution_set(output_dir: Path, outputs: list[Path]) -> None:
     expected = {path.resolve() for path in outputs}
-    actual = {path.resolve() for path in output_dir.iterdir() if path.is_file()}
+    actual = {
+        path.resolve()
+        for path in output_dir.iterdir()
+        if path.is_file() and path.name not in IGNORED_OUTPUT_FILES
+    }
     missing = sorted(path.name for path in expected - actual)
     unexpected = sorted(path.name for path in actual - expected)
     source_archives = sorted(

@@ -63,11 +63,23 @@ def test_build_binary_requires_nonempty_output(
 def test_validate_distribution_set_rejects_generic_wheel(tmp_path: Path) -> None:
     platform_wheel = tmp_path / "package-1-py3-none-win_amd64.whl"
     platform_wheel.write_bytes(b"wheel")
+    (tmp_path / ".gitignore").write_text("*\n", encoding="utf-8")
     build_platform_wheels.validate_distribution_set(tmp_path, [platform_wheel])
 
     (tmp_path / "package-1-py3-none-any.whl").write_bytes(b"generic")
 
     with pytest.raises(RuntimeError, match="py3-none-any"):
+        build_platform_wheels.validate_distribution_set(tmp_path, [platform_wheel])
+
+
+def test_validate_distribution_set_rejects_unexpected_visible_file(
+    tmp_path: Path,
+) -> None:
+    platform_wheel = tmp_path / "package-1-py3-none-win_amd64.whl"
+    platform_wheel.write_bytes(b"wheel")
+    (tmp_path / "checksums.txt").write_text("unexpected\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="checksums.txt"):
         build_platform_wheels.validate_distribution_set(tmp_path, [platform_wheel])
 
 

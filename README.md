@@ -62,7 +62,7 @@ If Codex is already logged in on the machine, start the server with one command:
 
 ```console
 $ uvx openai-api-server-via-codex
-2026/08/12 12:34:56 openai-api-server-via-codex 0.1.5 (Go) listening on http://127.0.0.1:18080
+2026/08/12 12:34:56 openai-api-server-via-codex 0.1.6b1 (Go) listening on http://127.0.0.1:18080
 ```
 
 The default server URL is `http://127.0.0.1:18080`. OpenAI-compatible API
