@@ -21,3 +21,10 @@
   config-backed PID/log discovery, backoff-controlled automatic server restart,
   and graceful HTTP shutdown on Linux and macOS. Windows daemon shutdown is
   best-effort and may interrupt in-flight streams.
+- Added Go-owned unit, deterministic HTTP/SSE contract, fuzz, spawned-binary
+  E2E, and opt-in real Codex live suites. The live suite exercises Responses,
+  Chat, streaming, tools, structured outputs, stored-object lifecycle, vision,
+  image generation, Audio reachability, and fallback proxying without using a
+  Python test runner.
+- Added dynamic-port foreground startup with a stable, machine-readable listen
+  log, stronger auth refresh/cache coverage, and Linux race-detector CI.

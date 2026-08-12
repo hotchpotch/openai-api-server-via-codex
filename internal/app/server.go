@@ -22,10 +22,24 @@ import (
 
 type server struct {
 	cfg       config
-	backend   *backend
+	backend   codexBackend
 	responses *responseStore
 	chats     *chatStore
 	slots     chan struct{}
+}
+
+type codexBackend interface {
+	stream(context.Context, map[string]any, func(map[string]any) error) error
+	collect(context.Context, map[string]any) (map[string]any, error)
+	listModels(context.Context) []string
+	proxy(context.Context, string, string, string, http.Header, io.Reader) (*http.Response, error)
+	transcribe(context.Context, http.Header, io.Reader) (*http.Response, error)
+}
+
+const startupLogMarker = "listening on http://"
+
+func startupLogMessage(version, address string) string {
+	return fmt.Sprintf("openai-api-server-via-codex %s (Go) %s%s", version, startupLogMarker, address)
 }
 
 func serve(cfg config, version string) error {
@@ -42,8 +56,9 @@ func serve(cfg config, version string) error {
 	if err != nil {
 		return err
 	}
-	httpServer := &http.Server{Addr: address, Handler: s, ReadHeaderTimeout: 10 * time.Second}
-	log.Printf("openai-api-server-via-codex %s (Go) listening on http://%s", version, httpServer.Addr)
+	boundAddress := listener.Addr().String()
+	httpServer := &http.Server{Addr: boundAddress, Handler: s, ReadHeaderTimeout: 10 * time.Second}
+	log.Print(startupLogMessage(version, boundAddress))
 	if cfg.Verbose {
 		log.Printf(
 			"settings.resolved host=%s port=%d model=%s timeout=%s max_stored_items=%d max_concurrent_requests=%d auth_json=%s backend_base_url=%s api_key_configured=%t",

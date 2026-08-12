@@ -32,6 +32,10 @@ jobs:
       - name: Run native Go tests
         run: go test ./...
 
+      - name: Run Go race detector
+        if: runner.os == 'Linux'
+        run: go test -race ./...
+
       - name: Run Go vet
         run: go vet ./...
 

@@ -693,10 +693,22 @@ $ uv run python -m pytest tests/test_cross_runtime_contract.py -q
 $ go test ./...
 ```
 
-New public API behavior should be added to this shared suite as well as to the
-focused implementation tests. This keeps Python and Go behavior comparable
-until the Python implementation is removed, without tying the API contract to
-either runtime.
+Go also owns deterministic HTTP/SSE contracts and a spawned-binary E2E suite.
+These exercise auth refresh, downstream request normalization, Responses and
+Chat lifecycle APIs, streaming, tools, structured outputs, Images, Audio,
+fallback proxying, redaction, concurrency limits, dynamic-port startup, and
+graceful shutdown:
+
+```console
+$ go test ./internal/app
+$ go test ./test/e2e -v
+$ go test -race ./...
+```
+
+New public API behavior should be added to both the Go contract suite and the
+shared `openai-python` process suite. The former is the runtime's fast canonical
+wire-level contract; the latter remains the client-compatibility and Python
+oracle gate while Python is still in the repository.
 
 For proxy CPU, memory, latency, and throughput measurements, see
 [the runtime performance report](docs/performance.md). The benchmark command is
@@ -708,6 +720,7 @@ intended:
 ```console
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
+$ RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
 ```
 
 Set `OPENAI_VIA_CODEX_TEST_RUNTIME=go` to run those same live tests against a
@@ -718,6 +731,12 @@ requests. The main live integration test also exercises image generation through
 `client.images.generate(...)`: it decodes the returned base64 PNG, verifies the
 image dimensions from the PNG header, then sends the generated image back through
 Responses vision input and checks that the model describes the expected subject.
+The Go-authored live matrix starts a freshly built Go binary on an OS-assigned
+port and covers the same major API categories without a Python test runner. Set
+`OPENAI_VIA_CODEX_TEST_MODEL` to override its default live model.
+
+The staged ownership and Python-removal criteria are documented in
+[the Go migration test policy](docs/go-migration.md).
 
 ## Release
 

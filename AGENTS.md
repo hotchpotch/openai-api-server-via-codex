@@ -45,6 +45,16 @@ requests:
 ```bash
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q -s
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
+RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
+```
+
+Run Go-owned deterministic contracts and the spawned-binary E2E while changing
+the packaged runtime:
+
+```bash
+go test ./internal/app
+go test ./test/e2e -v
+go test -race ./...
 ```
 
 Run the broad Codex HTTP OpenAI client compatibility matrix by itself when

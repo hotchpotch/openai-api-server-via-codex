@@ -119,7 +119,11 @@ func Run(args []string, version string) error {
 		}
 		return err
 	}
-	if cfg.MaxStored < 0 || cfg.Concurrency < 0 || cfg.Port < 1 || cfg.Port > 65535 || timeout <= 0 || stopTimeout <= 0 {
+	minimumPort := 0
+	if command == "daemon-run" {
+		minimumPort = 1
+	}
+	if cfg.MaxStored < 0 || cfg.Concurrency < 0 || cfg.Port < minimumPort || cfg.Port > 65535 || timeout <= 0 || stopTimeout <= 0 {
 		return errors.New("port, timeout, max-stored-items, max-concurrent-requests, or stop-timeout is invalid")
 	}
 	cfg.Timeout = time.Duration(timeout * float64(time.Second))

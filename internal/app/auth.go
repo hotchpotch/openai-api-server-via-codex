@@ -23,6 +23,7 @@ type authCacheEntry struct {
 	Size    int64
 	Cred    credentials
 	Exp     float64
+	HasExp  bool
 }
 type authProvider struct {
 	path          string
@@ -39,7 +40,7 @@ func (a *authProvider) borrow() (credentials, error) {
 	if err != nil {
 		return credentials{}, fmt.Errorf("Codex auth file not found at %s", path)
 	}
-	if a.cache != nil && a.cache.Size == stat.Size() && a.cache.ModTime.Equal(stat.ModTime()) && tokenFresh(a.cache.Exp) {
+	if a.cache != nil && a.cache.Size == stat.Size() && a.cache.ModTime.Equal(stat.ModTime()) && tokenFresh(a.cache.Exp, a.cache.HasExp) {
 		return a.cache.Cred, nil
 	}
 	data, err := os.ReadFile(path)
@@ -58,8 +59,8 @@ func (a *authProvider) borrow() (credentials, error) {
 		return credentials{}, fmt.Errorf("no ChatGPT tokens found; run `codex login` first")
 	}
 	access := stringValue(tokens["access_token"])
-	exp := jwtNumber(access, "exp")
-	if !tokenFresh(exp) {
+	exp, hasExp := jwtNumber(access, "exp")
+	if !tokenFresh(exp, hasExp) {
 		refresh := stringValue(tokens["refresh_token"])
 		if refresh == "" {
 			return credentials{}, fmt.Errorf("no refresh token available; run `codex login` again")
@@ -67,6 +68,9 @@ func (a *authProvider) borrow() (credentials, error) {
 		newTokens, err := a.refresh(refresh)
 		if err != nil {
 			return credentials{}, err
+		}
+		if stringValue(newTokens["access_token"]) == "" {
+			return credentials{}, fmt.Errorf("invalid token refresh response: missing access token")
 		}
 		for _, key := range []string{"access_token", "refresh_token", "id_token"} {
 			if newTokens[key] != nil {
@@ -82,12 +86,15 @@ func (a *authProvider) borrow() (credentials, error) {
 		if err := os.Rename(tmp, path); err != nil {
 			return credentials{}, err
 		}
-		stat, _ = os.Stat(path)
+		stat, err = os.Stat(path)
+		if err != nil {
+			return credentials{}, fmt.Errorf("stat refreshed Codex auth JSON: %w", err)
+		}
 		access = stringValue(tokens["access_token"])
-		exp = jwtNumber(access, "exp")
+		exp, hasExp = jwtNumber(access, "exp")
 	}
 	cred := credentials{AccessToken: access, AccountID: accountID(tokens)}
-	a.cache = &authCacheEntry{ModTime: stat.ModTime(), Size: stat.Size(), Cred: cred, Exp: exp}
+	a.cache = &authCacheEntry{ModTime: stat.ModTime(), Size: stat.Size(), Cred: cred, Exp: exp, HasExp: hasExp}
 	return cred, nil
 }
 
@@ -97,7 +104,7 @@ func (a *authProvider) refresh(token string) (map[string]any, error) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.refreshClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token refresh failed: %w", err)
+		return nil, fmt.Errorf("token refresh failed: %s", redactSensitive(err.Error()))
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -111,7 +118,9 @@ func (a *authProvider) refresh(token string) (map[string]any, error) {
 	return result, nil
 }
 
-func tokenFresh(exp float64) bool { return exp == 0 || float64(time.Now().Unix()) < exp-30 }
+func tokenFresh(exp float64, hasExp bool) bool {
+	return !hasExp || float64(time.Now().Unix()) < exp-30
+}
 func jwtPayload(token string) map[string]any {
 	parts := strings.Split(token, ".")
 	if len(parts) < 2 {
@@ -127,11 +136,11 @@ func jwtPayload(token string) map[string]any {
 	}
 	return value
 }
-func jwtNumber(token, key string) float64 {
+func jwtNumber(token, key string) (float64, bool) {
 	if value, ok := jwtPayload(token)[key].(float64); ok {
-		return value
+		return value, true
 	}
-	return 0
+	return 0, false
 }
 func accountID(tokens map[string]any) string {
 	if v := stringValue(tokens["account_id"]); v != "" {

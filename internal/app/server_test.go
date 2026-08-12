@@ -39,6 +39,14 @@ func TestAPIKeyProtectsV1ButNotHealth(t *testing.T) {
 	}
 }
 
+func TestStartupLogMessageIsStableForDynamicPorts(t *testing.T) {
+	got := startupLogMessage("test-version", "127.0.0.1:43210")
+	want := "openai-api-server-via-codex test-version (Go) listening on http://127.0.0.1:43210"
+	if got != want {
+		t.Fatalf("startup message = %q, want %q", got, want)
+	}
+}
+
 func TestRouterRejectsNonV1AndNonGETHealthRequests(t *testing.T) {
 	s := &server{cfg: config{}}
 	for _, test := range []struct {
