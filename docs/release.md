@@ -1,9 +1,10 @@
 # Release
 
-This project releases to PyPI through GitHub Actions Trusted Publishing. The
-PyPI project is already configured with a Trusted Publisher, and the repository
-uses the `pypi` GitHub environment for release approval. Do not add PyPI API
-tokens to GitHub secrets for the normal release path.
+This project releases platform wheels to PyPI and a multi-platform Linux image
+to GitHub Container Registry through GitHub Actions. PyPI uses Trusted
+Publishing and the repository's `pypi` environment; do not add PyPI API tokens
+to GitHub secrets for the normal release path. GHCR uses the workflow's
+short-lived `GITHUB_TOKEN` with `packages: write`.
 
 Stable `0.2.0` is the documented breaking-change release for the Go-only server
 runtime. Release notes must state that the Python HTTP server and fallback no
@@ -100,8 +101,29 @@ $ git push origin vX.Y.Z
 The release workflow checks that the tag matches the package version, runs
 `tox`, builds all six Go platform wheels, validates
 metadata with `twine`, smoke tests the bundled Go console command, publishes to
-PyPI only from the `pypi` environment, and creates a GitHub Release from
-`docs/releases`.
+PyPI only from the `pypi` environment, publishes the runtime container to GHCR,
+and creates a GitHub Release from `docs/releases` only after both package
+publishes succeed.
+
+The container job publishes one multi-platform manifest for `linux/amd64` and
+`linux/arm64` under both the exact Git tag (`vX.Y.Z`) and, for stable versions,
+`latest`. A prerelease such as `v0.2.0b1` receives only its exact tag, so it
+cannot replace the stable image. The Dockerfile's OCI source label links the
+package to this repository before the first push.
+
+To backfill GHCR for an existing release without moving its Git tag or
+republishing PyPI, dispatch the release workflow from a branch containing the
+current workflow and provide the existing tag:
+
+```console
+$ gh workflow run release.yml \
+    --ref <branch-with-current-workflow> \
+    -f container_release_tag=vX.Y.Z
+```
+
+The job checks that the branch package version and tagged source version match,
+then checks out the existing tag for the container build. A manual backfill
+publishes only the exact `vX.Y.Z` tag and never moves `latest`.
 
 If the `pypi` environment has required reviewers, approve the deployment in the
 GitHub Actions run. The job uses OpenID Connect short-lived credentials through
@@ -127,6 +149,21 @@ Verify installation from PyPI:
 $ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --version
 $ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --help
 ```
+
+On the first GHCR publish, open the package settings and change its visibility
+to **Public** if anonymous pulls are intended. GitHub creates personal-account
+container packages as private by default, and making a package public cannot be
+reversed. Then verify both architectures and the versioned aliases:
+
+```console
+$ docker buildx imagetools inspect ghcr.io/hotchpotch/openai-api-server-via-codex:vX.Y.Z
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:vX.Y.Z
+$ docker run --rm ghcr.io/hotchpotch/openai-api-server-via-codex:vX.Y.Z --version
+$ docker buildx imagetools inspect ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+```
+
+For a prerelease, confirm that the exact tag exists and that the digest behind
+`latest` has not changed.
 
 Optionally start the published package:
 

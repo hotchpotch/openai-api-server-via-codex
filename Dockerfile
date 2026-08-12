@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build the production server as a static Go executable.
-FROM golang:1.23-bookworm AS server-builder
+FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS server-builder
 
 WORKDIR /src
 
@@ -11,10 +11,13 @@ RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 
+ARG TARGETOS=linux
+ARG TARGETARCH
 ARG VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
     -o /out/openai-api-server-via-codex ./cmd/openai-api-server-via-codex
 
 # Login helper stage: bundles the official Codex CLI so `codex login` can run
@@ -39,6 +42,15 @@ CMD ["login"]
 # Runtime stage: only the static Go server, CA roots, and Alpine's BusyBox tools.
 # Keep this stage last so a plain `docker build` produces the server image.
 FROM alpine:3.22 AS runtime
+
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="openai-api-server-via-codex" \
+    org.opencontainers.image.description="OpenAI-compatible proxy server backed by Codex HTTP credentials" \
+    org.opencontainers.image.source="https://github.com/hotchpotch/openai-api-server-via-codex" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.revision="${REVISION}" \
+    org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -g 1000 app \

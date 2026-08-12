@@ -3,7 +3,7 @@ services:
     build:
       context: .
       target: runtime
-    image: openai-api-server-via-codex:local
+    image: ${OPENAI_VIA_CODEX_IMAGE:-openai-api-server-via-codex:local}
     container_name: openai-api-server-via-codex
     ports:
       # Bound to loopback by default, matching the non-Docker default. Set the

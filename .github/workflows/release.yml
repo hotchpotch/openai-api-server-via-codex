@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      container_release_tag:
+        description: Existing vX.Y.Z tag to publish to GHCR without republishing PyPI
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -66,11 +71,22 @@ jobs:
           if ref_type == "tag" and ref_name != f"v{pyproject_version}":
               raise SystemExit(f"tag {ref_name!r} does not match package version {pyproject_version!r}")
 
-          is_prerelease = bool(re.search(r"(?:a|b|rc)\d+(?:\.dev\d+)?$", pyproject_version))
+          container_release_tag = os.environ.get("CONTAINER_RELEASE_TAG")
+          if container_release_tag and container_release_tag != f"v{pyproject_version}":
+              raise SystemExit(
+                  f"container tag {container_release_tag!r} does not match "
+                  f"package version {pyproject_version!r}"
+              )
+
+          is_prerelease = bool(
+              re.search(r"(?:a|b|rc)\d+(?:\.dev\d+)?$|(?:^|\.)dev\d+$", pyproject_version)
+          )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"version={pyproject_version}\n")
               output.write(f"prerelease={str(is_prerelease).lower()}\n")
           PY
+        env:
+          CONTAINER_RELEASE_TAG: ${{ inputs.container_release_tag }}
 
       - name: Run validation suite
         run: uv run tox
@@ -122,11 +138,93 @@ jobs:
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@v1.14.0
 
+  publish-container:
+    name: Publish multi-platform container to GHCR
+    needs:
+      - build
+      - publish
+    if: >-
+      always() &&
+      needs.build.result == 'success' &&
+      (
+        (startsWith(github.ref, 'refs/tags/v') && needs.publish.result == 'success') ||
+        (github.event_name == 'workflow_dispatch' && inputs.container_release_tag != '')
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ inputs.container_release_tag || github.ref }}
+
+      - name: Resolve container source
+        id: source
+        env:
+          RELEASE_VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          source_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' pyproject.toml)"
+          if [[ "${source_version}" != "${RELEASE_VERSION}" ]]; then
+            echo "source version ${source_version} does not match release ${RELEASE_VERSION}" >&2
+            exit 1
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Generate container metadata
+        id: metadata
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=v${{ needs.build.outputs.version }}
+            type=raw,value=latest,enable=${{ github.event_name == 'push' && needs.build.outputs.prerelease == 'false' }}
+          labels: |
+            org.opencontainers.image.title=openai-api-server-via-codex
+            org.opencontainers.image.description=OpenAI-compatible proxy server backed by Codex HTTP credentials
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+            org.opencontainers.image.revision=${{ steps.source.outputs.revision }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and publish container
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.build.outputs.version }}
+            REVISION=${{ steps.source.outputs.revision }}
+          cache-from: type=gha,scope=release-container
+          cache-to: type=gha,mode=max,scope=release-container
+          provenance: mode=max
+          sbom: true
+
   github-release:
     name: Create GitHub Release
     needs:
       - build
       - publish
+      - publish-container
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

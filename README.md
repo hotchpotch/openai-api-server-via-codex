@@ -79,6 +79,7 @@ Choose one of these paths:
 | Method | Host requirements | Server runtime |
 | --- | --- | --- |
 | `uvx openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
+| `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest` | Docker, Codex login | Published Go/Alpine image |
 | `docker compose up --build -d` | Docker, Codex login | Go on Alpine Linux |
 | Build from source | Go 1.23+, Codex login | Locally built Go executable |
 
@@ -111,6 +112,21 @@ unsupported platform, build the Go executable directly.
 The production image builds the server from source and copies only the static
 Go executable and CA certificates into a small Alpine runtime. Python and the
 Go toolchain are absent from the final server image.
+
+Stable releases are published for Linux x86_64 and ARM64 at
+`ghcr.io/hotchpotch/openai-api-server-via-codex`. `latest` always points to the
+newest stable release; an exact Git tag such as `v0.2.0` remains available for
+reproducible deployments. Prereleases publish only their exact version tag and
+do not move `latest`.
+
+```console
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+$ docker run --rm -p 127.0.0.1:18080:18080 \
+    -v ~/.codex:/home/app/.codex \
+    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+```
+
+Or build the same runtime image from this checkout:
 
 ```console
 $ docker compose run --rm --service-ports codex-login  # only if auth.json is missing

@@ -7,3 +7,7 @@
 - Kept the Go-only Alpine Docker runtime small by using its built-in
   healthcheck client, and made the Compose host bind configurable while
   retaining its loopback-only default.
+- Added tag-driven GHCR publishing for Linux x86_64 and ARM64 images. Stable
+  releases publish matching `vX.Y.Z` and `latest` tags, while prereleases leave
+  `latest` unchanged. Existing release tags can be backfilled through a guarded
+  manual Actions dispatch without republishing PyPI.

@@ -105,6 +105,12 @@ docker compose ps
 docker compose down
 ```
 
+Release container images use
+`ghcr.io/hotchpotch/openai-api-server-via-codex`. Stable release tags publish
+both `vX.Y.Z` and `latest`; prerelease tags publish only `vX.Y.Z...`. Keep the
+manifest on `linux/amd64` and `linux/arm64`, and preserve the OCI source label
+that links the GHCR package to this repository.
+
 Generate a config template:
 
 ```bash
@@ -196,6 +202,13 @@ python scripts/release-notes.py vX.Y.Z
   `.github/workflows/release.yml` and the `pypi` GitHub environment. Do not add
   PyPI tokens to repository secrets unless a deliberate fallback release path is
   being used.
+- Publish the GHCR image from the same tag-driven release workflow only after
+  PyPI succeeds. Use `GITHUB_TOKEN` with job-scoped `packages: write`; do not add
+  a registry password or personal access token. A prerelease must never update
+  the `latest` container tag.
+- Existing releases may be backfilled through the release workflow's
+  `container_release_tag` dispatch input. The build must use the immutable
+  existing tag, verify its version, skip PyPI, and never update `latest`.
 - Keep `.github/workflows/ci.yml` aligned with the local required validation
   command. It should run on pushes to `main`, pull requests, and manual
   dispatch.

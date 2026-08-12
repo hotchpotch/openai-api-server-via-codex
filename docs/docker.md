@@ -46,6 +46,36 @@ $ docker compose logs -f
 $ docker compose down
 ```
 
+## Published image
+
+Stable releases are published to GitHub Container Registry as a multi-platform
+Linux image for x86_64 and ARM64:
+
+```console
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+```
+
+`latest` is updated only by a stable release. Every release also has its exact
+Git tag, for example `ghcr.io/hotchpotch/openai-api-server-via-codex:v0.2.0`.
+Prereleases publish the exact tag but never replace `latest`.
+
+Use the published image with the repository's Compose configuration without
+building locally:
+
+```console
+$ export OPENAI_VIA_CODEX_IMAGE=ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+$ docker compose pull openai-api-server-via-codex
+$ docker compose up --no-build -d
+```
+
+Or use plain Docker:
+
+```console
+$ docker run --rm -p 127.0.0.1:18080:18080 \
+    -v ~/.codex:/home/app/.codex \
+    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+```
+
 ## Getting a Codex login
 
 The server borrows a Codex ChatGPT login from `auth.json`. Any one of these
@@ -136,6 +166,8 @@ Setting precedence is unchanged: CLI flag, environment variable, config file,
 default.
 
 ## Plain `docker` (without Compose)
+
+To build locally instead of using the published image:
 
 ```console
 $ docker build -t openai-api-server-via-codex:local .
