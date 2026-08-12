@@ -109,11 +109,37 @@ jobs:
           wheel="$(ls dist/*manylinux_2_17_x86_64.whl)"
           uv run --with "$wheel" --no-project openai-api-server-via-codex --help
 
+      - name: Build standalone Go archives
+        run: |
+          source_date_epoch="$(git log -1 --format=%ct)"
+          uv run python scripts/build-release-archives.py \
+            --wheel-dir dist \
+            --output-dir release \
+            --version "${{ steps.version.outputs.version }}" \
+            --source-date-epoch "${source_date_epoch}"
+
+      - name: Verify standalone Go archives
+        run: |
+          (cd release && sha256sum --check checksums.txt)
+          mkdir release-smoke
+          tar -xzf \
+            "release/openai-api-server-via-codex_${{ steps.version.outputs.version }}_linux_amd64.tar.gz" \
+            -C release-smoke
+          release-smoke/openai-api-server-via-codex --version | \
+            grep -F "${{ steps.version.outputs.version }}"
+
       - name: Upload distributions
         uses: actions/upload-artifact@v4
         with:
           name: platform-wheel-distributions
           path: dist/
+          if-no-files-found: error
+
+      - name: Upload standalone Go archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: standalone-go-distributions
+          path: release/
           if-no-files-found: error
 
   publish:
@@ -237,6 +263,18 @@ jobs:
       - name: Generate release notes
         run: python scripts/release-notes.py "${GITHUB_REF_NAME}" > release-notes.md
 
+      - name: Download platform wheels
+        uses: actions/download-artifact@v4
+        with:
+          name: platform-wheel-distributions
+          path: release-assets/
+
+      - name: Download standalone Go archives
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-go-distributions
+          path: release-assets/
+
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -258,3 +296,4 @@ jobs:
               "${release_flags[@]}" \
               --verify-tag
           fi
+          gh release upload "${GITHUB_REF_NAME}" release-assets/* --clobber

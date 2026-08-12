@@ -88,6 +88,7 @@ Choose one of these paths:
 | Method | Host requirements | Server runtime |
 | --- | --- | --- |
 | `uvx openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
+| GitHub Release archive | Codex login | Standalone Go executable |
 | `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest` | Docker, Codex login | Public Go/Alpine image (~7 MB compressed/~21 MB local on amd64; a few MiB idle memory) |
 | `docker compose up --build -d` | Docker, Codex login | Go on Alpine Linux |
 | Build from source | Go 1.23+, Codex login | Locally built Go executable |
@@ -115,6 +116,25 @@ $ openai-api-server-via-codex --version
 
 There is no Python server fallback and no generic source distribution. On an
 unsupported platform, build the Go executable directly.
+
+### Run a standalone Go binary
+
+Every GitHub Release includes versioned archives for Linux, macOS, and Windows
+on x86_64 and ARM64, plus `checksums.txt`. Unix archives use `.tar.gz`; Windows
+archives use `.zip`. For example, on an Apple silicon Mac:
+
+```console
+$ curl -LO https://github.com/hotchpotch/openai-api-server-via-codex/releases/download/v0.2.0/openai-api-server-via-codex_0.2.0_darwin_arm64.tar.gz
+$ curl -LO https://github.com/hotchpotch/openai-api-server-via-codex/releases/download/v0.2.0/checksums.txt
+$ grep 'darwin_arm64.tar.gz' checksums.txt | shasum -a 256 --check
+$ tar -xzf openai-api-server-via-codex_0.2.0_darwin_arm64.tar.gz
+$ ./openai-api-server-via-codex --version
+```
+
+These stable archive URLs and SHA-256 checksums are suitable for a Homebrew
+Formula. Installing a specific historical version through Homebrew additionally
+requires the tap to retain a versioned Formula such as
+`openai-api-server-via-codex@0.2.0`.
 
 ### Run with Docker
 

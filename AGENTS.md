@@ -196,6 +196,10 @@ python scripts/release-notes.py vX.Y.Z
   `python scripts/release-notes.py vX.Y.Z` to generate the GitHub Release body.
   Keep `tests/test_release_notes.py` aligned with the release-note file
   selection rules.
+- GitHub Releases must attach the six platform wheels, six standalone Go
+  archives, and `checksums.txt`. Standalone executables must come from their
+  matching wheels so PyPI, GitHub Release, and Homebrew consumers use identical
+  binaries. Keep archive names stable and versioned.
 - Keep README and active documents Go-first. Explain the remaining Python code
   only as launcher, SDK-test, or release tooling. Preserve versioned historical
   release notes rather than rewriting project history.

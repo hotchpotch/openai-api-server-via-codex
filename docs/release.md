@@ -38,6 +38,12 @@ $ uv run python scripts/build-platform-wheels.py \
     --output-dir dist \
     --version "$(uv run python -c 'import openai_api_server_via_codex as p; print(p.__version__)')"
 $ uv run twine check --strict dist/*
+$ uv run python scripts/build-release-archives.py \
+    --wheel-dir dist \
+    --output-dir release \
+    --version "$(uv run python -c 'import openai_api_server_via_codex as p; print(p.__version__)')" \
+    --source-date-epoch "$(git log -1 --format=%ct)"
+$ (cd release && sha256sum --check checksums.txt)
 $ uv run --with "$(ls dist/*manylinux_2_17_x86_64.whl)" --no-project openai-api-server-via-codex --version
 ```
 
@@ -57,6 +63,13 @@ for the install target. No artifact may contain `.codex`, `auth.json`, `.env`,
 The platform-wheel builder rejects generic wheels, source archives, unexpected
 wheel tags, stale package files, and missing or empty Go binaries before the
 release workflow can upload the directory.
+
+The standalone release set contains six archives and `checksums.txt`. Linux and
+macOS use reproducible `.tar.gz` archives; Windows uses reproducible `.zip`
+archives. Each archive contains the exact executable extracted from its matching
+wheel, plus `LICENSE` and `README.md`. Keep the
+`openai-api-server-via-codex_VERSION_GOOS_GOARCH` naming stable because Homebrew
+Formulae and other package managers use the versioned URL and checksum.
 
 ## Version Bump
 
@@ -103,7 +116,8 @@ The release workflow checks that the tag matches the package version, runs
 metadata with `twine`, smoke tests the bundled Go console command, publishes to
 PyPI only from the `pypi` environment, publishes the runtime container to GHCR,
 and creates a GitHub Release from `docs/releases` only after both package
-publishes succeed.
+publishes succeed. The GitHub Release receives all six standalone Go archives,
+`checksums.txt`, and the same six platform wheels published to PyPI.
 
 The container job publishes one multi-platform manifest for `linux/amd64` and
 `linux/arm64` under both the exact Git tag (`vX.Y.Z`) and, for stable versions,
@@ -147,6 +161,13 @@ Verify installation from PyPI:
 ```console
 $ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --version
 $ uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex --help
+```
+
+Verify GitHub Release assets and checksums:
+
+```console
+$ gh release download vX.Y.Z --pattern 'openai-api-server-via-codex_*' --pattern checksums.txt
+$ sha256sum --check checksums.txt
 ```
 
 The OCI source label links the package to this public repository before its

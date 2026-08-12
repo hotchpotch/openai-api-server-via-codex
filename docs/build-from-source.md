@@ -13,6 +13,25 @@ or runtime.
 The default authentication file is `~/.codex/auth.json`. Never copy that file
 into a binary, container image, source archive, or repository.
 
+## Download a release binary
+
+GitHub Releases provide standalone executables for Linux, macOS, and Windows on
+x86_64 and ARM64. Linux and macOS use `.tar.gz`; Windows uses `.zip`. Each
+archive contains the executable, `LICENSE`, and `README.md`, and
+`checksums.txt` contains the SHA-256 digest for every archive.
+
+Archive names are stable and include the release version, OS, and architecture:
+
+```text
+openai-api-server-via-codex_VERSION_GOOS_GOARCH.tar.gz
+openai-api-server-via-codex_VERSION_windows_GOARCH.zip
+```
+
+The release workflow extracts these executables from the same platform wheels
+published to PyPI, so the standalone archive and matching wheel contain the
+same Go binary. The naming and checksums are intended to be consumed by a
+Homebrew Formula or other package-manager metadata without rebuilding source.
+
 ## Install directly from GitHub
 
 Go can download the module, build the command, and install it without cloning
