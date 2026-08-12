@@ -1,92 +1,35 @@
 # OpenAI API Server via Codex
 
-💰 Your ChatGPT subscription includes Codex, but that backend normally only
-talks to Codex clients. This server puts an OpenAI-compatible API in front of
-it, so any tool that already speaks to `api.openai.com` can use it by changing
-one environment variable.
+Run an OpenAI-compatible local API server using the Codex access from your
+ChatGPT login. The server itself is a standalone Go executable; clients can use
+the standard Responses and Chat Completions APIs by changing their base URL.
 
-![Start the server with uvx, then call the OpenAI-compatible Responses API with curl](https://storage.googleapis.com/secons-site-images/other/blog_images/20260809-openai-api-server-via-codex-quick-start.webp)
+> [!IMPORTANT]
+> **Breaking change planned for v0.2.0:** stable releases from `0.2.0` onward
+> start the server implemented in Go. The former Python/FastAPI HTTP server and
+> Python fallback have been removed. The Python package remains only as a small
+> `uvx` launcher that selects the bundled Go executable. The `0.1.6b1` beta
+> previews this migration before the stable `0.2.0` release.
 
-```console
-$ uvx openai-api-server-via-codex
-$ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
-$ # this server requires no key by default, but the OpenAI SDK
-$ # fails its own validation without one, so any value works
-$ export OPENAI_API_KEY=dummy
-```
+![Start the Go server with uvx, then call the OpenAI-compatible Responses API](https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png)
 
-Existing code keeps working as written:
+## Quick start
 
-```python
-from openai import OpenAI
-
-client = OpenAI()
-response = client.responses.create(model="gpt-5.6-luna", input="Hello")
-```
-
-## 🎯 Why use it
-
-- **No platform API key, no per-token bill.** Requests go through the Codex
-  access already included in your ChatGPT plan, not through OpenAI Platform
-  billing.
-- **No client changes.** `openai-python`, LangChain, LiteLLM, and any tool with
-  a configurable base URL work as-is.
-- **Both APIs, not just chat.** Responses and Chat Completions, streaming, tool
-  calling, structured outputs, image input, and image generation.
-- **Local by default.** It binds to `127.0.0.1` and reads your existing
-  `~/.codex/auth.json`. Credentials go to the Codex backend and nowhere else.
-- **One command.** `uvx` runs it without installing anything permanent, and
-  supported platform wheels contain a standalone Go server; `start`/`stop`/
-  `status` manage it as a background daemon.
-
-## Use cases
-
-- Call Codex-only models such as GPT-5.6 Luna from a notebook or a throwaway
-  script without setting up Platform billing.
-- Run an agent, eval, or batch job you already wrote for the OpenAI SDK against
-  Codex models by switching `OPENAI_BASE_URL`.
-- Drive editors and CLI tools that accept an OpenAI-compatible endpoint.
-- Give a trusted machine on your LAN access with
-  `--host 0.0.0.0 --api-key ...`.
-
-It does not raise or bypass your Codex or ChatGPT plan limits, and it is not the
-official OpenAI Platform API. Use it only with accounts you are allowed to use,
-and follow OpenAI's terms and usage policies. Do not resell access, expose it
-publicly, or point third-party services at it.
-
-## Usage
-
-### Start with `uvx`
-
-If Codex is already logged in on the machine, start the server with one command:
+Make sure Codex is logged in and `~/.codex/auth.json` exists, then start the Go
+server:
 
 ```console
 $ uvx openai-api-server-via-codex
-2026/08/12 12:34:56 openai-api-server-via-codex 0.1.6b1 (Go) listening on http://127.0.0.1:18080
+2026/08/12 12:34:56 openai-api-server-via-codex 0.2.0 (Go) listening on http://127.0.0.1:18080
 ```
 
-The default server URL is `http://127.0.0.1:18080`. OpenAI-compatible API
-endpoints are served under `/v1`, for example
-`http://127.0.0.1:18080/v1/responses`.
+Until `0.2.0` is published, select the Go beta explicitly:
 
-> [!TIP]
-> `uvx` is uv's tool-run command. If you do not have uv installed yet, follow
-> the official uv documentation: <https://docs.astral.sh/uv/>.
->
-> To force `uvx` to use the latest published package instead of a cached copy,
-> run `uvx --refresh-package openai-api-server-via-codex openai-api-server-via-codex`.
+```console
+$ uvx --from openai-api-server-via-codex==0.1.6b1 openai-api-server-via-codex
+```
 
-> [!NOTE]
-> This is a compatibility server for local or trusted environments. By default,
-> it accepts any incoming OpenAI API key value because `openai-python` requires
-> one even when this server does not. Set `--api-key` if you want the server to
-> authenticate incoming requests, especially when binding to anything other than
-> localhost.
-
-### Call the Responses API
-
-Point `openai-python` at the local server with the standard OpenAI client
-environment variables:
+Point an OpenAI client at the local endpoint:
 
 ```console
 $ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
@@ -97,7 +40,6 @@ $ export OPENAI_API_KEY=dummy
 from openai import OpenAI
 
 client = OpenAI()
-
 response = client.responses.create(
     model="gpt-5.6-luna",
     input="Reply in one sentence.",
@@ -106,10 +48,135 @@ response = client.responses.create(
 print(response.output_text)
 ```
 
-`OPENAI_API_KEY=dummy` is only a placeholder required by the OpenAI SDK. Unless
-you configure `--api-key`, the local server accepts any incoming API key value.
+`OPENAI_API_KEY=dummy` only satisfies the OpenAI SDK's client-side validation.
+The server accepts any incoming value unless you configure its `--api-key`.
 
-### Use chat completions
+## Why use it
+
+- **OpenAI-compatible:** use existing `openai-python`, LangChain, LiteLLM, and
+  other clients with a configurable base URL.
+- **Codex-backed:** requests use the Codex access associated with your ChatGPT
+  login instead of OpenAI Platform API credentials.
+- **Go runtime:** fast startup, low resident memory, a single server executable,
+  and no Python web stack.
+- **Broad API coverage:** Responses, Chat Completions, streaming, tools,
+  structured outputs, image input, image generation, audio transcription, and
+  locally stored compatibility objects.
+- **Local by default:** the server binds to `127.0.0.1`, validates Codex auth
+  before listening, and supports an incoming API key when remote access is
+  required.
+- **Portable:** binary wheels cover Linux, macOS, and Windows on x86_64 and
+  ARM64; Docker and direct Go builds are also supported.
+
+This project does not raise or bypass Codex or ChatGPT plan limits. It is not
+the official OpenAI Platform API. Use it only with accounts you are authorized
+to use, and do not expose it publicly or resell access.
+
+## Installation and execution
+
+Choose one of these paths:
+
+| Method | Host requirements | Server runtime |
+| --- | --- | --- |
+| `uvx openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
+| `docker compose up --build -d` | Docker, Codex login | Go on Alpine Linux |
+| Build from source | Go 1.23+, Codex login | Locally built Go executable |
+
+### Run with `uvx`
+
+Published wheels contain the Go executable for:
+
+- Linux x86_64 and ARM64
+- macOS Intel and Apple silicon
+- Windows x86_64 and ARM64
+
+Run without a permanent installation:
+
+```console
+$ uvx openai-api-server-via-codex
+```
+
+Or install the launcher and bundled executable on your user tool path:
+
+```console
+$ uv tool install openai-api-server-via-codex
+$ openai-api-server-via-codex --version
+```
+
+There is no Python server fallback and no generic source distribution. On an
+unsupported platform, build the Go executable directly.
+
+### Run with Docker
+
+The production image builds the server from source and copies only the static
+Go executable and CA certificates into a small Alpine runtime. Python and the
+Go toolchain are absent from the final server image.
+
+```console
+$ docker compose run --rm --service-ports codex-login  # only if auth.json is missing
+$ docker compose up --build -d
+$ curl http://127.0.0.1:18080/healthz
+```
+
+The server runs as a non-root user and mounts `~/.codex` read-write so refreshed
+tokens can be saved. See [the Docker guide](docs/docker.md) for login methods,
+permissions, configuration, and plain `docker run` usage.
+
+### Build your own Go binary
+
+After `v0.2.0` is published, Go can download, build, and install the command
+directly from its GitHub module path:
+
+```console
+$ go install github.com/hotchpotch/openai-api-server-via-codex/cmd/openai-api-server-via-codex@latest
+$ "$(go env GOPATH)/bin/openai-api-server-via-codex" --version
+```
+
+The executable is installed under `GOBIN`, or under `$(go env GOPATH)/bin`
+when `GOBIN` is unset.
+
+To build from a checkout instead:
+
+```console
+$ go build -trimpath -o ./bin/openai-api-server-via-codex ./cmd/openai-api-server-via-codex
+$ ./bin/openai-api-server-via-codex --version
+$ ./bin/openai-api-server-via-codex serve
+```
+
+This path does not require Python or `uv`. See
+[Building the Go binary from source](docs/build-from-source.md) for version
+stamping, installation, Windows commands, static builds, and cross-compilation.
+
+## Authentication and security
+
+The server borrows a Codex ChatGPT login, normally from
+`~/.codex/auth.json`. `serve` and `start` validate the file before binding the
+HTTP port. Invalid, missing, expired, or unrefreshable credentials fail startup
+with a redacted error.
+
+Select another auth file when needed:
+
+```console
+$ openai-api-server-via-codex --auth-json /path/to/auth.json
+$ OPENAI_VIA_CODEX_AUTH_JSON=/path/to/auth.json openai-api-server-via-codex
+```
+
+The incoming OpenAI-compatible API key is separate from Codex authentication.
+Protect `/v1/...` routes when clients can reach the server over a network:
+
+```console
+$ openai-api-server-via-codex \
+    --host 0.0.0.0 \
+    --api-key local-secret
+```
+
+`/healthz` remains unauthenticated. Incoming API keys, cookies, and
+`Authorization` headers are never forwarded to the Codex backend.
+
+<details>
+<summary><strong>More OpenAI client examples</strong></summary>
+
+### Chat Completions
 
 ```python
 chat = client.chat.completions.create(
@@ -120,7 +187,7 @@ chat = client.chat.completions.create(
 print(chat.choices[0].message.content)
 ```
 
-### Stream a response
+### Streaming Responses
 
 ```python
 stream = client.responses.create(
@@ -135,7 +202,42 @@ for event in stream:
         print(event.delta, end="")
 ```
 
-### Generate an image
+### Streaming Chat Completions
+
+```python
+stream = client.chat.completions.create(
+    model="gpt-5.6-luna",
+    messages=[{"role": "user", "content": "Stream a short reply."}],
+    stream=True,
+    reasoning_effort="low",
+)
+
+for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        print(chunk.choices[0].delta.content, end="")
+```
+
+### Image input
+
+```python
+response = client.responses.create(
+    model="gpt-5.6-luna",
+    input=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Describe this image."},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,...",
+                },
+            ],
+        }
+    ],
+)
+```
+
+### Image generation
 
 ```python
 import base64
@@ -148,146 +250,68 @@ image = client.images.generate(
     output_format="png",
 )
 
-png_bytes = base64.b64decode(image.data[0].b64_json)
 with open("ramen.png", "wb") as file:
-    file.write(png_bytes)
+    file.write(base64.b64decode(image.data[0].b64_json))
 ```
 
-The image generation endpoint returns OpenAI-compatible base64 image results.
-The server does not host generated files or return temporary image URLs. Do not
-pass `response_format`; GPT image generations are returned as `b64_json`.
+Image generation returns `data[].b64_json`; URL results, image editing, and
+streamed partial images are not implemented.
 
-### Run as a background daemon
+### Tool calling
+
+```python
+response = client.responses.create(
+    model="gpt-5.6-luna",
+    input="What is the weather in Tokyo?",
+    tools=[
+        {
+            "type": "function",
+            "name": "get_weather",
+            "description": "Get the weather for a city.",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        }
+    ],
+)
+```
+
+</details>
+
+<details>
+<summary><strong>Background daemon commands</strong></summary>
+
+The Go executable implements foreground and daemon lifecycle commands:
 
 ```console
-$ uvx openai-api-server-via-codex start
-Codex auth preflight OK: /home/you/.codex/auth.json (account_id_present=True)
-Started openai-api-server-via-codex on 127.0.0.1:18080
-PID: 12345
-PID file: /home/you/.config/openai-api-server-via-codex/run/server-127.0.0.1-18080.pid
-Log file: /home/you/.config/openai-api-server-via-codex/run/server-127.0.0.1-18080.log
+$ openai-api-server-via-codex start
+$ openai-api-server-via-codex status
+$ openai-api-server-via-codex stop
+```
 
-$ uvx openai-api-server-via-codex status
-$ uvx openai-api-server-via-codex stop
+PID and log files default to:
+
+```text
+~/.config/openai-api-server-via-codex/run/
 ```
 
 On Linux and macOS, `stop` drains in-flight HTTP requests up to
-`--stop-timeout`. Windows stops the daemon process tree on a best-effort basis;
-in-flight streams may be interrupted.
+`--stop-timeout`. Windows terminates the daemon process tree on a best-effort
+basis, so an active stream may be interrupted.
 
-Expose the server to other machines only with access control:
+Docker should run `serve` in the foreground and let the container runtime manage
+restarts; do not use `start` inside a container.
 
-```console
-$ uvx openai-api-server-via-codex start \
-  --host 0.0.0.0 \
-  --api-key local-secret
-```
+</details>
 
-Then connect clients to `http://<server-host>:18080/v1` and pass
-`api_key="local-secret"` to the OpenAI client.
+<details>
+<summary><strong>API surface and compatibility details</strong></summary>
 
-## Installation options
-
-Run without installing:
-
-```console
-$ uvx openai-api-server-via-codex
-```
-
-Install the command onto your standard user tool path:
-
-```console
-$ uv tool install openai-api-server-via-codex
-$ openai-api-server-via-codex --help
-```
-
-Upgrade an installed tool:
-
-```console
-$ uv tool upgrade openai-api-server-via-codex
-$ openai-api-server-via-codex --version
-```
-
-For development from this checkout:
-
-```console
-$ uv sync --dev
-$ uv run openai-api-server-via-codex --help
-```
-
-### Run with Docker
-
-From this checkout, run the server with nothing but Docker installed:
-
-```console
-$ docker compose run --rm --service-ports codex-login   # once, if ~/.codex/auth.json does not exist yet
-$ docker compose up --build -d
-$ curl http://127.0.0.1:18080/healthz
-```
-
-The Compose setup bind-mounts `~/.codex` so the container borrows the Codex
-login and writes refreshed tokens back. The one-shot `codex-login` helper
-bundles the official Codex CLI for interactive login when Codex is not
-installed on the host; an existing login also works as-is, since `auth.json`
-can be copied from any machine. See [docs/docker.md](docs/docker.md) for the
-login options, configuration, plain `docker run` usage, and permission notes
-for Linux hosts.
-
-## Requirements
-
-- `uv`
-- A working Codex login, usually at `~/.codex/auth.json`
-
-Published wheels include the Go server for Linux (x86_64/ARM64), macOS
-(Intel/Apple silicon), and Windows (x86_64/ARM64). `uvx` installs one small
-platform wheel and its lightweight Python entry point immediately replaces
-itself with the bundled Go executable. A system Go installation is not needed.
-There is no Python server fallback. Source installations and platforms without
-a published wheel require building `./cmd/openai-api-server-via-codex` with Go.
-
-Use an explicit Codex auth file when needed:
-
-```console
-$ uvx openai-api-server-via-codex --auth-json ~/.codex/auth.json
-$ OPENAI_VIA_CODEX_AUTH_JSON=~/.codex/auth.json uvx openai-api-server-via-codex
-```
-
-`serve` and `start` validate the Codex auth file before starting. If the file is
-missing, not valid JSON, not a ChatGPT Codex auth file, missing tokens, expired
-without a refresh token, or fails token refresh, the server exits before it
-binds the HTTP port.
-
-> [!NOTE]
-> The incoming OpenAI-compatible API key and the Codex auth file are separate.
-> `--api-key` protects this local server. `--auth-json` selects the Codex
-> credentials used by the server when it calls the Codex backend.
-
-## Disclaimer
-
-Use this project at your own risk. It is not the official OpenAI Platform API
-and is not endorsed or supported by OpenAI. It forwards requests to the Codex
-HTTP backend used by the Codex CLI and ChatGPT subscription flow instead of
-`api.openai.com`.
-
-For reference, Simon Willison describes this route as a
-[semi-official OpenAI Codex backdoor API](https://simonwillison.net/2026/Apr/23/gpt-5-5/).
-That matches this project's practical model: it uses the ChatGPT/Codex backend
-available through your own logged-in Codex credentials, and that backend may
-change without notice.
-
-Use this server only with accounts and subscriptions you are allowed to use. Do
-not use it to evade limits, share account access, resell access, or power
-third-party services. Do not expose it to untrusted networks without `--api-key`
-or another access control layer, and follow OpenAI's
-[Terms of Use](https://openai.com/policies/terms-of-use/) and
-[Usage Policies](https://openai.com/policies/usage-policies/).
-
-## API endpoints
-
-The endpoints below are implemented locally for OpenAI-compatible behavior.
-They normalize Codex HTTP requests, translate streaming events, and maintain
-the in-memory compatibility stores used by Responses and stored Chat
-Completions.
+### Implemented endpoints
 
 | Method | Path |
 | --- | --- |
@@ -307,98 +331,54 @@ Completions.
 | `DELETE` | `/v1/chat/completions/{completion_id}` |
 | `GET` | `/v1/chat/completions/{completion_id}/messages` |
 
-For any other `/v1/...` request, the server falls back to a best-effort proxy:
-it forwards the method, path, query string, safe OpenAI-style request headers,
-and raw request body to the Codex HTTP backend, then returns the upstream status,
-body, and safe response headers. This allows endpoints that are not implemented
-locally, including Codex-specific or newly added OpenAI-style paths, to be tried
-without adding a compatibility shim for each endpoint.
+Unknown `/v1/...` requests use a best-effort fallback proxy. The Go server
+forwards the method, path, query, safe OpenAI-style headers, and body with its
+own Codex credentials. Upstream support still determines whether such a request
+returns `2xx`, `400`, `403`, or `404`.
 
-The fallback proxy uses the local Codex credentials selected by this server. It
-does not forward the incoming `Authorization` header, local `--api-key`, or
-cookies to Codex HTTP. Successful behavior still depends on what the upstream
-Codex HTTP backend accepts for that path; unsupported upstream paths may return
-Codex HTTP errors such as `400`, `403`, or `404`.
+### Compatibility behavior
 
-## Compatibility
-
-The server supports both sync and async `openai-python` clients for the main
-OpenAI APIs:
-
-- `client.responses.create(...)`
-- `client.chat.completions.create(...)`
-
-Supported behavior includes:
-
-- `stream=True` for Responses and Chat Completions
-- `previous_response_id` for Responses, backed by local in-memory context
-- standard Chat Completions multi-turn through the `messages` list
-- function and tool calling, including streaming tool-call arguments
-- image generation through `client.images.generate(...)` with base64 image data
+- sync and async `openai-python` clients
+- non-streaming and streaming Responses and Chat Completions
+- `previous_response_id` backed by bounded local context
+- stored Chat list/retrieve/update/delete/messages APIs
+- Responses retrieve streaming, delete, cancel, and input-token count
+- function/tool calling and streamed tool arguments
 - JSON mode and structured outputs
-- URL and data URL image parts
-- reasoning effort fields where the selected model accepts them
-- stored Chat Completions compatibility APIs backed by local in-memory storage
+- URL and data-URL image input
+- hosted image generation translated through a Codex Responses tool
+- optional incoming API-key authentication
+- bounded request concurrency and in-memory stores
 
-For Codex compatibility, backend requests are normalized to streaming
-Responses calls with `store=false`, low text verbosity by default, automatic
-tool choice defaults, and `reasoning.encrypted_content` included for reasoning
-context. Public `store=true` behavior is implemented locally.
+At the Codex boundary, requests are normalized to `stream=true`, `store=false`,
+low text verbosity by default, Codex-compatible tool defaults, and encrypted
+reasoning content. Public storage compatibility is implemented in the Go
+server's bounded in-memory stores.
 
-Image generations are implemented by translating `client.images.generate(...)`
-requests into a Codex Responses call with the hosted `image_generation` tool,
-then returning the generated image bytes as `data[].b64_json`. The public image
-model parameter is accepted for OpenAI SDK compatibility, but the backend call
-uses this server's configured Codex model because hosted image generation runs
-inside a Responses request. The endpoint supports non-streaming generation only;
-`response_format`, URL results, streamed partial images, `style`, and
-`client.images.edit(...)` are not implemented. `n` is handled by making one
-Codex image generation call per requested image. Supported GPT image controls
-such as `size`, `quality`, `background`, `moderation`, `output_compression`,
-and `output_format` are forwarded directly into the hosted `image_generation`
-tool spec instead of being rewritten into the prompt. Arbitrary `WIDTHxHEIGHT`
-size strings are accepted and forwarded, though the top-level
-OpenAI-compatible response echoes only SDK-compatible standard sizes.
+Model listing is best-effort. A model can sometimes accept direct requests even
+when it is absent from the upstream catalog returned by `/v1/models`.
 
-> [!NOTE]
-> Model listing is best-effort because the upstream Codex HTTP model catalog can
-> differ from the models that a subscription can actually run. As of
-> 2026-05-06, with a ChatGPT Pro subscription, `gpt-5.3-codex-spark` did not
-> appear in `GET /v1/models` in our live test, but direct requests using
-> `model="gpt-5.3-codex-spark"` succeeded. OpenAI also describes
-> GPT-5.3-Codex-Spark as a research preview for ChatGPT Pro users.
+</details>
 
-## Configuration
+<details>
+<summary><strong>Configuration reference</strong></summary>
 
-Generate a default config file:
+Generate a configuration file:
 
 ```console
-$ uvx openai-api-server-via-codex config-generate
-$ uvx openai-api-server-via-codex config-generate --stdout
+$ openai-api-server-via-codex config-generate
+$ openai-api-server-via-codex config-generate --stdout
 ```
 
-The default config path is:
+The default path is
+`$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml`, falling back to
+`~/.config/openai-api-server-via-codex/config.toml`.
 
-```text
-$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml
-```
-
-If `XDG_CONFIG_HOME` is unset, this becomes:
-
-```text
-~/.config/openai-api-server-via-codex/config.toml
-```
-
-You can also set `OPENAI_VIA_CODEX_CONFIG` or pass `--config` to `serve`,
-`start`, `stop`, and `status`.
-
-Resolution order is:
+Settings resolve in this order:
 
 ```text
 CLI flag -> environment variable -> config file -> default
 ```
-
-Example config:
 
 ```toml
 [server]
@@ -421,324 +401,112 @@ drop_params = []
 
 [daemon]
 state_dir = "~/.config/openai-api-server-via-codex/run"
-# pid_file = "/path/to/openai-api-server-via-codex.pid"
-# log_file = "/path/to/openai-api-server-via-codex.log"
 stop_timeout = 10.0
 ```
 
-### `server.host`
+### Important server settings
 
-Default: `127.0.0.1`
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `server.host` | `127.0.0.1` | HTTP bind address |
+| `server.port` | `18080` | HTTP port |
+| `server.default_model` | `gpt-5.6-luna` | Model used when a request omits one |
+| `server.api_key` | unset | Protect incoming `/v1/...` requests |
+| `server.max_stored_items` | `1000` | Bound local Responses/Chat stores; `0` disables |
+| `server.max_concurrent_requests` | `10` | Bound full Codex requests/streams; `0` disables |
+| `server.timeout` | `300.0` | Codex backend timeout in seconds |
+| `server.verbose` | `false` | Enable redacted Go application diagnostics |
+| `codex.auth_json` | `~/.codex/auth.json` | Codex OAuth file |
+| `compat.drop_params` | `[]` | Top-level request fields removed before forwarding |
 
-```console
-$ uvx openai-api-server-via-codex --host 0.0.0.0
-```
-
-### `server.default_model`
-
-Default: `gpt-5.6-luna`
-
-This model is used when a Responses or Chat Completions request omits `model`.
-Set `default_model`, `OPENAI_VIA_CODEX_DEFAULT_MODEL`, or `--default-model` to
-override it. Explicit request models are forwarded unchanged.
-
-> [!IMPORTANT]
-> If you bind to `0.0.0.0`, set `--api-key` or put the server behind another
-> trusted access-control layer. Otherwise anyone who can reach the port can use
-> your Codex credentials through this server.
-
-### `server.port`
-
-Default: `18080`
+CLI, environment, and config examples:
 
 ```console
-$ uvx openai-api-server-via-codex --port 18080
+$ openai-api-server-via-codex --port 19090 --verbose
+$ OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS=20 openai-api-server-via-codex
+$ openai-api-server-via-codex --config ./config.toml
 ```
 
-### `server.api_key`
-
-Default: unset
-
-When unset, incoming `Authorization` headers are accepted and ignored.
-
-When set, `/v1/...` routes require:
-
-```http
-Authorization: Bearer <api_key>
-```
-
-`/healthz` remains unauthenticated.
-
-```console
-$ uvx openai-api-server-via-codex --api-key local-secret
-$ OPENAI_VIA_CODEX_API_KEY=local-secret uvx openai-api-server-via-codex
-```
-
-`start` passes the API key to the background `serve` process through the child
-environment, not through the child command-line arguments.
-
-### `server.max_stored_items`
-
-Default: `1000`
-
-This bounds the in-memory stores used for Responses context and stored Chat
-Completions compatibility. Older entries are evicted first.
-
-Set `0` to disable these stores. That also disables local
-`previous_response_id` chaining and stored-object retrieval.
-
-### `server.max_concurrent_requests`
-
-Default: `10`
-
-This bounds concurrent Codex backend calls. Streaming responses hold a slot
-until the stream ends.
-
-Set `0` to remove the local concurrency cap.
-
-### `server.timeout`
-
-Default: `300.0`
-
-Timeout in seconds for Codex backend calls.
-
-### `server.verbose`
-
-Default: `false`
-
-Verbose mode enables Go server debug logs and application diagnostics:
-
-- resolved settings
-- request start/end status and latency
-- endpoint-level summaries
-- model-list fallback reasons
-- Codex HTTP stream/auth activity
-
-Raw auth tokens are not logged. Token-like values in upstream errors or query
-strings are redacted to a short prefix plus `******`.
-
-```console
-$ uvx openai-api-server-via-codex --verbose
-$ uvx openai-api-server-via-codex status --verbose
-$ uvx openai-api-server-via-codex stop --verbose
-```
-
-### `codex.auth_json`
-
-Default: `~/.codex/auth.json`
-
-Selects the Codex ChatGPT OAuth credentials that the server borrows when it
-calls the Codex backend.
-
-### `compat.drop_params`
-
-Default: no rules
-
-Use this setting when the Codex backend rejects otherwise valid top-level
-OpenAI-compatible request parameters:
+Use `drop_params` only for parameters known to be rejected by the Codex
+backend:
 
 ```toml
 [compat]
 drop_params = ["temperature", "top_p"]
 ```
 
-Configured fields are silently removed from requests for every model before the
-Responses request is sent to Codex, for both native Responses and translated
-Chat Completions requests. Only configure parameters known to be unsupported by
-the Codex backend.
+Verbose logs include resolved settings, request lifecycle, endpoint summaries,
+and Codex stream/auth activity. Raw credentials and token-like values are
+redacted.
 
-### `daemon.state_dir`
+</details>
 
-Default:
+<details>
+<summary><strong>Development and test guide</strong></summary>
 
-```text
-~/.config/openai-api-server-via-codex/run
-```
+The HTTP server, backend integration, auth, configuration, stores, daemon, and
+redaction logic are all implemented in Go under `cmd/` and `internal/`.
+Python is not a server implementation: it is used only for the `uvx` launcher,
+the official `openai-python` consumer contract, and release tooling.
 
-`start`, `stop`, and `status` resolve PID and log paths from this directory by
-default. The default PID/log stem is derived from `host` and `port`.
+Requirements for full repository development:
 
-If `stop` or `status` is run without `--host` and the exact default PID file is
-missing, the command looks for a single PID file matching the selected port. If
-multiple matches exist, it refuses to guess and asks for `--host` or
-`--pid-file`.
+- Go 1.23 or newer
+- Python 3.10 or newer
+- `uv`
 
-## Recipes
-
-### Require an API key
-
-```console
-$ uvx openai-api-server-via-codex --api-key local-secret
-```
-
-```python
-from openai import OpenAI
-
-client = OpenAI()
-```
-
-Run the client with `OPENAI_BASE_URL=http://127.0.0.1:18080/v1` and
-`OPENAI_API_KEY=local-secret`.
-
-### Start on all interfaces
-
-```console
-$ uvx openai-api-server-via-codex start \
-  --host 0.0.0.0 \
-  --port 18080 \
-  --api-key local-secret \
-  --verbose
-```
-
-### Use a custom config
-
-```console
-$ uvx openai-api-server-via-codex config-generate --config ./config.toml
-$ uvx openai-api-server-via-codex --config ./config.toml
-```
-
-### Use Chat Completions streaming
-
-```python
-stream = client.chat.completions.create(
-    model="gpt-5.6-luna",
-    messages=[{"role": "user", "content": "Stream a short reply."}],
-    stream=True,
-    reasoning_effort="low",
-)
-
-for chunk in stream:
-    if chunk.choices and chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="")
-```
-
-### Send image input
-
-```python
-response = client.responses.create(
-    model="gpt-5.6-luna",
-    input=[
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": "Describe this image."},
-                {
-                    "type": "input_image",
-                    "image_url": "data:image/png;base64,...",
-                },
-            ],
-        }
-    ],
-)
-```
-
-### Use tool calling
-
-```python
-response = client.chat.completions.create(
-    model="gpt-5.6-luna",
-    messages=[{"role": "user", "content": "What is the weather in Tokyo?"}],
-    tools=[
-        {
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "description": "Get weather for a city.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {"city": {"type": "string"}},
-                    "required": ["city"],
-                },
-            },
-        }
-    ],
-)
-```
-
-## Development
-
-Run the full local validation suite:
+Run the complete deterministic validation suite:
 
 ```console
 $ uv run tox
 ```
 
-Run focused tests while changing request/response compatibility:
-
-```console
-$ uv run python -m pytest tests/test_openai_client_contract.py -q
-$ go test ./internal/app
-$ uv run ruff check .
-$ uv run ty check
-```
-
-### Go runtime and client compatibility gate
-
-The only HTTP server implementation is Go under
-`cmd/openai-api-server-via-codex`. Build and run it directly with:
-
-```console
-$ go build -o ./openai-api-server-via-codex-go ./cmd/openai-api-server-via-codex
-$ ./openai-api-server-via-codex-go serve
-```
-
-The process-level contract suite starts the real Go binary, puts a deterministic
-fake Codex HTTP backend behind it, and calls every supported route through
-`openai-python`:
-
-```console
-$ uv run python -m pytest tests/test_openai_client_contract.py -q
-$ go test ./...
-```
-
-Go also owns deterministic HTTP/SSE contracts and a spawned-binary E2E suite.
-These exercise auth refresh, downstream request normalization, Responses and
-Chat lifecycle APIs, streaming, tools, structured outputs, Images, Audio,
-fallback proxying, redaction, concurrency limits, dynamic-port startup, and
-graceful shutdown:
+Focused Go validation:
 
 ```console
 $ go test ./internal/app
 $ go test ./test/e2e -v
+$ go test ./...
+$ go vet ./...
 $ go test -race ./...
 ```
 
-New public API behavior should be added to both the Go contract suite and the
-`openai-python` process suite. The former is the runtime's fast canonical
-wire-level contract; the latter verifies the public SDK surface independently.
-
-For proxy CPU, memory, latency, and throughput measurements, see
-[the historical runtime performance report](docs/performance.md).
-
-Run live Codex integration tests only when real network/auth testing is
-intended:
+OpenAI SDK consumer compatibility:
 
 ```console
-$ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q
-$ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
-$ RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
+$ uv run python -m pytest tests/test_openai_client_contract.py -q
 ```
 
-The live tests use the machine's existing Codex credentials and make real model
-requests. The main live integration test also exercises image generation through
-`client.images.generate(...)`: it decodes the returned base64 PNG, verifies the
-image dimensions from the PNG header, then sends the generated image back through
-Responses vision input and checks that the model describes the expected subject.
-The Go-authored live matrix starts a freshly built Go binary on an OS-assigned
-port and covers the same major API categories without a Python test runner. Set
-`OPENAI_VIA_CODEX_TEST_MODEL` to override its default live model.
+Real Codex tests are opt-in because they use the current login, network, model
+allowance, and image quota:
 
-The post-removal ownership and test invariants are documented in
-[the Go migration test policy](docs/go-migration.md).
+```console
+$ RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
+$ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q -s
+$ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
+```
 
-## Release
+See also:
 
-The package is released to PyPI through GitHub Actions Trusted Publishing. Use
-the release checklist in [docs/release.md](docs/release.md).
+- [Building the Go binary from source](docs/build-from-source.md)
+- [Go runtime test policy](docs/go-migration.md)
+- [Historical Go/Python performance comparison](docs/performance.md)
+- [Release process](docs/release.md)
 
-The recommended production path is PyPI Trusted Publishing from GitHub Actions
-with the `pypi` environment. Local release work should build, inspect, and smoke
-test the artifacts before the tag is pushed.
+</details>
+
+## Disclaimer
+
+Use this project at your own risk. It is not the official OpenAI Platform API
+and is not endorsed or supported by OpenAI. It forwards requests to the Codex
+HTTP backend used by the Codex CLI and ChatGPT subscription flow instead of
+`api.openai.com`; that backend may change without notice.
+
+Use the server only with accounts and subscriptions you are authorized to use.
+Do not evade limits, share account access, resell access, or expose the service
+to untrusted networks without authentication. Follow OpenAI's
+[Terms of Use](https://openai.com/policies/terms-of-use/) and
+[Usage Policies](https://openai.com/policies/usage-policies/).
 
 ## License
 
@@ -760,4 +528,4 @@ Apache License 2.0. See [LICENSE](LICENSE).
 
 - Yuichi Tateno ([@hotchpotch](https://github.com/hotchpotch))
 
-<img src="https://secon.dev/images/profile_usa.png" width="64" height="64" alt="Yuichi Tateno" />
+<img height="160" src="https://storage.googleapis.com/secons-site-images/other/blog_images/secon_icon_nendo.webp" alt="Yuichi Tateno" />

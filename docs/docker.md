@@ -25,6 +25,10 @@ $ curl http://127.0.0.1:18080/healthz
 $ curl http://127.0.0.1:18080/v1/models
 ```
 
+The published host address defaults to loopback. To bind only to a specific
+trusted interface, set `OPENAI_VIA_CODEX_BIND_HOST` when starting Compose. Do
+not use `0.0.0.0` unless exposure on every host interface is intentional.
+
 Use it with any OpenAI client:
 
 ```python
@@ -143,7 +147,9 @@ $ docker run --rm -p 127.0.0.1:18080:18080 \
 ## Notes
 
 - The runtime image executes the statically linked Go server directly; Python
-  is not installed in the server image.
+  and the Go toolchain are not installed in the server image. The image is
+  based on Alpine Linux and uses BusyBox `wget` for its healthcheck, avoiding a
+  separate HTTP-client package.
 - Both the server and the `codex-login` helper run as non-root users with
   UID/GID 1000. On Linux hosts where your user is not 1000:1000, set
   `user: "<uid>:<gid>"` in `docker-compose.yml` (or `--user` for `docker run`)

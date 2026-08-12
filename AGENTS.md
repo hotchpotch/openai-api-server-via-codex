@@ -7,14 +7,22 @@ This repository implements an OpenAI-compatible Go HTTP server that forwards
 HTTP backend credentials. Python is only the `uvx` launcher and an
 `openai-python` test client; do not add a Python server fallback.
 
+The stable `0.2.0` release is the documented breaking-change boundary for the
+Go-only server runtime. The `0.1.6b1` prerelease is its evaluation build. Do not
+describe Python as a server runtime in current documentation or examples;
+versioned historical release notes and the historical performance comparison
+may retain accurate references to the removed implementation.
+
 Keep compatibility behavior aligned with the official `openai-python` client.
 When changing request or response shapes, add or update tests that exercise the
 client API rather than only raw HTTP payloads.
 
 ## Environment
 
-- Use Python 3.10 or newer.
-- Use `uv` for dependency management and command execution.
+- Use Go 1.23 or newer for the server, CLI, and Go tests.
+- Use Python 3.10 or newer only for the `uvx` launcher, OpenAI SDK consumer
+  tests, and packaging/release tooling.
+- Use `uv` for Python development dependencies and validation commands.
 - The default foreground server binds to `127.0.0.1:18080`.
 - Do not commit local virtualenv, cache, tox, pytest, or editor artifacts.
 - The live integration tests use the machine's existing Codex authentication.
@@ -77,6 +85,24 @@ go run ./cmd/openai-api-server-via-codex serve
 go run ./cmd/openai-api-server-via-codex serve --port 18080
 go run ./cmd/openai-api-server-via-codex serve --verbose
 go run ./cmd/openai-api-server-via-codex serve --config ~/.config/openai-api-server-via-codex/config.toml
+```
+
+Build a standalone development executable without Python:
+
+```bash
+go build -trimpath -o ./bin/openai-api-server-via-codex ./cmd/openai-api-server-via-codex
+./bin/openai-api-server-via-codex --version
+```
+
+Keep [docs/build-from-source.md](docs/build-from-source.md) aligned with Go
+version requirements, build flags, supported targets, and CLI behavior.
+
+Build and run the Go-only Docker server:
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose down
 ```
 
 Generate a config template:
@@ -163,6 +189,9 @@ python scripts/release-notes.py vX.Y.Z
   `python scripts/release-notes.py vX.Y.Z` to generate the GitHub Release body.
   Keep `tests/test_release_notes.py` aligned with the release-note file
   selection rules.
+- Keep README and active documents Go-first. Explain the remaining Python code
+  only as launcher, SDK-test, or release tooling. Preserve versioned historical
+  release notes rather than rewriting project history.
 - For PyPI releases, prefer Trusted Publishing through
   `.github/workflows/release.yml` and the `pypi` GitHub environment. Do not add
   PyPI tokens to repository secrets unless a deliberate fallback release path is

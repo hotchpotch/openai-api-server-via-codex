@@ -36,11 +36,11 @@ EXPOSE 1456
 ENTRYPOINT ["codex-login-entrypoint"]
 CMD ["login"]
 
-# Runtime stage: only the static Go server, CA roots, and the healthcheck client.
+# Runtime stage: only the static Go server, CA roots, and Alpine's BusyBox tools.
 # Keep this stage last so a plain `docker build` produces the server image.
 FROM alpine:3.22 AS runtime
 
-RUN apk add --no-cache ca-certificates curl \
+RUN apk add --no-cache ca-certificates \
     && addgroup -g 1000 app \
     && adduser -D -u 1000 -G app app
 
@@ -57,7 +57,7 @@ EXPOSE 18080
 
 # /healthz stays unauthenticated even when an API key is configured.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl --fail --silent --show-error --max-time 4 \
+    CMD wget -q -T 4 -O /dev/null \
     "http://127.0.0.1:${OPENAI_VIA_CODEX_PORT}/healthz" || exit 1
 
 ENTRYPOINT ["openai-api-server-via-codex"]

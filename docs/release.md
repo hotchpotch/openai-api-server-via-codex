@@ -5,6 +5,11 @@ PyPI project is already configured with a Trusted Publisher, and the repository
 uses the `pypi` GitHub environment for release approval. Do not add PyPI API
 tokens to GitHub secrets for the normal release path.
 
+Stable `0.2.0` is the documented breaking-change release for the Go-only server
+runtime. Release notes must state that the Python HTTP server and fallback no
+longer exist, while the dependency-free Python package remains as the `uvx`
+launcher for bundled platform executables.
+
 ## Release Notes
 
 Keep release notes under `docs/releases/`.

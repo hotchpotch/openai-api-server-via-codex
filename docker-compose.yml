@@ -6,9 +6,9 @@ services:
     image: openai-api-server-via-codex:local
     container_name: openai-api-server-via-codex
     ports:
-      # Bound to loopback only, matching the non-Docker default. Change to
-      # "18080:18080" to expose the server on all host interfaces.
-      - "127.0.0.1:18080:18080"
+      # Bound to loopback by default, matching the non-Docker default. Set the
+      # host address explicitly to publish only on another trusted interface.
+      - "${OPENAI_VIA_CODEX_BIND_HOST:-127.0.0.1}:18080:18080"
     volumes:
       # The server borrows the host Codex login (run `codex login` first) and
       # writes refreshed tokens back, so this mount must stay read-write.
