@@ -15,8 +15,8 @@ into a binary, container image, source archive, or repository.
 
 ## Install directly from GitHub
 
-After stable `v0.2.0` is published, Go can download the module, build the
-command, and install it without cloning the repository:
+Go can download the module, build the command, and install it without cloning
+the repository:
 
 ```console
 $ go install github.com/hotchpotch/openai-api-server-via-codex/cmd/openai-api-server-via-codex@latest

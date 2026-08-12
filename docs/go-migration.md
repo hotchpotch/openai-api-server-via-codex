@@ -1,8 +1,7 @@
 # Go runtime test policy
 
 The published and source server runtime is Go. Stable release `0.2.0` is the
-documented breaking-change boundary; `0.1.6b2` is the current prerelease used to
-evaluate the same Go-only architecture. The Python package remains only as the
+documented breaking-change boundary. The Python package remains only as the
 `uvx` installation/launch shim and as an `openai-python` test consumer. There
 is no Python HTTP implementation or fallback.
 

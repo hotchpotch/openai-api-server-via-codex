@@ -5,15 +5,12 @@ ChatGPT login. The server itself is a standalone Go executable; clients can use
 the standard Responses and Chat Completions APIs by changing their base URL.
 
 > [!IMPORTANT]
-> **Breaking change planned for v0.2.0:** stable releases from `0.2.0` onward
-> start the server implemented in Go. The former Python/FastAPI HTTP server and
-> Python fallback have been removed. The Python package remains only as a small
-> `uvx` launcher that selects the bundled Go executable. The `0.1.6b2` beta
-> previews this migration before the stable `0.2.0` release.
+> **Breaking change in v0.2.0:** the server is now implemented in Go. The former
+> Python/FastAPI HTTP server and Python fallback have been removed. The Python
+> package remains only as a small `uvx` launcher that selects the bundled Go
+> executable.
 
 ![Start the Go server with uvx, then call the OpenAI-compatible Responses API](https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png)
-
-_Preview of the planned `v0.2.0` stable command and output._
 
 ## Quick start
 
@@ -23,31 +20,23 @@ server with either `uvx` or Docker.
 ### `uvx`
 
 ```console
-$ uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex
-2026/08/12 12:34:56 openai-api-server-via-codex 0.1.6b2 (Go) listening on http://127.0.0.1:18080
+$ uvx openai-api-server-via-codex
+2026/08/12 12:34:56 openai-api-server-via-codex 0.2.0 (Go) listening on http://127.0.0.1:18080
 ```
-
-The explicit version selects the current Go beta instead of the stable Python
-release. After `0.2.0` is published, use `uvx openai-api-server-via-codex`.
 
 ### Docker
 
-The public image needs no registry login. For `v0.1.6b2` on amd64, the registry
-manifest contains about 7 MB of compressed layers and the local Docker image is
-about 21 MB. Idle memory use is a few MiB (roughly 4–7 MiB in local
-measurements); exact values depend on the architecture, host, and container
-runtime.
-
-Until stable `v0.2.0` is published, use the beta tag:
+The public image needs no registry login. On amd64, the registry manifest
+contains about 7 MB of compressed layers and the local Docker image is about
+21 MB. Idle memory use is a few MiB (roughly 4–7 MiB in local measurements);
+exact values depend on the release, architecture, host, and container runtime.
 
 ```console
-$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 $ docker run --rm -p 127.0.0.1:18080:18080 \
     -v ~/.codex:/home/app/.codex \
-    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
+    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
-
-For stable releases, replace `v0.1.6b2` with `latest`.
 
 Point an OpenAI client at the local endpoint:
 
@@ -98,8 +87,8 @@ Choose one of these paths:
 
 | Method | Host requirements | Server runtime |
 | --- | --- | --- |
-| `uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
-| `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2` | Docker, Codex login | Public Go/Alpine image (~7 MB compressed/~21 MB local on amd64; a few MiB idle memory) |
+| `uvx openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
+| `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest` | Docker, Codex login | Public Go/Alpine image (~7 MB compressed/~21 MB local on amd64; a few MiB idle memory) |
 | `docker compose up --build -d` | Docker, Codex login | Go on Alpine Linux |
 | Build from source | Go 1.23+, Codex login | Locally built Go executable |
 
@@ -111,20 +100,18 @@ Published wheels contain the Go executable for:
 - macOS Intel and Apple silicon
 - Windows x86_64 and ARM64
 
-Run the current beta without a permanent installation:
+Run without a permanent installation:
 
 ```console
-$ uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex
+$ uvx openai-api-server-via-codex
 ```
 
-Or install this beta's launcher and bundled executable on your user tool path:
+Or install the launcher and bundled executable on your user tool path:
 
 ```console
-$ uv tool install openai-api-server-via-codex==0.1.6b2
+$ uv tool install openai-api-server-via-codex
 $ openai-api-server-via-codex --version
 ```
-
-After stable `0.2.0` is published, the version qualifier can be omitted.
 
 There is no Python server fallback and no generic source distribution. On an
 unsupported platform, build the Go executable directly.
@@ -135,20 +122,18 @@ The production image builds the server from source and copies only the static
 Go executable and CA certificates into a small Alpine runtime. Python and the
 Go toolchain are absent from the final server image.
 
-Linux x86_64 and ARM64 images are published at
-`ghcr.io/hotchpotch/openai-api-server-via-codex`. Prereleases publish only
-their exact version tag and do not create or move `latest`. The package is
-public, so pulls do not require a registry login.
+Stable Linux x86_64 and ARM64 images are published at
+`ghcr.io/hotchpotch/openai-api-server-via-codex`. `latest` tracks the newest
+stable release, while exact tags such as `v0.2.0` provide reproducible
+deployments. Prereleases publish only their exact version tag and do not move
+`latest`. The package is public, so pulls do not require a registry login.
 
 ```console
-$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 $ docker run --rm -p 127.0.0.1:18080:18080 \
     -v ~/.codex:/home/app/.codex \
-    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
+    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
-
-Starting with stable `v0.2.0`, both its exact tag and `latest` will be
-available; `latest` will then track the newest stable release.
 
 Or build the same runtime image from this checkout:
 
@@ -164,8 +149,8 @@ permissions, configuration, and plain `docker run` usage.
 
 ### Build your own Go binary
 
-After `v0.2.0` is published, Go can download, build, and install the command
-directly from its GitHub module path:
+Go can download, build, and install the command directly from its GitHub module
+path:
 
 ```console
 $ go install github.com/hotchpotch/openai-api-server-via-codex/cmd/openai-api-server-via-codex@latest

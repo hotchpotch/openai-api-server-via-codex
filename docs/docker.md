@@ -48,23 +48,22 @@ $ docker compose down
 
 ## Published image
 
-Releases are published to GitHub Container Registry as a multi-platform public
-Linux image for x86_64 and ARM64. No registry login is required. Until stable
-`v0.2.0` is published, use the current beta's exact tag:
+Stable releases are published to GitHub Container Registry as a multi-platform
+public Linux image for x86_64 and ARM64. No registry login is required:
 
 ```console
-$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
 
-Every release has its exact Git tag. Prereleases publish only that tag and do
-not create or replace `latest`. Starting with stable `v0.2.0`, `latest` will
-track the newest stable release.
+`latest` tracks the newest stable release. Every release also has its exact Git
+tag, for example `ghcr.io/hotchpotch/openai-api-server-via-codex:v0.2.0`.
+Prereleases publish only their exact tag and never replace `latest`.
 
 Use the published image with the repository's Compose configuration without
 building locally:
 
 ```console
-$ export OPENAI_VIA_CODEX_IMAGE=ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
+$ export OPENAI_VIA_CODEX_IMAGE=ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 $ docker compose pull openai-api-server-via-codex
 $ docker compose up --no-build -d
 ```
@@ -74,7 +73,7 @@ Or use plain Docker:
 ```console
 $ docker run --rm -p 127.0.0.1:18080:18080 \
     -v ~/.codex:/home/app/.codex \
-    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
+    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
 
 ## Getting a Codex login
