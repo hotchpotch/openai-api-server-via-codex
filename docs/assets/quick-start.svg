@@ -1,38 +1,48 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" role="img" aria-labelledby="title desc">
-  <title id="title">OpenAI API Server via Codex terminal quick start</title>
-  <desc id="desc">A split terminal shows the server starting with uvx, a curl request returning Hello from Codex, and the corresponding 200 OK server log.</desc>
+  <title id="title">OpenAI API Server via Codex</title>
+  <desc id="desc">A macOS terminal showing the Go server starting with uvx, followed by an OpenAI-compatible Responses API request and successful response.</desc>
 
-  <rect width="1400" height="900" rx="22" fill="#121019"/>
-  <path d="M22 0h1356a22 22 0 0 1 22 22v42H0V22A22 22 0 0 1 22 0z" fill="#252130"/>
-  <circle cx="36" cy="32" r="8" fill="#ff5f57"/>
-  <circle cx="64" cy="32" r="8" fill="#febc2e"/>
-  <circle cx="92" cy="32" r="8" fill="#28c840"/>
-  <text x="700" y="39" text-anchor="middle" fill="#b8afc5" font-family="Inter, ui-sans-serif, system-ui, sans-serif" font-size="17">openai-api-server-via-codex — quick start</text>
+  <defs>
+    <linearGradient id="titlebar" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2d2938"/>
+      <stop offset="1" stop-color="#252130"/>
+    </linearGradient>
+  </defs>
 
-  <g font-family="SFMono-Regular, Menlo, Monaco, Consolas, monospace" font-size="23">
-    <text x="46" y="112" fill="#81778f">server</text>
-    <text x="46" y="158" fill="#73dfa5">$</text>
-    <text x="78" y="158" fill="#f7f3fb">uvx openai-api-server-via-codex</text>
-    <text x="46" y="204" fill="#b8afc5">openai-api-server-via-codex 0.1.6b2 (Go)</text>
-    <text x="46" y="248" fill="#dfd473">listening on</text>
-    <text x="206" y="248" fill="#73dfa5">http://127.0.0.1:18080</text>
-    <text x="46" y="326" fill="#b8afc5">POST /v1/responses</text>
-    <text x="316" y="326" fill="#73dfa5" font-weight="700">200 OK</text>
+  <rect width="1400" height="900" rx="24" fill="#100e16"/>
+  <path d="M24 0h1352a24 24 0 0 1 24 24v44H0V24A24 24 0 0 1 24 0z" fill="url(#titlebar)"/>
+  <circle cx="38" cy="34" r="8.5" fill="#ff5f57"/>
+  <circle cx="67" cy="34" r="8.5" fill="#febc2e"/>
+  <circle cx="96" cy="34" r="8.5" fill="#28c840"/>
+  <text x="700" y="42" text-anchor="middle" fill="#c3bacd" font-family="Menlo, Monaco, Consolas, monospace" font-size="18">openai-api-server-via-codex</text>
 
-    <line x1="0" y1="438" x2="1400" y2="438" stroke="#40384a" stroke-width="2"/>
+  <g font-family="Menlo, Monaco, Consolas, monospace" font-size="30" font-weight="400">
+    <text x="48" y="117" fill="#8f849d" font-size="20">SERVER</text>
 
-    <text x="46" y="490" fill="#81778f">client</text>
-    <text x="46" y="536" fill="#73dfa5">$</text>
-    <text x="78" y="536" fill="#f7f3fb">curl -s http://127.0.0.1:18080/v1/responses \</text>
-    <text x="84" y="580" fill="#f7f3fb">-H </text>
-    <text x="142" y="580" fill="#dfd473">"Content-Type: application/json"</text>
-    <text x="600" y="580" fill="#f7f3fb"> \</text>
-    <text x="84" y="624" fill="#f7f3fb">-d </text>
-    <text x="142" y="624" fill="#dfd473">'{"model":"gpt-5.6-luna","input":"Reply with exactly: Hello from Codex!"}' \</text>
-    <text x="84" y="668" fill="#f7f3fb">| jq -r </text>
-    <text x="214" y="668" fill="#dfd473">'.output[0].content[0].text'</text>
+    <text x="48" y="166" fill="#72e6a6">$</text>
+    <text x="82" y="166" fill="#f7f3fb">uvx openai-api-server-via-codex</text>
 
-    <text x="46" y="752" fill="#73dfa5">Hello from Codex!</text>
-    <rect x="46" y="784" width="13" height="27" fill="#f7f3fb" opacity="0.9"/>
+    <text x="48" y="218" fill="#c3bacd">openai-api-server-via-codex 0.2.0 (Go)</text>
+    <text x="48" y="262" fill="#72e6a6">listening on http://127.0.0.1:18080</text>
+
+    <rect x="48" y="309" width="516" height="58" rx="11" fill="#191620" stroke="#332e3d"/>
+    <text x="70" y="346" fill="#c3bacd">POST /v1/responses</text>
+    <circle cx="429" cy="338" r="5" fill="#72e6a6"/>
+    <text x="446" y="346" fill="#72e6a6" font-weight="700">200 OK</text>
+
+    <line x1="0" y1="414" x2="1400" y2="414" stroke="#40394a" stroke-width="2"/>
+
+    <text x="48" y="471" fill="#8f849d" font-size="20">CLIENT</text>
+
+    <text x="48" y="520" fill="#72e6a6">$</text>
+    <text x="82" y="520" fill="#f7f3fb">curl -s http://127.0.0.1:18080/v1/responses &#92;</text>
+
+    <text x="82" y="568" fill="#eedf70">-H 'Content-Type: application/json' &#92;</text>
+
+    <text x="82" y="616" fill="#eedf70">-d '{"model":"gpt-5.6-luna","input":"Say hello from Codex."}'</text>
+    <text x="82" y="664" fill="#eedf70">| jq -r '.output[0].content[0].text'</text>
+
+    <rect x="48" y="708" width="1304" height="104" rx="12" fill="#191620" stroke="#332e3d"/>
+    <text x="72" y="771" fill="#72e6a6">Hello from Codex!</text>
   </g>
 </svg>
