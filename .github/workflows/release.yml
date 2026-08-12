@@ -25,6 +25,12 @@ jobs:
         with:
           python-version-file: ".python-version"
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -70,13 +76,18 @@ jobs:
         run: |
           rm -rf dist
           uv build --no-sources
+          base_wheel="$(ls dist/*-py3-none-any.whl)"
+          uv run python scripts/build-platform-wheels.py \
+            --wheel "${base_wheel}" \
+            --output-dir dist \
+            --version "${{ steps.version.outputs.version }}"
 
       - name: Check package metadata
         run: uv run twine check --strict dist/*
 
       - name: Smoke test packaged console command
         run: |
-          wheel="$(ls dist/*.whl)"
+          wheel="$(ls dist/*manylinux_2_17_x86_64.whl)"
           uv run --with "$wheel" --no-project openai-api-server-via-codex --help
 
       - name: Upload distributions

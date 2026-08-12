@@ -36,7 +36,8 @@ response = client.responses.create(model="gpt-5.6-luna", input="Hello")
 - **Local by default.** It binds to `127.0.0.1` and reads your existing
   `~/.codex/auth.json`. Credentials go to the Codex backend and nowhere else.
 - **One command.** `uvx` runs it without installing anything permanent, and
-  `start`/`stop`/`status` manage it as a background daemon.
+  supported platform wheels contain a standalone Go server; `start`/`stop`/
+  `status` manage it as a background daemon.
 
 ## Use cases
 
@@ -231,9 +232,15 @@ for Linux hosts.
 
 ## Requirements
 
-- Python 3.10+
 - `uv`
 - A working Codex login, usually at `~/.codex/auth.json`
+
+Published wheels include the Go server for Linux (x86_64/ARM64), macOS
+(Intel/Apple silicon), and Windows (x86_64/ARM64). `uvx` installs one small
+platform wheel and its lightweight Python entry point immediately replaces
+itself with the bundled Go executable. A system Go installation is not needed.
+Python 3.10+ remains the development/reference runtime and the fallback when a
+supported platform wheel is unavailable.
 
 Use an explicit Codex auth file when needed:
 
@@ -661,6 +668,36 @@ $ uv run ruff check .
 $ uv run ty check
 ```
 
+### Go runtime and parity gate
+
+The packaged runtime on supported platforms is the Go HTTP server under
+`cmd/openai-api-server-via-codex`. The Python implementation remains in the
+repository as an executable reference contract during the migration. Build
+and run Go directly with:
+
+```console
+$ go build -o ./openai-api-server-via-codex-go ./cmd/openai-api-server-via-codex
+$ ./openai-api-server-via-codex-go serve
+```
+
+The process-level contract suite starts the Python and Go servers separately,
+puts the same deterministic fake Codex HTTP backend behind each one, and calls
+both through `openai-python`:
+
+```console
+$ uv run python -m pytest tests/test_cross_runtime_contract.py -q
+$ go test ./...
+```
+
+New public API behavior should be added to this shared suite as well as to the
+focused implementation tests. This keeps Python and Go behavior comparable
+until the Python implementation is removed, without tying the API contract to
+either runtime.
+
+For proxy CPU, memory, latency, and throughput measurements, see
+[the runtime performance report](docs/performance.md). The benchmark command is
+`uv run python scripts/benchmark-runtimes.py`.
+
 Run live Codex integration tests only when real network/auth testing is
 intended:
 
@@ -668,6 +705,9 @@ intended:
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
 ```
+
+Set `OPENAI_VIA_CODEX_TEST_RUNTIME=go` to run those same live tests against a
+freshly built Go server instead of the Python server.
 
 The live tests use the machine's existing Codex credentials and make real model
 requests. The main live integration test also exercises image generation through

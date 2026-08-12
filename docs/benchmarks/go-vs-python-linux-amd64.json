@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "measured_at": "2026-08-12T02:24:11Z",
+  "machine": {
+    "os": "Linux-6.17.0-1017-oem-x86_64-with-glibc2.39",
+    "architecture": "x86_64",
+    "cpu": "AMD Ryzen 9 7950X 16-Core Processor",
+    "logical_cpus": 32,
+    "python": "3.10.18",
+    "go": "go version go1.23.5 linux/amd64"
+  },
+  "configuration": {
+    "requests_per_scenario": 500,
+    "concurrency": 32,
+    "max_stored_items": 0,
+    "max_concurrent_requests": 0,
+    "backend": "deterministic local SSE fake"
+  },
+  "results": [
+    {
+      "runtime": "python",
+      "scenario": "responses_nonstream",
+      "requests": 500,
+      "concurrency": 32,
+      "startup_ms": 337.09,
+      "idle_rss_mib": 58.52,
+      "final_rss_mib": 303.99,
+      "peak_rss_mib": 303.99,
+      "cpu_seconds": 6.52,
+      "cpu_percent_one_core": 100.45,
+      "elapsed_seconds": 6.4907,
+      "throughput_rps": 77.03,
+      "latency_p50_ms": 385.85,
+      "latency_p95_ms": 647.83
+    },
+    {
+      "runtime": "go",
+      "scenario": "responses_nonstream",
+      "requests": 500,
+      "concurrency": 32,
+      "startup_ms": 9.82,
+      "idle_rss_mib": 8.33,
+      "final_rss_mib": 19.74,
+      "peak_rss_mib": 19.74,
+      "cpu_seconds": 0.2,
+      "cpu_percent_one_core": 33.28,
+      "elapsed_seconds": 0.601,
+      "throughput_rps": 831.89,
+      "latency_p50_ms": 42.91,
+      "latency_p95_ms": 53.83
+    },
+    {
+      "runtime": "python",
+      "scenario": "chat_stream",
+      "requests": 500,
+      "concurrency": 32,
+      "startup_ms": 325.2,
+      "idle_rss_mib": 58.75,
+      "final_rss_mib": 261.18,
+      "peak_rss_mib": 261.18,
+      "cpu_seconds": 6.51,
+      "cpu_percent_one_core": 100.68,
+      "elapsed_seconds": 6.4662,
+      "throughput_rps": 77.32,
+      "latency_p50_ms": 380.98,
+      "latency_p95_ms": 587.11
+    },
+    {
+      "runtime": "go",
+      "scenario": "chat_stream",
+      "requests": 500,
+      "concurrency": 32,
+      "startup_ms": 10.17,
+      "idle_rss_mib": 8.34,
+      "final_rss_mib": 17.89,
+      "peak_rss_mib": 17.89,
+      "cpu_seconds": 0.23,
+      "cpu_percent_one_core": 29.65,
+      "elapsed_seconds": 0.7757,
+      "throughput_rps": 644.54,
+      "latency_p50_ms": 45.43,
+      "latency_p95_ms": 87.7
+    }
+  ]
+}

@@ -26,7 +26,7 @@ def test_console_entry_point_is_declared() -> None:
 
     assert (
         pyproject["project"]["scripts"]["openai-api-server-via-codex"]
-        == "openai_api_server_via_codex.server:main"
+        == "openai_api_server_via_codex.launcher:main"
     )
 
 

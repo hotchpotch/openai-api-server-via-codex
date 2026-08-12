@@ -1,7 +1,11 @@
 include LICENSE
 include README.md
+include go.mod
 include pyproject.toml
+recursive-include cmd *.go
+recursive-include internal *.go
 recursive-include openai_api_server_via_codex *.py
+include scripts/build-platform-wheels.py
 exclude main.py
 recursive-exclude tests *
 recursive-exclude docs *

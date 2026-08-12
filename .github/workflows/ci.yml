@@ -11,6 +11,33 @@ permissions:
   contents: read
 
 jobs:
+  go-native:
+    name: Go native (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
+      - name: Run native Go tests
+        run: go test ./...
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Smoke test native command
+        run: go run ./cmd/openai-api-server-via-codex --version
+
   validate:
     name: Validate
     runs-on: ubuntu-latest
@@ -24,6 +51,12 @@ jobs:
         with:
           python-version-file: ".python-version"
 
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache: true
+
       - name: Install uv
         uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
@@ -34,3 +67,17 @@ jobs:
 
       - name: Run validation suite
         run: uv run tox
+
+      - name: Build and smoke-test platform wheels
+        run: |
+          mkdir -p "${RUNNER_TEMP}/wheel-test"
+          uv build --wheel --no-sources --out-dir "${RUNNER_TEMP}/wheel-test"
+          base_wheel="$(ls "${RUNNER_TEMP}"/wheel-test/*-py3-none-any.whl)"
+          version="$(uv run python -c 'import openai_api_server_via_codex; print(openai_api_server_via_codex.__version__)')"
+          uv run python scripts/build-platform-wheels.py \
+            --wheel "${base_wheel}" \
+            --output-dir "${RUNNER_TEMP}/wheel-test" \
+            --version "${version}"
+          uv run twine check --strict "${RUNNER_TEMP}"/wheel-test/*.whl
+          wheel="$(ls "${RUNNER_TEMP}"/wheel-test/*manylinux_2_17_x86_64.whl)"
+          uv run --with "${wheel}" --no-project openai-api-server-via-codex --version

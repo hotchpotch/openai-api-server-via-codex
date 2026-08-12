@@ -153,6 +153,7 @@ activemq-data/
 .env
 .envrc
 .venv
+openai-api-server-via-codex-go
 env/
 venv/
 ENV/
