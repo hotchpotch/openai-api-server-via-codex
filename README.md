@@ -8,7 +8,7 @@ the standard Responses and Chat Completions APIs by changing their base URL.
 > **Breaking change planned for v0.2.0:** stable releases from `0.2.0` onward
 > start the server implemented in Go. The former Python/FastAPI HTTP server and
 > Python fallback have been removed. The Python package remains only as a small
-> `uvx` launcher that selects the bundled Go executable. The `0.1.6b1` beta
+> `uvx` launcher that selects the bundled Go executable. The `0.1.6b2` beta
 > previews this migration before the stable `0.2.0` release.
 
 ![Start the Go server with uvx, then call the OpenAI-compatible Responses API](https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png)
@@ -22,13 +22,13 @@ server with either `uvx` or Docker.
 
 ```console
 $ uvx openai-api-server-via-codex
-2026/08/12 12:34:56 openai-api-server-via-codex 0.2.0 (Go) listening on http://127.0.0.1:18080
+2026/08/12 12:34:56 openai-api-server-via-codex 0.1.6b2 (Go) listening on http://127.0.0.1:18080
 ```
 
 Until `0.2.0` is published, select the Go beta explicitly:
 
 ```console
-$ uvx --from openai-api-server-via-codex==0.1.6b1 openai-api-server-via-codex
+$ uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex
 ```
 
 ### Docker
@@ -40,13 +40,13 @@ the exact value depends on the host and container runtime).
 Until stable `v0.2.0` is published, use the beta tag:
 
 ```console
-$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b1
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
 $ docker run --rm -p 127.0.0.1:18080:18080 \
     -v ~/.codex:/home/app/.codex \
-    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b1
+    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
 ```
 
-For stable releases, replace `v0.1.6b1` with `latest`.
+For stable releases, replace `v0.1.6b2` with `latest`.
 
 Point an OpenAI client at the local endpoint:
 

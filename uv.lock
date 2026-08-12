@@ -637,7 +637,7 @@ wheels = [
 
 [[package]]
 name = "openai-api-server-via-codex"
-version = "0.1.6b1"
+version = "0.1.6b2"
 source = { editable = "." }
 
 [package.dev-dependencies]
