@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -167,12 +168,14 @@ func TestAuthProviderRefreshesExpiredTokenOnceConcurrently(t *testing.T) {
 	if tokens["refresh_token"] != "refresh-new" || tokens["access_token"] != refreshedAccess {
 		t.Fatalf("refreshed auth = %#v", document)
 	}
-	stat, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if mode := stat.Mode().Perm(); mode != 0600 {
-		t.Fatalf("refreshed auth mode = %o", mode)
+	if runtime.GOOS != "windows" {
+		stat, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := stat.Mode().Perm(); mode != 0600 {
+			t.Fatalf("refreshed auth mode = %o", mode)
+		}
 	}
 }
 
