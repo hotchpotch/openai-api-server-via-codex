@@ -39,7 +39,7 @@
 
     <text x="82" y="568" fill="#eedf70">-H 'Content-Type: application/json' &#92;</text>
 
-    <text x="82" y="616" fill="#eedf70">-d '{"model":"gpt-5.6-luna","input":"Say hello from Codex."}'</text>
+    <text x="82" y="616" fill="#eedf70">-d '{"model":"gpt-5.6-luna","input":"Say hello from Codex."}' &#92;</text>
     <text x="82" y="664" fill="#eedf70">| jq -r '.output[0].content[0].text'</text>
 
     <rect x="48" y="708" width="1304" height="104" rx="12" fill="#191620" stroke="#332e3d"/>

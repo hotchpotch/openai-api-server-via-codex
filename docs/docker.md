@@ -48,23 +48,23 @@ $ docker compose down
 
 ## Published image
 
-Stable releases are published to GitHub Container Registry as a multi-platform
-public Linux image for x86_64 and ARM64. No registry login is required to pull
-it:
+Releases are published to GitHub Container Registry as a multi-platform public
+Linux image for x86_64 and ARM64. No registry login is required. Until stable
+`v0.2.0` is published, use the current beta's exact tag:
 
 ```console
-$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
 ```
 
-`latest` is updated only by a stable release. Every release also has its exact
-Git tag, for example `ghcr.io/hotchpotch/openai-api-server-via-codex:v0.2.0`.
-Prereleases publish the exact tag but never replace `latest`.
+Every release has its exact Git tag. Prereleases publish only that tag and do
+not create or replace `latest`. Starting with stable `v0.2.0`, `latest` will
+track the newest stable release.
 
 Use the published image with the repository's Compose configuration without
 building locally:
 
 ```console
-$ export OPENAI_VIA_CODEX_IMAGE=ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+$ export OPENAI_VIA_CODEX_IMAGE=ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
 $ docker compose pull openai-api-server-via-codex
 $ docker compose up --no-build -d
 ```
@@ -74,7 +74,7 @@ Or use plain Docker:
 ```console
 $ docker run --rm -p 127.0.0.1:18080:18080 \
     -v ~/.codex:/home/app/.codex \
-    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
 ```
 
 ## Getting a Codex login
@@ -199,6 +199,10 @@ $ docker run --rm -p 127.0.0.1:18080:18080 \
   `user: "<uid>:<gid>"` in `docker-compose.yml` (or `--user` for `docker run`)
   so the containers can read and update the mounted Codex login. Docker
   Desktop on macOS and Windows handles this automatically.
+- Keep the Codex directory mounted read-write so refreshed credentials can be
+  saved. Avoid running multiple server containers or host processes against the
+  same `auth.json`: refresh tokens may rotate, and simultaneous refresh attempts
+  can leave one process holding obsolete credentials.
 - The daemon subcommands (`start`, `stop`, `status`) are for host installs;
   in Docker the container itself is the daemon, so the image runs `serve` in
   the foreground and Compose manages restarts.

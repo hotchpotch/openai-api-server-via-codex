@@ -13,6 +13,8 @@ the standard Responses and Chat Completions APIs by changing their base URL.
 
 ![Start the Go server with uvx, then call the OpenAI-compatible Responses API](https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png)
 
+_Preview of the planned `v0.2.0` stable command and output._
+
 ## Quick start
 
 Make sure Codex is logged in and `~/.codex/auth.json` exists, then start the Go
@@ -21,21 +23,20 @@ server with either `uvx` or Docker.
 ### `uvx`
 
 ```console
-$ uvx openai-api-server-via-codex
+$ uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex
 2026/08/12 12:34:56 openai-api-server-via-codex 0.1.6b2 (Go) listening on http://127.0.0.1:18080
 ```
 
-Until `0.2.0` is published, select the Go beta explicitly:
-
-```console
-$ uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex
-```
+The explicit version selects the current Go beta instead of the stable Python
+release. After `0.2.0` is published, use `uvx openai-api-server-via-codex`.
 
 ### Docker
 
-The public image needs no registry login. The current amd64 image is only about
-21 MB, and idle memory use is a few MiB (roughly 4–7 MiB in local measurements;
-the exact value depends on the host and container runtime).
+The public image needs no registry login. For `v0.1.6b2` on amd64, the registry
+manifest contains about 7 MB of compressed layers and the local Docker image is
+about 21 MB. Idle memory use is a few MiB (roughly 4–7 MiB in local
+measurements); exact values depend on the architecture, host, and container
+runtime.
 
 Until stable `v0.2.0` is published, use the beta tag:
 
@@ -97,8 +98,8 @@ Choose one of these paths:
 
 | Method | Host requirements | Server runtime |
 | --- | --- | --- |
-| `uvx openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
-| `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest` | Docker, Codex login | Public Go/Alpine image (~21 MB; a few MiB idle memory) |
+| `uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex` | `uv`, Codex login | Bundled Go executable |
+| `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2` | Docker, Codex login | Public Go/Alpine image (~7 MB compressed/~21 MB local on amd64; a few MiB idle memory) |
 | `docker compose up --build -d` | Docker, Codex login | Go on Alpine Linux |
 | Build from source | Go 1.23+, Codex login | Locally built Go executable |
 
@@ -110,18 +111,20 @@ Published wheels contain the Go executable for:
 - macOS Intel and Apple silicon
 - Windows x86_64 and ARM64
 
-Run without a permanent installation:
+Run the current beta without a permanent installation:
 
 ```console
-$ uvx openai-api-server-via-codex
+$ uvx --from openai-api-server-via-codex==0.1.6b2 openai-api-server-via-codex
 ```
 
-Or install the launcher and bundled executable on your user tool path:
+Or install this beta's launcher and bundled executable on your user tool path:
 
 ```console
-$ uv tool install openai-api-server-via-codex
+$ uv tool install openai-api-server-via-codex==0.1.6b2
 $ openai-api-server-via-codex --version
 ```
+
+After stable `0.2.0` is published, the version qualifier can be omitted.
 
 There is no Python server fallback and no generic source distribution. On an
 unsupported platform, build the Go executable directly.
@@ -132,19 +135,20 @@ The production image builds the server from source and copies only the static
 Go executable and CA certificates into a small Alpine runtime. Python and the
 Go toolchain are absent from the final server image.
 
-Stable releases are published for Linux x86_64 and ARM64 at
-`ghcr.io/hotchpotch/openai-api-server-via-codex`. `latest` always points to the
-newest stable release; an exact Git tag such as `v0.2.0` remains available for
-reproducible deployments. Prereleases publish only their exact version tag and
-do not move `latest`. The package is public, so pulls do not require a registry
-login.
+Linux x86_64 and ARM64 images are published at
+`ghcr.io/hotchpotch/openai-api-server-via-codex`. Prereleases publish only
+their exact version tag and do not create or move `latest`. The package is
+public, so pulls do not require a registry login.
 
 ```console
-$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
 $ docker run --rm -p 127.0.0.1:18080:18080 \
     -v ~/.codex:/home/app/.codex \
-    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+    ghcr.io/hotchpotch/openai-api-server-via-codex:v0.1.6b2
 ```
+
+Starting with stable `v0.2.0`, both its exact tag and `latest` will be
+available; `latest` will then track the newest stable release.
 
 Or build the same runtime image from this checkout:
 

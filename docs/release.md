@@ -138,8 +138,7 @@ $ python scripts/release-notes.py vX.Y.Z
 ```
 
 If `docs/releases/HEAD.md` has content beyond the heading, the script prints
-that draft. Otherwise it prints `docs/releases/vX.Y.Z.md`. This matches the
-release-note workflow used in `sqlite-vaporetto`.
+that draft. Otherwise it prints `docs/releases/vX.Y.Z.md`.
 
 ## After Publishing
 
