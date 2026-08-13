@@ -10,12 +10,10 @@ talks to Codex clients. This server puts an OpenAI-compatible API in front of
 it, so tools that already speak to `api.openai.com` can use it by changing one
 environment variable.
 
-Within your included Codex usage limits, this means no real OpenAI Platform API
-key and no separate per-token Platform API charge. Plan limits still apply, and
-additional ChatGPT credits may cost extra. See the
-[official Codex pricing](https://learn.chatgpt.com/docs/pricing).
+Within your Codex usage limits, no real OpenAI Platform API key is required,
+and there are no additional per-token charges.
 
-![Start the Go server with uvx, then call the OpenAI-compatible Responses API](https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png)
+<img width="70%" src="https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png" alt="Start the Go server with uvx, then call the OpenAI-compatible Responses API" />
 
 ## Quick start
 
@@ -127,6 +125,11 @@ This server is useful when you want to:
 | Portable distribution | Wheels and archives for Linux, macOS, and Windows on x86_64 and ARM64 |
 | Local-first defaults | Loopback binding, auth preflight, redacted logs, and optional incoming API-key protection |
 | Multiple installation paths | `uvx`, standalone archives, Docker/GHCR, `go install`, or a local source build |
+
+> [!NOTE]
+> Your ChatGPT plan limits still apply. Usage beyond the included Codex
+> allowance may require additional ChatGPT credits, which can cost extra. See
+> the [official Codex pricing](https://learn.chatgpt.com/docs/pricing).
 
 > [!WARNING]
 > This is an unofficial compatibility server, not the OpenAI Platform API. It
@@ -317,7 +320,7 @@ bodies. `--verbose` adds deeper redacted diagnostics.
 | `auth_file_write_failed` in Docker | Mount `/home/app/.codex` read-write and check host UID/GID permissions |
 | Repeated upstream `401` | Check the auth reason logs, refresh the Codex login, and avoid multiple servers sharing rotating credentials |
 | Address already in use | Stop the existing server or choose another port with `--port` |
-| OpenAI SDK rejects an empty key | Set `OPENAI_API_KEY` to a non-secret placeholder such as `dummy-not-a-real-openai-api-key` |
+| An official OpenAI SDK requires `OPENAI_API_KEY` | Some official OpenAI SDK clients, including the Python client, require a non-empty `OPENAI_API_KEY`. Set a harmless placeholder such as `dummy-not-a-real-openai-api-key` to use the library normally with this server. |
 
 > [!TIP]
 > Start with `--verbose` when diagnosing configuration, request routing, or
@@ -666,6 +669,10 @@ $ RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q -s
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
 ```
+
+Releases are prepared on a `release/vX.Y.Z` branch and reviewed through a PR.
+Merging the PR does not publish artifacts; pushing the annotated `vX.Y.Z` tag
+on the merged commit starts the release workflow.
 
 Further documentation:
 
