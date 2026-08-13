@@ -97,19 +97,44 @@ Move the completed changelog from `docs/releases/HEAD.md` to
 # HEAD
 ```
 
-## Tag And Publish
+## Release PR
 
-Commit the release changes, push `main`, create an annotated tag, and push the
-tag:
+Prepare each release on a dedicated branch created from the current
+`origin/main`. Commit the version, finalized release notes, and any related
+documentation together, then push the branch:
 
 ```console
+$ git fetch origin main
+$ git switch -c release/vX.Y.Z origin/main
 $ git status -sb
 $ git add pyproject.toml uv.lock openai_api_server_via_codex/__init__.py tests/test_package_metadata.py README.md docs/releases
-$ git commit -m "Release version X.Y.Z"
-$ git push origin main
-$ git tag -a vX.Y.Z -m "Release vX.Y.Z"
+$ git diff --cached --check
+$ git commit -m "Prepare X.Y.Z release"
+$ git push -u origin release/vX.Y.Z
+```
+
+Open a Draft PR from `release/vX.Y.Z` to `main`. Include the release scope and
+the local artifact-verification results in its body. Mark it ready and merge it
+only after review and all required CI jobs succeed. Do not create the release
+tag from the branch before the PR is merged.
+
+## Tag And Publish
+
+Merging the release PR does **not** publish any artifacts. After merge, fetch
+`main`, identify the exact merge or squash commit reported by the PR, inspect
+it, and create the annotated release tag on that commit:
+
+```console
+$ git fetch origin main
+$ gh pr view <PR-number> --json mergeCommit --jq '.mergeCommit.oid'
+$ git show --stat <merge-commit-sha>
+$ git tag -a vX.Y.Z <merge-commit-sha> -m "Release vX.Y.Z"
 $ git push origin vX.Y.Z
 ```
+
+Pushing the matching `vX.Y.Z` tag starts the release workflow. Do not tag a
+moving `main` reference without first confirming the commit, and never move or
+reuse a published release tag.
 
 The release workflow checks that the tag matches the package version, runs
 `tox`, builds all six Go platform wheels, validates

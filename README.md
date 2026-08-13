@@ -5,6 +5,11 @@
 [![GitHub Release](https://img.shields.io/github/v/release/hotchpotch/openai-api-server-via-codex?include_prereleases)](https://github.com/hotchpotch/openai-api-server-via-codex/releases)
 [![License](https://img.shields.io/github/license/hotchpotch/openai-api-server-via-codex)](LICENSE)
 
+💰 Your ChatGPT subscription includes Codex, but that backend normally only
+talks to Codex clients. This server puts an OpenAI-compatible API in front of
+it, so tools that already speak to `api.openai.com` can use it by changing one
+environment variable.
+
 Within your Codex usage limits, no real OpenAI Platform API key is required,
 and there are no additional per-token charges.
 
@@ -315,7 +320,7 @@ bodies. `--verbose` adds deeper redacted diagnostics.
 | `auth_file_write_failed` in Docker | Mount `/home/app/.codex` read-write and check host UID/GID permissions |
 | Repeated upstream `401` | Check the auth reason logs, refresh the Codex login, and avoid multiple servers sharing rotating credentials |
 | Address already in use | Stop the existing server or choose another port with `--port` |
-| OpenAI SDK rejects an empty key | Set `OPENAI_API_KEY` to a non-secret placeholder such as `dummy-not-a-real-openai-api-key` |
+| An official OpenAI SDK requires `OPENAI_API_KEY` | Some official OpenAI SDK clients, including the Python client, require a non-empty `OPENAI_API_KEY`. Set a harmless placeholder such as `dummy-not-a-real-openai-api-key` to use the library normally with this server. |
 
 > [!TIP]
 > Start with `--verbose` when diagnosing configuration, request routing, or
@@ -664,6 +669,10 @@ $ RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q -s
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
 ```
+
+Releases are prepared on a `release/vX.Y.Z` branch and reviewed through a PR.
+Merging the PR does not publish artifacts; pushing the annotated `vX.Y.Z` tag
+on the merged commit starts the release workflow.
 
 Further documentation:
 

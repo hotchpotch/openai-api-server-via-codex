@@ -190,6 +190,13 @@ python scripts/release-notes.py vX.Y.Z
 - Keep the package version in `pyproject.toml` and
   `openai_api_server_via_codex/__init__.py` aligned. The GitHub Actions release
   workflow expects release tags like `v0.0.1` to match that version exactly.
+- Prepare releases on a `release/vX.Y.Z` branch created from `origin/main`, and
+  merge them through a reviewed PR after the required CI succeeds. Merging the
+  PR alone must not be described as publishing a release.
+- After the release PR is merged, create the annotated `vX.Y.Z` tag on the
+  exact merge or squash commit and push the tag to start the release workflow.
+  Do not tag the unmerged release branch, guess at a moving `main`, or move a
+  published release tag.
 - Keep user-visible release notes under `docs/releases/`. Add draft entries to
   `docs/releases/HEAD.md` while developing, move them to
   `docs/releases/vX.Y.Z.md` for a release, and use
