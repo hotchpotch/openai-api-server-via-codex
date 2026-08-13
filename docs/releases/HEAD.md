@@ -15,3 +15,6 @@
   API, operations, and development references. Clarified that the SDK placeholder
   is not an OpenAI Platform API key and highlighted subscription-backed usage
   without separate Platform API token charges within included Codex limits.
+  Made the opening flow immediately show the value proposition, environment-only
+  client migration, unchanged SDK code, the `v0.2.0` break, and measured Go
+  memory improvements.

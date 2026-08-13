@@ -5,55 +5,79 @@
 [![GitHub Release](https://img.shields.io/github/v/release/hotchpotch/openai-api-server-via-codex?include_prereleases)](https://github.com/hotchpotch/openai-api-server-via-codex/releases)
 [![License](https://img.shields.io/github/license/hotchpotch/openai-api-server-via-codex)](LICENSE)
 
-Run a local OpenAI-compatible API server using the Codex access from your
-ChatGPT login. Existing OpenAI clients can use Responses and Chat Completions
-by changing their base URL.
+💰 Your ChatGPT subscription includes Codex, but that backend normally only
+talks to Codex clients. This server puts an OpenAI-compatible API in front of
+it, so tools that already speak to `api.openai.com` can use it by changing one
+environment variable.
 
-The server is a small standalone Go executable. The Python package is only a
-cross-platform `uvx` launcher for the bundled executable.
-
-> [!TIP]
-> **Already have Codex in your ChatGPT plan?** Within your included Codex usage
-> limits, this server lets OpenAI-compatible clients use that access without a
-> real OpenAI Platform API key or separate per-token Platform API charges. In
-> other words, there is no additional API charge within the included allowance.
-> Plan limits still apply, and extending usage with ChatGPT credits may cost
-> extra. See the [official Codex pricing](https://learn.chatgpt.com/docs/pricing).
-
-> [!IMPORTANT]
-> **Upgrading to v0.2.0:** the HTTP server is now implemented in Go. The former
-> Python/FastAPI server and Python fallback have been removed. See
-> [Building from source](docs/build-from-source.md) if your platform is not
-> covered by a bundled binary.
+Within your included Codex usage limits, this means no real OpenAI Platform API
+key and no separate per-token Platform API charge. Plan limits still apply, and
+additional ChatGPT credits may cost extra. See the
+[official Codex pricing](https://learn.chatgpt.com/docs/pricing).
 
 ![Start the Go server with uvx, then call the OpenAI-compatible Responses API](https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png)
 
 ## Quick start
 
-### 1. Sign in with Codex
-
-Install the [Codex CLI](https://github.com/openai/codex) if needed, then create
-`~/.codex/auth.json`:
+Sign in once if `~/.codex/auth.json` does not exist:
 
 ```console
 $ codex login
 ```
 
-### 2. Start the server
-
-The recommended installation requires only [`uv`](https://docs.astral.sh/uv/):
+Start the server in one terminal. The recommended installation requires only
+[`uv`](https://docs.astral.sh/uv/):
 
 ```console
 $ uvx openai-api-server-via-codex
 ```
 
-The server listens on `http://127.0.0.1:18080` by default. In another terminal,
-confirm that it is healthy:
+Point an existing OpenAI client at it from another terminal:
 
 ```console
-$ curl http://127.0.0.1:18080/healthz
-{"status":"ok"}
+$ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
+$ # This server requires no key by default, but the OpenAI SDK requires a value.
+$ export OPENAI_API_KEY=dummy-not-a-real-openai-api-key
 ```
+
+> [!NOTE]
+> `dummy-not-a-real-openai-api-key` is deliberately **not a real OpenAI API
+> key**. With the default server settings, any non-empty dummy value works: it
+> only satisfies the OpenAI SDK's client-side validation and is not checked by
+> this server. Incoming requests require a real local key only if you start the
+> server with `--api-key`. Codex authentication always uses
+> `~/.codex/auth.json`.
+
+Existing OpenAI SDK code keeps working as written:
+
+```python
+from openai import OpenAI
+
+client = OpenAI()
+response = client.responses.create(
+    model="gpt-5.6-luna",
+    input="Hello",
+)
+print(response.output_text)
+```
+
+Save it as `example.py` and run it without permanently installing the SDK:
+
+```console
+$ uv run --with openai python example.py
+```
+
+> [!IMPORTANT]
+> **Breaking change in v0.2.0:** the HTTP server is now implemented in Go. The
+> former Python/FastAPI server and fallback have been removed; the Python
+> package is now only a small `uvx` launcher for the bundled Go executable.
+
+> [!TIP]
+> **Why Go?** In the recorded Linux proxy benchmark, idle memory fell from about
+> 59 MiB to 8.3 MiB (an **86% reduction**) and peak memory fell from 261–304 MiB
+> to 18–20 MiB (a **93–94% reduction**). Startup fell from roughly 330 ms to
+> 10 ms. See the [benchmark and methodology](docs/performance.md); real model
+> latency is dominated by the upstream Codex service.
 
 <details>
 <summary><strong>Use Docker instead</strong></summary>
@@ -73,50 +97,12 @@ instructions.
 
 </details>
 
-### 3. Call it with the OpenAI SDK
-
-Point the SDK at the local server:
-
-```console
-$ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
-$ export OPENAI_API_KEY=any-dummy-string-no-openai-api-key
-```
-
-> [!NOTE]
-> This is **not a real OpenAI Platform API key**. Do not paste your real key
-> here. With the server's default settings, `OPENAI_API_KEY` may be any non-empty
-> dummy string: it only satisfies the OpenAI SDK's client-side requirement and
-> is not checked by the server. Incoming `/v1/...` requests are authenticated
-> only when the server is started with `--api-key`; in that case, set this value
-> to the configured server key. Upstream Codex authentication always uses
-> `~/.codex/auth.json`.
-
-Create `example.py`:
-
-```python
-from openai import OpenAI
-
-client = OpenAI()
-response = client.responses.create(
-    model="gpt-5.6-luna",
-    input="Reply in one sentence.",
-    reasoning={"effort": "low"},
-)
-print(response.output_text)
-```
-
-Run it without permanently installing the SDK:
-
-```console
-$ uv run --with openai python example.py
-```
-
 <details>
 <summary><strong>PowerShell environment variables</strong></summary>
 
 ```powershell
 $env:OPENAI_BASE_URL = "http://127.0.0.1:18080/v1"
-$env:OPENAI_API_KEY = "any-dummy-string-no-openai-api-key"
+$env:OPENAI_API_KEY = "dummy-not-a-real-openai-api-key"
 uv run --with openai python example.py
 ```
 
@@ -137,7 +123,7 @@ This server is useful when you want to:
 | --- | --- |
 | Subscription-backed access | Use the Codex allowance included in your ChatGPT plan without separate Platform API token charges |
 | OpenAI compatibility | Responses, Chat Completions, streaming, tools, structured output, images, and audio |
-| Small Go runtime | Fast startup, a single executable, and a few MiB of idle memory in local measurements |
+| Small Go runtime | About 8.3 MiB idle RSS and 10 ms startup in the recorded Linux proxy benchmark |
 | Portable distribution | Wheels and archives for Linux, macOS, and Windows on x86_64 and ARM64 |
 | Local-first defaults | Loopback binding, auth preflight, redacted logs, and optional incoming API-key protection |
 | Multiple installation paths | `uvx`, standalone archives, Docker/GHCR, `go install`, or a local source build |
@@ -331,7 +317,7 @@ bodies. `--verbose` adds deeper redacted diagnostics.
 | `auth_file_write_failed` in Docker | Mount `/home/app/.codex` read-write and check host UID/GID permissions |
 | Repeated upstream `401` | Check the auth reason logs, refresh the Codex login, and avoid multiple servers sharing rotating credentials |
 | Address already in use | Stop the existing server or choose another port with `--port` |
-| OpenAI SDK rejects an empty key | Set `OPENAI_API_KEY` to a non-secret placeholder such as `any-dummy-string-no-openai-api-key` |
+| OpenAI SDK rejects an empty key | Set `OPENAI_API_KEY` to a non-secret placeholder such as `dummy-not-a-real-openai-api-key` |
 
 > [!TIP]
 > Start with `--verbose` when diagnosing configuration, request routing, or
