@@ -197,13 +197,17 @@ stamping, installation, Windows commands, static builds, and cross-compilation.
 The server borrows a Codex ChatGPT login, normally from
 `~/.codex/auth.json`. `serve` and `start` validate the file before binding the
 HTTP port. Invalid, missing, expired, or unrefreshable credentials fail startup
-with a redacted error.
+with a redacted error that includes a stable reason code and a suggested action.
 
 The server notices external changes to `auth.json` without a restart. If an
 upstream request receives `401 Unauthorized` before any streaming response has
 started, it discards its credential cache, reloads the file, and retries that
 request once. This covers Codex CLI or another process rotating the token
 between requests; a second `401` is returned without another retry.
+
+Normal logs record local authentication failures, upstream `401` reload/retry
+decisions, and rejected incoming API keys. Credentials, tokens, and upstream
+response bodies are never logged. `--verbose` adds deeper redacted diagnostics.
 
 Select another auth file when needed:
 

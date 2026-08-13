@@ -115,7 +115,7 @@ func TestUnsupportedCommandListsAllPublicCommands(t *testing.T) {
 func TestForegroundServeAllowsPortZeroButDaemonRunRejectsIt(t *testing.T) {
 	missingAuth := filepath.Join(t.TempDir(), "missing-auth.json")
 	err := Run([]string{"serve", "--port", "0", "--auth-json", missingAuth}, "test")
-	if err == nil || !strings.Contains(err.Error(), "authentication preflight") {
+	if err == nil || !strings.Contains(err.Error(), "authentication preflight failed code=auth_file_not_found") {
 		t.Fatalf("serve --port 0 error = %v", err)
 	}
 	err = Run([]string{"daemon-run", "--port", "0", "--auth-json", missingAuth}, "test")

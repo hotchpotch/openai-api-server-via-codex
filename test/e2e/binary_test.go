@@ -34,7 +34,7 @@ func TestGoBinaryForegroundE2E(t *testing.T) {
 			t.Fatal("server started with missing auth")
 		}
 		text := string(output)
-		if !strings.Contains(text, "authentication preflight failed") || strings.Contains(text, startupMarker) {
+		if !strings.Contains(text, "authentication preflight failed code=auth_file_not_found") || !strings.Contains(text, "run `codex login`") || strings.Contains(text, startupMarker) {
 			t.Fatalf("unexpected preflight output: %s", text)
 		}
 	})

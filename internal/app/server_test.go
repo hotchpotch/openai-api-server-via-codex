@@ -39,6 +39,37 @@ func TestAPIKeyProtectsV1ButNotHealth(t *testing.T) {
 	}
 }
 
+func TestIncomingAPIKeyFailureLogsReasonWithoutCredential(t *testing.T) {
+	var output bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&output)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	})
+
+	s := &server{cfg: config{APIKey: "expected-secret"}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	request.Header.Set("Authorization", "Bearer presented-secret")
+	response := httptest.NewRecorder()
+	s.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", response.Code)
+	}
+	logs := output.String()
+	if !strings.Contains(logs, "request.auth.error code=invalid_api_key method=GET path=/v1/models") {
+		t.Fatalf("missing API key rejection log: %s", logs)
+	}
+	for _, secret := range []string{"expected-secret", "presented-secret"} {
+		if strings.Contains(logs, secret) {
+			t.Fatalf("API key leaked in log: %s", logs)
+		}
+	}
+}
+
 func TestStartupLogMessageIsStableForDynamicPorts(t *testing.T) {
 	got := startupLogMessage("test-version", "127.0.0.1:43210")
 	want := "openai-api-server-via-codex test-version (Go) listening on http://127.0.0.1:43210"

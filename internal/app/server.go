@@ -45,7 +45,7 @@ func startupLogMessage(version, address string) string {
 func serve(cfg config, version string) error {
 	b := newBackend(cfg)
 	if _, err := b.auth.borrow(); err != nil {
-		return fmt.Errorf("Codex authentication preflight failed: %w", err)
+		return preflightAuthError(err)
 	}
 	s := &server{cfg: cfg, backend: b, responses: newResponseStore(cfg.MaxStored), chats: newChatStore(cfg.MaxStored)}
 	if cfg.Concurrency > 0 {
@@ -170,6 +170,11 @@ func (s *server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.APIKey != "" && !validBearer(r.Header.Get("Authorization"), s.cfg.APIKey) {
+		log.Printf(
+			"request.auth.error code=invalid_api_key method=%s path=%s",
+			r.Method,
+			redactSensitive(r.URL.Path),
+		)
 		writeError(w, 401, "Incorrect API key provided.", "invalid_request_error", nil, "invalid_api_key")
 		return
 	}

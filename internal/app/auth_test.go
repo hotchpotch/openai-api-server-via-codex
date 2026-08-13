@@ -239,7 +239,7 @@ func TestAuthProviderRejectsExpiredTokenWithoutRefresh(t *testing.T) {
 		"exp": time.Now().Add(-time.Minute).Unix(),
 	}), nil))
 	provider := &authProvider{path: path, refreshClient: noRefreshClient(t)}
-	if _, err := provider.borrow(); err == nil || !strings.Contains(err.Error(), "no refresh token") {
+	if _, err := provider.borrow(); err == nil || authFailureCode(err) != "expired_without_refresh_token" || !strings.Contains(err.Error(), "no refresh token") {
 		t.Fatalf("error = %v", err)
 	}
 }
@@ -285,12 +285,12 @@ func TestAuthProviderReloadsChangedFileAndReadsAccountClaims(t *testing.T) {
 
 func TestAuthProviderRejectsInvalidDocuments(t *testing.T) {
 	tests := []struct {
-		name, contents, message string
+		name, contents, code, message string
 	}{
-		{"invalid JSON", "{not-json", "invalid Codex auth JSON"},
-		{"non-object JSON", "[]", "invalid Codex auth JSON"},
-		{"wrong mode", `{"auth_mode":"api_key","tokens":{"access_token":"token"}}`, "expected Codex auth_mode"},
-		{"missing token", `{"auth_mode":"chatgpt","tokens":{}}`, "no ChatGPT tokens"},
+		{"invalid JSON", "{not-json", "invalid_auth_json", "invalid Codex auth JSON"},
+		{"non-object JSON", "[]", "invalid_auth_json", "invalid Codex auth JSON"},
+		{"wrong mode", `{"auth_mode":"api_key","tokens":{"access_token":"token"}}`, "unsupported_auth_mode", "expected Codex auth_mode"},
+		{"missing token", `{"auth_mode":"chatgpt","tokens":{}}`, "missing_access_token", "no ChatGPT tokens"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -299,10 +299,26 @@ func TestAuthProviderRejectsInvalidDocuments(t *testing.T) {
 				t.Fatal(err)
 			}
 			provider := &authProvider{path: path, refreshClient: noRefreshClient(t)}
-			if _, err := provider.borrow(); err == nil || !strings.Contains(err.Error(), test.message) {
+			if _, err := provider.borrow(); err == nil || authFailureCode(err) != test.code || !strings.Contains(err.Error(), test.message) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestAuthProviderClassifiesMissingAndUnreadableFiles(t *testing.T) {
+	missing := &authProvider{path: filepath.Join(t.TempDir(), "missing.json"), refreshClient: noRefreshClient(t)}
+	if _, err := missing.borrow(); err == nil || authFailureCode(err) != "auth_file_not_found" || !strings.Contains(err.Error(), "run `codex login`") {
+		t.Fatalf("missing error = %v", err)
+	}
+
+	notDirectory := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(notDirectory, []byte("file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	unreadable := &authProvider{path: filepath.Join(notDirectory, "auth.json"), refreshClient: noRefreshClient(t)}
+	if _, err := unreadable.borrow(); err == nil || authFailureCode(err) != "auth_file_unreadable" {
+		t.Fatalf("unreadable error = %v", err)
 	}
 }
 
@@ -314,6 +330,9 @@ func TestAuthRefreshTransportErrorsAreRedacted(t *testing.T) {
 	_, err := provider.refresh(secret)
 	if err == nil {
 		t.Fatal("refresh succeeded")
+	}
+	if authFailureCode(err) != "token_refresh_failed" {
+		t.Fatalf("refresh error code = %q", authFailureCode(err))
 	}
 	if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED]") {
 		t.Fatalf("unredacted error = %q", err)

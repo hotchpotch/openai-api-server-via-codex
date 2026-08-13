@@ -239,6 +239,10 @@ python scripts/release-notes.py vX.Y.Z
   endpoint summaries, model-list fallbacks, and Codex HTTP stream/auth behavior.
   Never log raw auth tokens. Use the shared redaction helpers when logging
   upstream errors, request query strings, or auth-related values.
+- Authentication failures must retain stable reason codes in preflight and
+  runtime logs. Log upstream `401` reload/retry decisions and incoming API-key
+  rejections in normal mode, but never log presented credentials, auth tokens,
+  or upstream response bodies.
 - Emit a redacted request completion/access log for API requests even when
   verbose mode is disabled. Keep routine `/healthz` probes quiet by default and
   include them only in verbose request lifecycle logs.

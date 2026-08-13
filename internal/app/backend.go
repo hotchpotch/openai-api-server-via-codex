@@ -68,6 +68,7 @@ func (b *backend) headers(cred credentials, stream bool, requestID string) http.
 func (b *backend) doAuthenticated(makeRequest func(credentials) (*http.Request, error)) (*http.Response, error) {
 	cred, err := b.auth.borrow()
 	if err != nil {
+		logAuthFailure("request", err)
 		return nil, &backendError{401, err.Error()}
 	}
 	for attempt := 0; attempt < 2; attempt++ {
@@ -79,19 +80,34 @@ func (b *backend) doAuthenticated(makeRequest func(credentials) (*http.Request, 
 		if err != nil {
 			return nil, err
 		}
-		if resp.StatusCode != http.StatusUnauthorized || attempt == 1 {
+		if resp.StatusCode != http.StatusUnauthorized {
 			return resp, nil
 		}
+		if attempt == 1 {
+			log.Printf("codex.auth.unauthorized code=upstream_unauthorized stage=upstream attempt=2 action=return_401")
+			return resp, nil
+		}
+		log.Printf("codex.auth.unauthorized code=upstream_unauthorized stage=upstream attempt=1 action=reload_and_retry")
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 		_ = resp.Body.Close()
 		previousAccessToken := cred.AccessToken
 		cred, err = b.auth.reload()
 		if err != nil {
+			logAuthFailure("reload_after_401", err)
 			return nil, &backendError{401, err.Error()}
 		}
 		b.debugf("codex.auth.reloaded_after_unauthorized credentials_changed=%t", previousAccessToken != cred.AccessToken)
 	}
 	panic("unreachable")
+}
+
+func logAuthFailure(stage string, err error) {
+	log.Printf(
+		"codex.auth.error stage=%s code=%s message=%q",
+		stage,
+		authFailureCode(err),
+		redactSensitive(err.Error()),
+	)
 }
 
 func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {

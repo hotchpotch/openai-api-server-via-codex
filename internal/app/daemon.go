@@ -145,7 +145,7 @@ func sanitizePathPart(value string) string {
 
 func startDaemon(cfg config, paths daemonPaths) error {
 	if _, err := newBackend(cfg).auth.borrow(); err != nil {
-		return fmt.Errorf("Codex authentication preflight failed: %w", err)
+		return preflightAuthError(err)
 	}
 	if pid := readPID(paths.PIDFile); pid > 0 {
 		if processAlive(pid) {

@@ -134,8 +134,9 @@ must remain read-write. Once a valid login exists, no re-login is needed as
 long as the refresh token stays valid.
 
 The `serve` command validates the Codex auth file before binding the port. If
-the file is missing or invalid, the container exits with a redacted error —
-check `docker compose logs` and create a login using one of the paths above.
+the file is missing or invalid, the container exits with a redacted error that
+includes a stable reason code and suggested action. Check `docker compose logs`
+and create a login using one of the paths above.
 
 Changes written to the mounted `auth.json` by another process are picked up
 without restarting the container. If Codex returns `401 Unauthorized` before a
@@ -143,6 +144,10 @@ streaming response begins, the server clears its credential cache, reloads the
 mounted file, and retries the request once. Proxy request bodies are replayed
 unchanged; bodies larger than 1 MiB use a temporary file instead of remaining
 entirely in memory. A second `401` is returned without another retry.
+
+Normal logs record local authentication failures, upstream `401` reload/retry
+decisions, and rejected incoming API keys without logging credentials, tokens,
+or upstream response bodies. Verbose mode adds deeper redacted diagnostics.
 
 ## Configuration
 

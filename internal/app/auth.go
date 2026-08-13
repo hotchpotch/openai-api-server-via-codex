@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,45 @@ import (
 const refreshURL = "https://auth.openai.com/oauth/token"
 const codexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const authRefreshTimeout = 30 * time.Second
+
+const (
+	authCodeFileNotFound          = "auth_file_not_found"
+	authCodeFileUnreadable        = "auth_file_unreadable"
+	authCodeInvalidJSON           = "invalid_auth_json"
+	authCodeUnsupportedMode       = "unsupported_auth_mode"
+	authCodeMissingAccessToken    = "missing_access_token"
+	authCodeExpiredWithoutRefresh = "expired_without_refresh_token"
+	authCodeRefreshFailed         = "token_refresh_failed"
+	authCodeFileWriteFailed       = "auth_file_write_failed"
+	authCodeUnknown               = "authentication_failed"
+)
+
+type authFailure struct {
+	Code    string
+	Message string
+}
+
+func (e *authFailure) Error() string { return e.Message }
+
+func newAuthFailure(code, message string) error {
+	return &authFailure{Code: code, Message: message}
+}
+
+func authFailureCode(err error) string {
+	var failure *authFailure
+	if errors.As(err, &failure) {
+		return failure.Code
+	}
+	return authCodeUnknown
+}
+
+func preflightAuthError(err error) error {
+	return fmt.Errorf(
+		"Codex authentication preflight failed code=%s: %s",
+		authFailureCode(err),
+		redactSensitive(err.Error()),
+	)
+}
 
 type credentials struct{ AccessToken, AccountID string }
 type authCacheEntry struct {
@@ -38,39 +78,51 @@ func (a *authProvider) borrow() (credentials, error) {
 	path := expandHome(a.path)
 	stat, err := os.Stat(path)
 	if err != nil {
-		return credentials{}, fmt.Errorf("Codex auth file not found at %s", path)
+		if errors.Is(err, os.ErrNotExist) {
+			return credentials{}, newAuthFailure(
+				authCodeFileNotFound,
+				fmt.Sprintf("Codex auth file not found at %s; run `codex login`", path),
+			)
+		}
+		return credentials{}, newAuthFailure(
+			authCodeFileUnreadable,
+			fmt.Sprintf("inspect Codex auth file at %s: %s", path, redactSensitive(err.Error())),
+		)
 	}
 	if a.cache != nil && a.cache.Size == stat.Size() && a.cache.ModTime.Equal(stat.ModTime()) && tokenFresh(a.cache.Exp, a.cache.HasExp) {
 		return a.cache.Cred, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return credentials{}, fmt.Errorf("read Codex auth JSON: %w", err)
+		return credentials{}, newAuthFailure(
+			authCodeFileUnreadable,
+			fmt.Sprintf("read Codex auth JSON at %s: %s", path, redactSensitive(err.Error())),
+		)
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return credentials{}, fmt.Errorf("invalid Codex auth JSON at %s", path)
+		return credentials{}, newAuthFailure(authCodeInvalidJSON, fmt.Sprintf("invalid Codex auth JSON at %s; run `codex login` again", path))
 	}
 	if doc["auth_mode"] != "chatgpt" {
-		return credentials{}, fmt.Errorf("expected Codex auth_mode 'chatgpt'")
+		return credentials{}, newAuthFailure(authCodeUnsupportedMode, "expected Codex auth_mode 'chatgpt'; run `codex login` again")
 	}
 	tokens, ok := doc["tokens"].(map[string]any)
 	if !ok || stringValue(tokens["access_token"]) == "" {
-		return credentials{}, fmt.Errorf("no ChatGPT tokens found; run `codex login` first")
+		return credentials{}, newAuthFailure(authCodeMissingAccessToken, "no ChatGPT tokens found; run `codex login` again")
 	}
 	access := stringValue(tokens["access_token"])
 	exp, hasExp := jwtNumber(access, "exp")
 	if !tokenFresh(exp, hasExp) {
 		refresh := stringValue(tokens["refresh_token"])
 		if refresh == "" {
-			return credentials{}, fmt.Errorf("no refresh token available; run `codex login` again")
+			return credentials{}, newAuthFailure(authCodeExpiredWithoutRefresh, "access token expired and no refresh token is available; run `codex login` again")
 		}
 		newTokens, err := a.refresh(refresh)
 		if err != nil {
 			return credentials{}, err
 		}
 		if stringValue(newTokens["access_token"]) == "" {
-			return credentials{}, fmt.Errorf("invalid token refresh response: missing access token")
+			return credentials{}, newAuthFailure(authCodeRefreshFailed, "invalid token refresh response: missing access token; run `codex login` again")
 		}
 		for _, key := range []string{"access_token", "refresh_token", "id_token"} {
 			if newTokens[key] != nil {
@@ -81,14 +133,15 @@ func (a *authProvider) borrow() (credentials, error) {
 		updated, _ := json.MarshalIndent(doc, "", "  ")
 		tmp := path + ".tmp"
 		if err := os.WriteFile(tmp, updated, 0600); err != nil {
-			return credentials{}, err
+			return credentials{}, newAuthFailure(authCodeFileWriteFailed, fmt.Sprintf("write refreshed Codex auth JSON at %s: %s", path, redactSensitive(err.Error())))
 		}
 		if err := os.Rename(tmp, path); err != nil {
-			return credentials{}, err
+			_ = os.Remove(tmp)
+			return credentials{}, newAuthFailure(authCodeFileWriteFailed, fmt.Sprintf("replace refreshed Codex auth JSON at %s: %s", path, redactSensitive(err.Error())))
 		}
 		stat, err = os.Stat(path)
 		if err != nil {
-			return credentials{}, fmt.Errorf("stat refreshed Codex auth JSON: %w", err)
+			return credentials{}, newAuthFailure(authCodeFileWriteFailed, fmt.Sprintf("inspect refreshed Codex auth JSON at %s: %s", path, redactSensitive(err.Error())))
 		}
 		access = stringValue(tokens["access_token"])
 		exp, hasExp = jwtNumber(access, "exp")
@@ -111,16 +164,16 @@ func (a *authProvider) refresh(token string) (map[string]any, error) {
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.refreshClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("token refresh failed: %s", redactSensitive(err.Error()))
+		return nil, newAuthFailure(authCodeRefreshFailed, fmt.Sprintf("token refresh failed: %s", redactSensitive(err.Error())))
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("token refresh failed (HTTP %d)", resp.StatusCode)
+		return nil, newAuthFailure(authCodeRefreshFailed, fmt.Sprintf("token refresh failed (HTTP %d); run `codex login` again", resp.StatusCode))
 	}
 	var result map[string]any
 	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("invalid token refresh response")
+		return nil, newAuthFailure(authCodeRefreshFailed, "invalid token refresh response; run `codex login` again")
 	}
 	return result, nil
 }
