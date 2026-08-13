@@ -8,10 +8,10 @@ HTTP backend credentials. Python is only the `uvx` launcher and an
 `openai-python` test client; do not add a Python server fallback.
 
 The stable `0.2.0` release is the documented breaking-change boundary for the
-Go-only server runtime. The `0.1.6b2` prerelease is its current evaluation
-build. Do not describe Python as a server runtime in current documentation or
-examples; versioned historical release notes and the historical performance
-comparison may retain accurate references to the removed implementation.
+Go-only server runtime. Do not describe Python as a server runtime in current
+documentation or examples; versioned historical release notes and the
+historical performance comparison may retain accurate references to the
+removed implementation.
 
 Keep compatibility behavior aligned with the official `openai-python` client.
 When changing request or response shapes, add or update tests that exercise the
