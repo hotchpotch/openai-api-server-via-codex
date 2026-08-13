@@ -1,23 +1,24 @@
 # syntax=docker/dockerfile:1
 
-# Build stage: install locked dependencies and the project with uv.
-FROM ghcr.io/astral-sh/uv:python3.10-bookworm-slim AS builder
+# Build the production server as a static Go executable.
+FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS server-builder
 
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    UV_PYTHON_DOWNLOADS=0
+WORKDIR /src
 
-WORKDIR /app
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
-# Install dependencies first so they cache independently of source changes.
-COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+COPY cmd ./cmd
+COPY internal ./internal
 
-COPY README.md LICENSE ./
-COPY openai_api_server_via_codex ./openai_api_server_via_codex
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --no-editable
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG VERSION=dev
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" \
+    -o /out/openai-api-server-via-codex ./cmd/openai-api-server-via-codex
 
 # Login helper stage: bundles the official Codex CLI so `codex login` can run
 # in a container without Codex installed on the host. Not part of the default
@@ -38,19 +39,28 @@ EXPOSE 1456
 ENTRYPOINT ["codex-login-entrypoint"]
 CMD ["login"]
 
-# Runtime stage: copy only the virtualenv onto a slim Python base. Keep this
-# stage last so a plain `docker build` produces the server image.
-FROM python:3.10-slim-bookworm AS runtime
+# Runtime stage: only the static Go server, CA roots, and Alpine's BusyBox tools.
+# Keep this stage last so a plain `docker build` produces the server image.
+FROM alpine:3.22 AS runtime
 
-RUN groupadd --gid 1000 app \
-    && useradd --uid 1000 --gid app --create-home app
+ARG VERSION=dev
+ARG REVISION=unknown
+LABEL org.opencontainers.image.title="openai-api-server-via-codex" \
+    org.opencontainers.image.description="OpenAI-compatible proxy server backed by Codex HTTP credentials" \
+    org.opencontainers.image.source="https://github.com/hotchpotch/openai-api-server-via-codex" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.revision="${REVISION}" \
+    org.opencontainers.image.licenses="Apache-2.0"
 
-COPY --from=builder --chown=app:app /app/.venv /app/.venv
+RUN apk add --no-cache ca-certificates \
+    && addgroup -g 1000 app \
+    && adduser -D -u 1000 -G app app
+
+COPY --from=server-builder /out/openai-api-server-via-codex /usr/local/bin/openai-api-server-via-codex
 
 # The Codex login is expected as a bind mount at /home/app/.codex; the server
 # reads auth.json from there and writes refreshed tokens back to it.
-ENV PATH="/app/.venv/bin:$PATH" \
-    CODEX_HOME=/home/app/.codex \
+ENV CODEX_HOME=/home/app/.codex \
     OPENAI_VIA_CODEX_HOST=0.0.0.0 \
     OPENAI_VIA_CODEX_PORT=18080
 
@@ -59,7 +69,8 @@ EXPOSE 18080
 
 # /healthz stays unauthenticated even when an API key is configured.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('OPENAI_VIA_CODEX_PORT', '18080') + '/healthz', timeout=4)"
+    CMD wget -q -T 4 -O /dev/null \
+    "http://127.0.0.1:${OPENAI_VIA_CODEX_PORT}/healthz" || exit 1
 
 ENTRYPOINT ["openai-api-server-via-codex"]
 CMD ["serve"]

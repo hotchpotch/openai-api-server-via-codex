@@ -5,7 +5,8 @@ import json
 import os
 import socket
 import subprocess
-import sys
+import tempfile
+from pathlib import Path
 from typing import Any, cast
 
 import httpx
@@ -266,9 +267,15 @@ async def test_live_codex_http_handles_openai_client_compatibility_matrix() -> N
 
 
 class _RunningServer:
-    def __init__(self, process: subprocess.Popen[str], base_url: str) -> None:
+    def __init__(
+        self,
+        process: subprocess.Popen[str],
+        base_url: str,
+        build_dir: tempfile.TemporaryDirectory[str] | None = None,
+    ) -> None:
         self.process = process
         self.base_url = base_url
+        self.build_dir = build_dir
 
     async def stop(self) -> None:
         self.process.terminate()
@@ -277,20 +284,30 @@ class _RunningServer:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=10)
+        if self.build_dir is not None:
+            self.build_dir.cleanup()
 
 
 async def _start_server() -> _RunningServer:
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
+    configured_port = os.environ.get("OPENAI_VIA_CODEX_TEST_PORT")
+    port = int(configured_port) if configured_port else _free_port()
+    host = os.environ.get("OPENAI_VIA_CODEX_TEST_HOST", "127.0.0.1")
+    base_url = f"http://{host}:{port}"
     env = os.environ.copy()
+    build_dir = tempfile.TemporaryDirectory(prefix="openai-via-codex-go-live-")
+    binary = Path(build_dir.name) / "openai-api-server-via-codex"
+    await asyncio.to_thread(
+        subprocess.run,
+        ["go", "build", "-o", str(binary), "./cmd/openai-api-server-via-codex"],
+        check=True,
+    )
+    command = [str(binary)]
     process = subprocess.Popen(
         [
-            sys.executable,
-            "-m",
-            "openai_api_server_via_codex.server",
+            *command,
             "serve",
             "--host",
-            "127.0.0.1",
+            host,
             "--port",
             str(port),
         ],
@@ -299,7 +316,7 @@ async def _start_server() -> _RunningServer:
         text=True,
         env=env,
     )
-    server = _RunningServer(process, base_url)
+    server = _RunningServer(process, base_url, build_dir)
     try:
         await _wait_for_server(base_url)
     except Exception:

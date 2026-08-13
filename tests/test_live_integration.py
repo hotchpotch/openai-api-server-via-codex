@@ -5,7 +5,8 @@ import base64
 import os
 import socket
 import subprocess
-import sys
+import tempfile
+from pathlib import Path
 
 import httpx
 import pytest
@@ -22,17 +23,25 @@ ONE_PIXEL_PNG_DATA_URL = (
     os.environ.get("RUN_CODEX_LIVE_TESTS") != "1",
     reason="Set RUN_CODEX_LIVE_TESTS=1 to call the real Codex backend.",
 )
-async def test_live_openai_client_requests_through_uvicorn_server() -> None:
-    port = _free_port()
-    base_url = f"http://127.0.0.1:{port}"
+async def test_live_openai_client_requests_through_go_server() -> None:
+    configured_port = os.environ.get("OPENAI_VIA_CODEX_TEST_PORT")
+    port = int(configured_port) if configured_port else _free_port()
+    host = os.environ.get("OPENAI_VIA_CODEX_TEST_HOST", "127.0.0.1")
+    base_url = f"http://{host}:{port}"
+    build_dir = tempfile.TemporaryDirectory(prefix="openai-via-codex-go-live-")
+    binary = Path(build_dir.name) / "openai-api-server-via-codex"
+    await asyncio.to_thread(
+        subprocess.run,
+        ["go", "build", "-o", str(binary), "./cmd/openai-api-server-via-codex"],
+        check=True,
+    )
+    command = [str(binary)]
     process = subprocess.Popen(
         [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "openai_api_server_via_codex.server:app",
+            *command,
+            "serve",
             "--host",
-            "127.0.0.1",
+            host,
             "--port",
             str(port),
         ],
@@ -258,6 +267,7 @@ async def test_live_openai_client_requests_through_uvicorn_server() -> None:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=10)
+        build_dir.cleanup()
 
 
 def _free_port() -> int:
@@ -285,4 +295,4 @@ async def _wait_for_server(base_url: str) -> None:
             except httpx.HTTPError:
                 pass
             await asyncio.sleep(0.1)
-    raise AssertionError("uvicorn server did not become ready")
+    raise AssertionError("runtime server did not become ready")

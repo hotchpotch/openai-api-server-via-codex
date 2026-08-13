@@ -25,6 +25,10 @@ $ curl http://127.0.0.1:18080/healthz
 $ curl http://127.0.0.1:18080/v1/models
 ```
 
+The published host address defaults to loopback. To bind only to a specific
+trusted interface, set `OPENAI_VIA_CODEX_BIND_HOST` when starting Compose. Do
+not use `0.0.0.0` unless exposure on every host interface is intentional.
+
 Use it with any OpenAI client:
 
 ```python
@@ -40,6 +44,36 @@ Follow logs and stop the server:
 ```console
 $ docker compose logs -f
 $ docker compose down
+```
+
+## Published image
+
+Stable releases are published to GitHub Container Registry as a multi-platform
+public Linux image for x86_64 and ARM64. No registry login is required:
+
+```console
+$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+```
+
+`latest` tracks the newest stable release. Every release also has its exact Git
+tag, for example `ghcr.io/hotchpotch/openai-api-server-via-codex:v0.2.0`.
+Prereleases publish only their exact tag and never replace `latest`.
+
+Use the published image with the repository's Compose configuration without
+building locally:
+
+```console
+$ export OPENAI_VIA_CODEX_IMAGE=ghcr.io/hotchpotch/openai-api-server-via-codex:latest
+$ docker compose pull openai-api-server-via-codex
+$ docker compose up --no-build -d
+```
+
+Or use plain Docker:
+
+```console
+$ docker run --rm -p 127.0.0.1:18080:18080 \
+    -v ~/.codex:/home/app/.codex \
+    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
 
 ## Getting a Codex login
@@ -100,8 +134,20 @@ must remain read-write. Once a valid login exists, no re-login is needed as
 long as the refresh token stays valid.
 
 The `serve` command validates the Codex auth file before binding the port. If
-the file is missing or invalid, the container exits with a redacted error —
-check `docker compose logs` and create a login using one of the paths above.
+the file is missing or invalid, the container exits with a redacted error that
+includes a stable reason code and suggested action. Check `docker compose logs`
+and create a login using one of the paths above.
+
+Changes written to the mounted `auth.json` by another process are picked up
+without restarting the container. If Codex returns `401 Unauthorized` before a
+streaming response begins, the server clears its credential cache, reloads the
+mounted file, and retries the request once. Proxy request bodies are replayed
+unchanged; bodies larger than 1 MiB use a temporary file instead of remaining
+entirely in memory. A second `401` is returned without another retry.
+
+Normal logs record local authentication failures, upstream `401` reload/retry
+decisions, and rejected incoming API keys without logging credentials, tokens,
+or upstream response bodies. Verbose mode adds deeper redacted diagnostics.
 
 ## Configuration
 
@@ -120,6 +166,10 @@ block of `docker-compose.yml`, for example:
 - `OPENAI_VIA_CODEX_TIMEOUT`, `OPENAI_VIA_CODEX_MAX_STORED_ITEMS`,
   `OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS` — backend timeout and bounds.
 
+Every API request emits a redacted completion line visible through
+`docker compose logs`; routine healthcheck probes stay quiet. Verbose mode adds
+request-start, configuration, endpoint, backend stream, and auth diagnostics.
+
 Alternatively, mount a `config.toml` and point the server at it:
 
 ```yaml
@@ -133,6 +183,8 @@ default.
 
 ## Plain `docker` (without Compose)
 
+To build locally instead of using the published image:
+
 ```console
 $ docker build -t openai-api-server-via-codex:local .
 $ docker run --rm -p 127.0.0.1:18080:18080 \
@@ -142,13 +194,23 @@ $ docker run --rm -p 127.0.0.1:18080:18080 \
 
 ## Notes
 
+- The runtime image executes the statically linked Go server directly; Python
+  and the Go toolchain are not installed in the server image. The image is
+  based on Alpine Linux and uses BusyBox `wget` for its healthcheck, avoiding a
+  separate HTTP-client package.
 - Both the server and the `codex-login` helper run as non-root users with
   UID/GID 1000. On Linux hosts where your user is not 1000:1000, set
   `user: "<uid>:<gid>"` in `docker-compose.yml` (or `--user` for `docker run`)
   so the containers can read and update the mounted Codex login. Docker
   Desktop on macOS and Windows handles this automatically.
+- Keep the Codex directory mounted read-write so refreshed credentials can be
+  saved. Avoid running multiple server containers or host processes against the
+  same `auth.json`: refresh tokens may rotate, and simultaneous refresh attempts
+  can leave one process holding obsolete credentials.
 - The daemon subcommands (`start`, `stop`, `status`) are for host installs;
   in Docker the container itself is the daemon, so the image runs `serve` in
   the foreground and Compose manages restarts.
 - The container healthcheck polls `/healthz`, so `docker ps` shows the
-  service as `healthy` once the server is up.
+  service as `healthy` once the server is up. Override the container port with
+  `OPENAI_VIA_CODEX_PORT`; passing only `serve --port ...` would leave the
+  healthcheck pointed at the environment-configured port.

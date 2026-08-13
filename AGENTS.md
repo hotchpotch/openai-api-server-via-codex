@@ -2,9 +2,16 @@
 
 ## Project
 
-This repository implements an OpenAI-compatible FastAPI server that forwards
+This repository implements an OpenAI-compatible Go HTTP server that forwards
 `/v1/responses` and `/v1/chat/completions` requests through the local Codex
-HTTP backend credentials.
+HTTP backend credentials. Python is only the `uvx` launcher and an
+`openai-python` test client; do not add a Python server fallback.
+
+The stable `0.2.0` release is the documented breaking-change boundary for the
+Go-only server runtime. The `0.1.6b2` prerelease is its current evaluation
+build. Do not describe Python as a server runtime in current documentation or
+examples; versioned historical release notes and the historical performance
+comparison may retain accurate references to the removed implementation.
 
 Keep compatibility behavior aligned with the official `openai-python` client.
 When changing request or response shapes, add or update tests that exercise the
@@ -12,8 +19,10 @@ client API rather than only raw HTTP payloads.
 
 ## Environment
 
-- Use Python 3.10 or newer.
-- Use `uv` for dependency management and command execution.
+- Use Go 1.23 or newer for the server, CLI, and Go tests.
+- Use Python 3.10 or newer only for the `uvx` launcher, OpenAI SDK consumer
+  tests, and packaging/release tooling.
+- Use `uv` for Python development dependencies and validation commands.
 - The default foreground server binds to `127.0.0.1:18080`.
 - Do not commit local virtualenv, cache, tox, pytest, or editor artifacts.
 - The live integration tests use the machine's existing Codex authentication.
@@ -33,7 +42,8 @@ requests through `.github/workflows/ci.yml`.
 Run focused compatibility tests while iterating on request/response behavior:
 
 ```bash
-uv run python -m pytest tests/test_openai_compat_server.py -q
+uv run python -m pytest tests/test_openai_client_contract.py -q
+go test ./internal/app
 uv run ruff check .
 uv run ty check
 ```
@@ -45,7 +55,21 @@ requests:
 ```bash
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q -s
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
+RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
 ```
+
+Run Go-owned deterministic contracts and the spawned-binary E2E while changing
+the packaged runtime:
+
+```bash
+go test ./internal/app
+go test ./test/e2e -v
+go test -race ./...
+```
+
+CI additionally installs each of the six native platform wheels and reruns the
+spawned-server E2E through the packaged Python launcher. It uses only synthetic
+auth and the local fake Codex backend.
 
 Run the broad Codex HTTP OpenAI client compatibility matrix by itself when
 investigating API surface regressions:
@@ -54,30 +78,56 @@ investigating API surface regressions:
 RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py::test_live_codex_http_handles_openai_client_compatibility_matrix -q -s
 ```
 
-Run the server locally:
+Run the server locally from a checkout:
 
 ```bash
-uv run openai-api-server-via-codex
-uv run openai-api-server-via-codex --port 18080
-uv run openai-api-server-via-codex --verbose
-uv run openai-api-server-via-codex --config ~/.config/openai-api-server-via-codex/config.toml
+go run ./cmd/openai-api-server-via-codex serve
+go run ./cmd/openai-api-server-via-codex serve --port 18080
+go run ./cmd/openai-api-server-via-codex serve --verbose
+go run ./cmd/openai-api-server-via-codex serve --config ~/.config/openai-api-server-via-codex/config.toml
 ```
+
+Build a standalone development executable without Python:
+
+```bash
+go build -trimpath -o ./bin/openai-api-server-via-codex ./cmd/openai-api-server-via-codex
+./bin/openai-api-server-via-codex --version
+```
+
+Keep [docs/build-from-source.md](docs/build-from-source.md) aligned with Go
+version requirements, build flags, supported targets, and CLI behavior.
+
+Build and run the Go-only Docker server:
+
+```bash
+docker compose up --build -d
+docker compose ps
+docker compose down
+```
+
+Release container images use
+`ghcr.io/hotchpotch/openai-api-server-via-codex`. Stable release tags publish
+both `vX.Y.Z` and `latest`; prerelease tags publish only `vX.Y.Z...`. Keep the
+manifest on `linux/amd64` and `linux/arm64`, and preserve the OCI source label
+that links the public GHCR package to this repository. Published images must be
+pullable anonymously.
 
 Generate a config template:
 
 ```bash
-uv run openai-api-server-via-codex config-generate
-uv run openai-api-server-via-codex config-generate --stdout
+go run ./cmd/openai-api-server-via-codex config-generate
+go run ./cmd/openai-api-server-via-codex config-generate --stdout
 ```
 
 Validate package artifacts before a PyPI release:
 
 ```bash
 uv run tox
-rm -rf dist
-uv build --no-sources
+rm -rf build dist
+uv build --wheel --no-sources
+uv run python scripts/build-platform-wheels.py --wheel "$(ls dist/*-py3-none-any.whl)" --output-dir dist --version "$(uv run python -c 'import openai_api_server_via_codex as p; print(p.__version__)')"
 uv run twine check --strict dist/*
-uv run --with "$(ls dist/*.whl)" --no-project openai-api-server-via-codex --help
+uv run --with "$(ls dist/*manylinux_2_17_x86_64.whl)" --no-project openai-api-server-via-codex --help
 ```
 
 Generate release note text from the draft or finalized release notes:
@@ -146,10 +196,24 @@ python scripts/release-notes.py vX.Y.Z
   `python scripts/release-notes.py vX.Y.Z` to generate the GitHub Release body.
   Keep `tests/test_release_notes.py` aligned with the release-note file
   selection rules.
+- GitHub Releases must attach the six platform wheels, six standalone Go
+  archives, and `checksums.txt`. Standalone executables must come from their
+  matching wheels so PyPI, GitHub Release, and Homebrew consumers use identical
+  binaries. Keep archive names stable and versioned.
+- Keep README and active documents Go-first. Explain the remaining Python code
+  only as launcher, SDK-test, or release tooling. Preserve versioned historical
+  release notes rather than rewriting project history.
 - For PyPI releases, prefer Trusted Publishing through
   `.github/workflows/release.yml` and the `pypi` GitHub environment. Do not add
   PyPI tokens to repository secrets unless a deliberate fallback release path is
   being used.
+- Publish the GHCR image from the same tag-driven release workflow only after
+  PyPI succeeds. Use `GITHUB_TOKEN` with job-scoped `packages: write`; do not add
+  a registry password or personal access token. A prerelease must never update
+  the `latest` container tag.
+- Existing releases may be backfilled through the release workflow's
+  `container_release_tag` dispatch input. The build must use the immutable
+  existing tag, verify its version, skip PyPI, and never update `latest`.
 - Keep `.github/workflows/ci.yml` aligned with the local required validation
   command. It should run on pushes to `main`, pull requests, and manual
   dispatch.
@@ -163,22 +227,34 @@ python scripts/release-notes.py vX.Y.Z
   port or spawning the daemon. Missing auth files, invalid JSON, wrong
   `auth_mode`, missing access tokens, expired tokens without refresh tokens, or
   refresh failures should fail the command with a redacted stderr message and
-  must not start uvicorn or the background daemon.
+  must not bind the HTTP listener or start the background daemon.
+- When Codex returns `401` before a response stream begins, invalidate the
+  in-process auth cache, reload `auth.json`, and retry the authenticated request
+  at most once. Keep request bodies replayable for this retry and never retry
+  after response events have been forwarded to the client.
 - `--verbose`, `OPENAI_VIA_CODEX_VERBOSE`, and `[server].verbose` should map to
-  debug-level uvicorn logs and be preserved when `start` launches the
+  Go application debug logs and be preserved when `start` launches the
   foreground `serve` command in the background. Verbose mode should also emit
   application diagnostics for resolved config/settings, request lifecycle,
   endpoint summaries, model-list fallbacks, and Codex HTTP stream/auth behavior.
   Never log raw auth tokens. Use the shared redaction helpers when logging
   upstream errors, request query strings, or auth-related values.
+- Authentication failures must retain stable reason codes in preflight and
+  runtime logs. Log upstream `401` reload/retry decisions and incoming API-key
+  rejections in normal mode, but never log presented credentials, auth tokens,
+  or upstream response bodies.
+- Emit a redacted request completion/access log for API requests even when
+  verbose mode is disabled. Keep routine `/healthz` probes quiet by default and
+  include them only in verbose request lifecycle logs.
 - For Chat Completions, translate Responses stream events into
   `chat.completion.chunk` events.
-- Prefer structured parsing and Pydantic/FastAPI/OpenAI SDK models over ad hoc
-  string handling.
+- Prefer structured Go parsing and the official OpenAI SDK consumer tests over
+  ad hoc string handling.
 
 ## Testing Expectations
 
-- Add focused unit or contract tests under `tests/` for compatibility behavior.
+- Add focused Go unit or contract tests under `internal/app/`. Add public SDK
+  compatibility cases under `tests/test_openai_client_contract.py`.
 - Add or update redaction tests when changing auth, logging, upstream error
   handling, or request logging code. Raw `access_token`, `refresh_token`,
   `id_token`, bearer tokens, JWTs, and client `api_key` values must not appear
