@@ -30,6 +30,19 @@ Start the server in one terminal. The recommended installation requires only
 $ uvx openai-api-server-via-codex
 ```
 
+Prefer another installation method? Every option runs the same Go server:
+
+- **[Standalone binary](#install-standalone-binary):** download the archive for Linux, macOS, or Windows
+  (x86_64 or ARM64) from the [latest GitHub Release](https://github.com/hotchpotch/openai-api-server-via-codex/releases/latest).
+- **[Docker](#install-docker):** pull the public image with
+  `docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest`.
+- **[Go](#install-go):** build and install directly from the public module with
+  `go install github.com/hotchpotch/openai-api-server-via-codex/cmd/openai-api-server-via-codex@latest`.
+- **[Source checkout](docs/build-from-source.md#build-for-the-current-machine):** clone the repository and build it locally.
+
+See [Installation options](#installation-options) for complete commands,
+checksums, platform details, and Docker volume configuration.
+
 Point an existing OpenAI client at it from another terminal:
 
 ```console
@@ -142,12 +155,13 @@ This server is useful when you want to:
 
 | Method | Requirement | Best for |
 | --- | --- | --- |
-| `uvx openai-api-server-via-codex` | `uv` and a Codex login | Most users |
-| GitHub Release archive | A Codex login | A standalone executable without Python or `uv` |
-| GHCR image | Docker and a Codex login | Containers and reproducible deployment |
-| `go install ...@latest` | Go 1.23+ and a Codex login | Go users |
-| Build from a checkout | Go 1.23+ and a Codex login | Development and customization |
+| [`uvx openai-api-server-via-codex`](#install-uvx) | `uv` and a Codex login | Most users |
+| [GitHub Release archive](#install-standalone-binary) | A Codex login | A standalone executable without Python or `uv` |
+| [GHCR image](#install-docker) | Docker and a Codex login | Containers and reproducible deployment |
+| [`go install ...@latest`](#install-go) | Go 1.23+ and a Codex login | Go users |
+| [Build from a checkout](docs/build-from-source.md#build-for-the-current-machine) | Go 1.23+ and a Codex login | Development and customization |
 
+<a id="install-uvx"></a>
 <details>
 <summary><strong>Install with uvx or uv tool</strong></summary>
 
@@ -175,6 +189,7 @@ the Go executable directly on an unsupported platform.
 
 </details>
 
+<a id="install-standalone-binary"></a>
 <details>
 <summary><strong>Download a standalone release archive</strong></summary>
 
@@ -198,6 +213,7 @@ retain a versioned Formula such as `openai-api-server-via-codex@0.2.0`.
 
 </details>
 
+<a id="install-docker"></a>
 <details>
 <summary><strong>Run the published Docker image or build it locally</strong></summary>
 
@@ -231,6 +247,7 @@ The container runs as a non-root user. See the
 
 </details>
 
+<a id="install-go"></a>
 <details>
 <summary><strong>Install with Go or build from a checkout</strong></summary>
 
