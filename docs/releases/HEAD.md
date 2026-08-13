@@ -12,4 +12,6 @@
   credentials.
 - Reorganized the README around a complete quick start, clearer authentication
   guidance and troubleshooting, GitHub callouts, and collapsible installation,
-  API, operations, and development references.
+  API, operations, and development references. Clarified that the SDK placeholder
+  is not an OpenAI Platform API key and highlighted subscription-backed usage
+  without separate Platform API token charges within included Codex limits.

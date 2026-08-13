@@ -12,6 +12,14 @@ by changing their base URL.
 The server is a small standalone Go executable. The Python package is only a
 cross-platform `uvx` launcher for the bundled executable.
 
+> [!TIP]
+> **Already have Codex in your ChatGPT plan?** Within your included Codex usage
+> limits, this server lets OpenAI-compatible clients use that access without a
+> real OpenAI Platform API key or separate per-token Platform API charges. In
+> other words, there is no additional API charge within the included allowance.
+> Plan limits still apply, and extending usage with ChatGPT credits may cost
+> extra. See the [official Codex pricing](https://learn.chatgpt.com/docs/pricing).
+
 > [!IMPORTANT]
 > **Upgrading to v0.2.0:** the HTTP server is now implemented in Go. The former
 > Python/FastAPI server and Python fallback have been removed. See
@@ -71,14 +79,17 @@ Point the SDK at the local server:
 
 ```console
 $ export OPENAI_BASE_URL=http://127.0.0.1:18080/v1
-$ export OPENAI_API_KEY=any-string
+$ export OPENAI_API_KEY=any-dummy-string-no-openai-api-key
 ```
 
 > [!NOTE]
-> `OPENAI_API_KEY` may be **any non-empty string** here. It only satisfies the
-> OpenAI SDK's client-side requirement. Unless the server was started with
-> `--api-key`, incoming `/v1/...` requests are not authenticated. The server
-> still authenticates its upstream Codex requests using `~/.codex/auth.json`.
+> This is **not a real OpenAI Platform API key**. Do not paste your real key
+> here. With the server's default settings, `OPENAI_API_KEY` may be any non-empty
+> dummy string: it only satisfies the OpenAI SDK's client-side requirement and
+> is not checked by the server. Incoming `/v1/...` requests are authenticated
+> only when the server is started with `--api-key`; in that case, set this value
+> to the configured server key. Upstream Codex authentication always uses
+> `~/.codex/auth.json`.
 
 Create `example.py`:
 
@@ -105,7 +116,7 @@ $ uv run --with openai python example.py
 
 ```powershell
 $env:OPENAI_BASE_URL = "http://127.0.0.1:18080/v1"
-$env:OPENAI_API_KEY = "any-string"
+$env:OPENAI_API_KEY = "any-dummy-string-no-openai-api-key"
 uv run --with openai python example.py
 ```
 
@@ -124,6 +135,7 @@ This server is useful when you want to:
 
 | Capability | What you get |
 | --- | --- |
+| Subscription-backed access | Use the Codex allowance included in your ChatGPT plan without separate Platform API token charges |
 | OpenAI compatibility | Responses, Chat Completions, streaming, tools, structured output, images, and audio |
 | Small Go runtime | Fast startup, a single executable, and a few MiB of idle memory in local measurements |
 | Portable distribution | Wheels and archives for Linux, macOS, and Windows on x86_64 and ARM64 |
@@ -319,7 +331,7 @@ bodies. `--verbose` adds deeper redacted diagnostics.
 | `auth_file_write_failed` in Docker | Mount `/home/app/.codex` read-write and check host UID/GID permissions |
 | Repeated upstream `401` | Check the auth reason logs, refresh the Codex login, and avoid multiple servers sharing rotating credentials |
 | Address already in use | Stop the existing server or choose another port with `--port` |
-| OpenAI SDK rejects an empty key | Set `OPENAI_API_KEY` to any non-empty value, such as `any-string` |
+| OpenAI SDK rejects an empty key | Set `OPENAI_API_KEY` to a non-secret placeholder such as `any-dummy-string-no-openai-api-key` |
 
 > [!TIP]
 > Start with `--verbose` when diagnosing configuration, request routing, or
