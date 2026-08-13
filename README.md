@@ -148,6 +148,13 @@ This server is useful when you want to:
 | `go install ...@latest` | Go 1.23+ and a Codex login | Go users |
 | Build from a checkout | Go 1.23+ and a Codex login | Development and customization |
 
+Homebrew packaging is prepared as a source Formula, but it must be accepted
+into `homebrew/core` before `brew install openai-api-server-via-codex` is an
+official installation method. Homebrew's CI then builds and hosts the bottles;
+the upstream release archives are not presented as Homebrew bottles. See the
+[Homebrew packaging guide](docs/homebrew.md) for the Formula generator,
+validation commands, and current responsibility boundary.
+
 <details>
 <summary><strong>Install with uvx or uv tool</strong></summary>
 
@@ -192,9 +199,10 @@ $ tar -xzf openai-api-server-via-codex_0.2.0_darwin_arm64.tar.gz
 $ ./openai-api-server-via-codex --version
 ```
 
-The stable archive URLs and SHA-256 checksums are suitable for Homebrew
-Formulae. Installing a historical version through Homebrew requires a tap to
-retain a versioned Formula such as `openai-api-server-via-codex@0.2.0`.
+The stable archive URLs and SHA-256 checksums are suitable for other package
+managers. Official Homebrew Formulae instead build the tagged source and let
+Homebrew's BrewTestBot create the bottles. Installing a historical version
+through Homebrew requires a tap to retain an eligible versioned Formula.
 
 </details>
 

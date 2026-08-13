@@ -29,8 +29,10 @@ openai-api-server-via-codex_VERSION_windows_GOARCH.zip
 
 The release workflow extracts these executables from the same platform wheels
 published to PyPI, so the standalone archive and matching wheel contain the
-same Go binary. The naming and checksums are intended to be consumed by a
-Homebrew Formula or other package-manager metadata without rebuilding source.
+same Go binary. Other package managers may consume the stable naming and
+checksums. The official Homebrew path deliberately builds from tagged source;
+Homebrew's CI then packages that build as a bottle. See the
+[Homebrew packaging guide](homebrew.md).
 
 ## Install directly from GitHub
 

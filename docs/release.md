@@ -68,8 +68,16 @@ The standalone release set contains six archives and `checksums.txt`. Linux and
 macOS use reproducible `.tar.gz` archives; Windows uses reproducible `.zip`
 archives. Each archive contains the exact executable extracted from its matching
 wheel, plus `LICENSE` and `README.md`. Keep the
-`openai-api-server-via-codex_VERSION_GOOS_GOARCH` naming stable because Homebrew
-Formulae and other package managers use the versioned URL and checksum.
+`openai-api-server-via-codex_VERSION_GOOS_GOARCH` naming stable because
+third-party taps and other package managers may use the versioned URL and
+checksum. These archives are not Homebrew bottles.
+
+For a stable tag, the workflow also renders
+`openai-api-server-via-codex.rb` from that tag's GitHub source archive and
+attaches it to the GitHub Release. The Formula is suitable as the starting
+point for a `homebrew/core` PR: it builds from source, and Homebrew's BrewTestBot
+creates and hosts the official bottles after the PR is accepted. Prereleases do
+not produce a Formula asset. See [Homebrew packaging](homebrew.md).
 
 ## Version Bump
 
@@ -142,7 +150,8 @@ metadata with `twine`, smoke tests the bundled Go console command, publishes to
 PyPI only from the `pypi` environment, publishes the runtime container to GHCR,
 and creates a GitHub Release from `docs/releases` only after both package
 publishes succeed. The GitHub Release receives all six standalone Go archives,
-`checksums.txt`, and the same six platform wheels published to PyPI.
+`checksums.txt`, the same six platform wheels published to PyPI, and, for a
+stable release, the generated source Formula.
 
 The container job publishes one multi-platform manifest for `linux/amd64` and
 `linux/arm64` under both the exact Git tag (`vX.Y.Z`) and, for stable versions,
