@@ -78,16 +78,7 @@ func (a *authProvider) borrow() (credentials, error) {
 	path := expandHome(a.path)
 	stat, err := os.Stat(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return credentials{}, newAuthFailure(
-				authCodeFileNotFound,
-				fmt.Sprintf("Codex auth file not found at %s; run `codex login`", path),
-			)
-		}
-		return credentials{}, newAuthFailure(
-			authCodeFileUnreadable,
-			fmt.Sprintf("inspect Codex auth file at %s: %s", path, redactSensitive(err.Error())),
-		)
+		return credentials{}, authFileStatFailure(path, err)
 	}
 	if a.cache != nil && a.cache.Size == stat.Size() && a.cache.ModTime.Equal(stat.ModTime()) && tokenFresh(a.cache.Exp, a.cache.HasExp) {
 		return a.cache.Cred, nil
@@ -149,6 +140,19 @@ func (a *authProvider) borrow() (credentials, error) {
 	cred := credentials{AccessToken: access, AccountID: accountID(tokens)}
 	a.cache = &authCacheEntry{ModTime: stat.ModTime(), Size: stat.Size(), Cred: cred, Exp: exp, HasExp: hasExp}
 	return cred, nil
+}
+
+func authFileStatFailure(path string, err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		return newAuthFailure(
+			authCodeFileNotFound,
+			fmt.Sprintf("Codex auth file not found at %s; run `codex login`", path),
+		)
+	}
+	return newAuthFailure(
+		authCodeFileUnreadable,
+		fmt.Sprintf("inspect Codex auth file at %s: %s", path, redactSensitive(err.Error())),
+	)
 }
 
 func (a *authProvider) reload() (credentials, error) {

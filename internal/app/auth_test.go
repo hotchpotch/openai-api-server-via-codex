@@ -307,18 +307,15 @@ func TestAuthProviderRejectsInvalidDocuments(t *testing.T) {
 }
 
 func TestAuthProviderClassifiesMissingAndUnreadableFiles(t *testing.T) {
-	missing := &authProvider{path: filepath.Join(t.TempDir(), "missing.json"), refreshClient: noRefreshClient(t)}
+	missingPath := filepath.Join(t.TempDir(), "missing.json")
+	missing := &authProvider{path: missingPath, refreshClient: noRefreshClient(t)}
 	if _, err := missing.borrow(); err == nil || authFailureCode(err) != "auth_file_not_found" || !strings.Contains(err.Error(), "run `codex login`") {
 		t.Fatalf("missing error = %v", err)
 	}
 
-	notDirectory := filepath.Join(t.TempDir(), "not-a-directory")
-	if err := os.WriteFile(notDirectory, []byte("file"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	unreadable := &authProvider{path: filepath.Join(notDirectory, "auth.json"), refreshClient: noRefreshClient(t)}
-	if _, err := unreadable.borrow(); err == nil || authFailureCode(err) != "auth_file_unreadable" {
-		t.Fatalf("unreadable error = %v", err)
+	unreadable := authFileStatFailure(missingPath, &os.PathError{Op: "stat", Path: missingPath, Err: os.ErrPermission})
+	if authFailureCode(unreadable) != "auth_file_unreadable" || !strings.Contains(unreadable.Error(), "permission denied") {
+		t.Fatalf("unreadable error = %v", unreadable)
 	}
 }
 
