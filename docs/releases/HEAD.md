@@ -10,3 +10,6 @@
   codes, and added non-verbose logs for local authentication failures, upstream
   `401` reload/retry outcomes, and rejected incoming API keys without exposing
   credentials.
+- Reorganized the README around a complete quick start, clearer authentication
+  guidance and troubleshooting, GitHub callouts, and collapsible installation,
+  API, operations, and development references.
