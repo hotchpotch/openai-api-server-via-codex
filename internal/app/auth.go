@@ -72,6 +72,15 @@ type authProvider struct {
 	cache         *authCacheEntry
 }
 
+// invalidate drops the cached credentials. The cache keys on (mtime, size), so
+// a rewritten auth.json of identical size within the same mtime granularity
+// would otherwise keep serving the superseded token.
+func (a *authProvider) invalidate() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cache = nil
+}
+
 func (a *authProvider) borrow() (credentials, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

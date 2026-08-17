@@ -290,6 +290,13 @@ There are two separate authentication layers:
 Missing, invalid, expired, or unrefreshable credentials fail startup with a
 redacted error, a stable reason code, and a suggested action.
 
+The one exception is when an API key is configured, which enables the
+[operator console](#operator-console). Failing startup there would make the
+console unreachable in exactly the case it exists for — no `auth.json` yet and
+no shell to run `codex login` — so the server logs
+`codex.auth.preflight_deferred` and starts anyway. `/v1/...` still rejects every
+request until the login is established.
+
 The server notices external changes to `auth.json` without a restart. If Codex
 returns `401 Unauthorized` before a streaming response begins, the server
 clears its credential cache, reloads the file, and retries once. A second `401`
@@ -325,6 +332,49 @@ Incoming API keys, cookies, and `Authorization` headers are never forwarded to
 Codex. Normal logs include authentication failure reason codes and upstream
 `401` retry decisions, but never raw credentials, tokens, or upstream response
 bodies. `--verbose` adds deeper redacted diagnostics.
+
+## Operator console
+
+A small web console at `/ui` for signing the server in to a ChatGPT account
+without shell access — the case that matters when it runs as an unattended
+container on a shared host.
+
+It offers two paths:
+
+- **Device code** — starts `codex login --device-auth`, shows the one-time code
+  and the verification link, and waits while you approve it on any device with a
+  browser. Needs the Codex CLI in the image (the `runtime-ui` target below).
+- **Paste an `auth.json`** — the fallback when device-code auth is disabled for
+  a workspace. Run `codex login` elsewhere and paste the result. The content is
+  validated before it replaces anything, so a bad paste cannot destroy a working
+  login.
+
+It also reports whether the credentials actually work (not merely that a file
+exists), the account, and the token expiry, and can sign out.
+
+### Access control
+
+The console is gated by `OPENAI_VIA_CODEX_API_KEY`, exchanged for an HttpOnly,
+`SameSite=Strict` session cookie — a browser cannot attach a bearer header to a
+navigation. **When no API key is set the console refuses to serve** rather than
+defaulting open, because signing in through it hands over the ChatGPT account.
+
+Treat the console as privileged: reach it over a private interface or a tunnel,
+never the public internet.
+
+### Running it
+
+```console
+$ export OPENAI_VIA_CODEX_API_KEY=$(openssl rand -hex 32)
+$ docker compose -f docker-compose.console.yml up -d --build
+```
+
+Then open `http://<host>:18080/ui` and unlock with that key.
+
+The `runtime-ui` image is Debian-based rather than Alpine because the Codex CLI
+ships a glibc-linked binary. The default `runtime` image is unchanged: still
+Alpine, still without the CLI, so `docker build` with no `--target` produces the
+same lean server image as before.
 
 ## Troubleshooting
 
@@ -562,9 +612,11 @@ max_concurrent_requests = 10
 auth_json = "~/.codex/auth.json"
 backend_base_url = "https://chatgpt.com/backend-api/codex"
 client_version = "1.0.0"
+originator = "codex_exec"
+user_agent = "codex_exec/0.146.0 (Mac OS 15.6.1; arm64) iTerm.app (codex_exec; 0.146.0)"
 
 [compat]
-drop_params = []
+drop_params = ["fast_mode"]
 
 [daemon]
 state_dir = "~/.config/openai-api-server-via-codex/run"
@@ -582,7 +634,18 @@ stop_timeout = 10.0
 | `server.timeout` | `300.0` | Codex backend timeout in seconds |
 | `server.verbose` | `false` | Enable redacted application diagnostics |
 | `codex.auth_json` | `~/.codex/auth.json` | Codex OAuth file |
-| `compat.drop_params` | `[]` | Top-level request fields removed before forwarding |
+| `codex.originator` | `codex_exec` | `originator` header sent upstream |
+| `codex.user_agent` | Codex CLI string | `User-Agent` sent upstream; empty falls back to `openai-api-server-via-codex/<version>` |
+| `compat.drop_params` | `["fast_mode"]` | Top-level request fields removed before forwarding |
+
+**On `originator` / `user_agent`:** the Codex backend does not treat every
+caller alike — requests identifying as the official `codex_exec` CLI are
+accepted where a third-party originator is throttled or refused. These default
+to the CLI's own values for that reason, and are configurable so the choice
+stays visible. `service_tier` is additionally forwarded as an `X-Service-Tier`
+header, because passing it in the request body alone had no effect.
+
+`fast_mode` is dropped by default: it measurably hurt latency against Codex.
 
 Examples:
 

@@ -72,6 +72,11 @@ func (c *config) applyEnvironment() {
 	c.ClientVersion = envString("OPENAI_VIA_CODEX_CLIENT_VERSION", c.ClientVersion)
 	c.Originator = envString("OPENAI_VIA_CODEX_ORIGINATOR", c.Originator)
 	c.UserAgent = envString("OPENAI_VIA_CODEX_USER_AGENT", c.UserAgent)
+	// Every other setting is reachable from the environment; without this one a
+	// container could only strip parameters by mounting a config file.
+	if raw := strings.TrimSpace(os.Getenv("OPENAI_VIA_CODEX_DROP_PARAMS")); raw != "" {
+		c.DropParams = splitParamList(raw)
+	}
 	c.AuthJSON = envString("OPENAI_VIA_CODEX_AUTH_JSON", c.AuthJSON)
 	c.APIKey = strings.TrimSpace(envString("OPENAI_VIA_CODEX_API_KEY", c.APIKey))
 	c.Timeout = time.Duration(envFloat("OPENAI_VIA_CODEX_TIMEOUT", c.Timeout.Seconds()) * float64(time.Second))
@@ -82,6 +87,18 @@ func (c *config) applyEnvironment() {
 	c.PIDFile = envString("OPENAI_VIA_CODEX_PID_FILE", c.PIDFile)
 	c.LogFile = envString("OPENAI_VIA_CODEX_LOG_FILE", c.LogFile)
 	c.StopTimeout = time.Duration(envFloat("OPENAI_VIA_CODEX_STOP_TIMEOUT", c.StopTimeout.Seconds()) * float64(time.Second))
+}
+
+// splitParamList parses a comma-separated parameter list, ignoring blanks so a
+// trailing comma or stray spacing does not become an empty parameter name.
+func splitParamList(raw string) []string {
+	var names []string
+	for _, value := range strings.Split(raw, ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			names = append(names, value)
+		}
+	}
+	return names
 }
 
 func Run(args []string, version string) error {
@@ -142,11 +159,7 @@ func Run(args []string, version string) error {
 	cfg.Timeout = time.Duration(timeout * float64(time.Second))
 	cfg.StopTimeout = time.Duration(stopTimeout * float64(time.Second))
 	if dropParams != "" {
-		for _, value := range strings.Split(dropParams, ",") {
-			if value = strings.TrimSpace(value); value != "" {
-				cfg.DropParams = append(cfg.DropParams, value)
-			}
-		}
+		cfg.DropParams = splitParamList(dropParams)
 	}
 	if command == "daemon-run" {
 		return runSupervised(cfg, version)

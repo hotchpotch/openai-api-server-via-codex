@@ -26,6 +26,22 @@ type server struct {
 	responses *responseStore
 	chats     *chatStore
 	slots     chan struct{}
+	// auth is the same provider the backend uses. The console needs it directly
+	// to report status and to drop the cache after rewriting auth.json; it is
+	// nil when the backend is a test double, so callers go through backendAuth.
+	auth     *authProvider
+	sessions *uiSessions
+	device   *deviceLogin
+}
+
+// backendAuth returns the credential provider, falling back to one built from
+// config when the server was constructed with a stubbed backend.
+func (s *server) backendAuth() *authProvider {
+	if s.auth != nil {
+		return s.auth
+	}
+	s.auth = &authProvider{path: s.cfg.AuthJSON, refreshClient: &http.Client{Timeout: authRefreshTimeout}}
+	return s.auth
 }
 
 type codexBackend interface {
@@ -45,9 +61,21 @@ func startupLogMessage(version, address string) string {
 func serve(cfg config, version string) error {
 	b := newBackend(cfg)
 	if _, err := b.auth.borrow(); err != nil {
-		return preflightAuthError(err)
+		// Failing closed here would make the console unreachable in exactly the
+		// situation it exists for: no auth.json yet, and no shell to run
+		// `codex login`. When the console is enabled the server starts anyway and
+		// serves /ui so the login can be established; /v1 still rejects every
+		// request until it is. Without a console there is nothing to recover
+		// with, so the original hard failure stands.
+		if cfg.APIKey == "" {
+			return preflightAuthError(err)
+		}
+		log.Printf(
+			"codex.auth.preflight_deferred code=%s message=%q console=/ui",
+			authFailureCode(err), redactSensitive(err.Error()),
+		)
 	}
-	s := &server{cfg: cfg, backend: b, responses: newResponseStore(cfg.MaxStored), chats: newChatStore(cfg.MaxStored)}
+	s := &server{cfg: cfg, backend: b, auth: b.auth, responses: newResponseStore(cfg.MaxStored), chats: newChatStore(cfg.MaxStored), sessions: newUISessions(), device: &deviceLogin{}}
 	if cfg.Concurrency > 0 {
 		s.slots = make(chan struct{}, cfg.Concurrency)
 	}
@@ -163,6 +191,12 @@ func (s *server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			methodNotAllowed(w)
 		}
+		return
+	}
+	// The console carries its own session-cookie auth, so it is routed before
+	// the bearer check that guards /v1.
+	if r.URL.Path == "/ui" || strings.HasPrefix(r.URL.Path, "/ui/") {
+		s.serveUI(w, r)
 		return
 	}
 	if r.URL.Path != "/v1" && !strings.HasPrefix(r.URL.Path, "/v1/") {
