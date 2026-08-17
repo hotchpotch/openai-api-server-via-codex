@@ -1,0 +1,50 @@
+# Pull-and-run compose for a host that does NOT have this repository checked out.
+#
+# The difference from docker-compose.console.yml is the absence of `build:` —
+# that file builds from the source tree, which means cloning the repo onto the
+# deployment host. This one only ever pulls a published image, so the host needs
+# Docker and this single file.
+#
+# Fetch it without cloning:
+#   curl -fsSLO https://raw.githubusercontent.com/ufkshn/openai-api-server-via-codex/feat/codex-proxy-signin-ui/docker-compose.deploy.yml
+#
+# Then, in the same directory, a .env with at least:
+#   OPENAI_VIA_CODEX_API_KEY=<openssl rand -hex 32>
+#   OPENAI_VIA_CODEX_IMAGE=ghcr.io/ufkshn/openai-api-server-via-codex-console:<tag>
+#   OPENAI_VIA_CODEX_BIND_HOST=<private IP of this host>
+#
+#   docker compose -f docker-compose.deploy.yml up -d
+#
+# Then open http://<bind-host>:18080/ui, unlock with the API key, and sign in.
+
+services:
+  codex-proxy:
+    image: ${OPENAI_VIA_CODEX_IMAGE:?set OPENAI_VIA_CODEX_IMAGE to a published console image}
+    container_name: codex-proxy
+    ports:
+      # Defaults to loopback: safe, but only this host can reach it. To let
+      # another machine call the proxy, set OPENAI_VIA_CODEX_BIND_HOST to this
+      # host's private address and put a security group in front. 0.0.0.0
+      # publishes on every interface, including a public one if the instance
+      # has it — anyone who reaches the port and holds the key controls the
+      # ChatGPT account.
+      - "${OPENAI_VIA_CODEX_BIND_HOST:-127.0.0.1}:${OPENAI_VIA_CODEX_PUBLISH_PORT:-18080}:18080"
+    environment:
+      # Required. Guards both /v1 and the console; without it the console is off.
+      OPENAI_VIA_CODEX_API_KEY: ${OPENAI_VIA_CODEX_API_KEY:?set OPENAI_VIA_CODEX_API_KEY}
+      OPENAI_VIA_CODEX_DEFAULT_MODEL: ${OPENAI_VIA_CODEX_DEFAULT_MODEL:-gpt-5.6-luna}
+      OPENAI_VIA_CODEX_VERBOSE: ${OPENAI_VIA_CODEX_VERBOSE:-0}
+      # `fast_mode` measurably hurt latency against Codex, so it is stripped
+      # before the request goes upstream.
+      OPENAI_VIA_CODEX_DROP_PARAMS: fast_mode
+    volumes:
+      # Read-write, and owned by exactly one container: the server writes rotated
+      # refresh tokens back here. Two writers rotate each other's token and break
+      # the login for good, which is why this is a named volume rather than a
+      # host path several containers might share.
+      - codex-auth:/home/node/.codex
+    restart: unless-stopped
+    # The image already declares a HEALTHCHECK; it is not repeated here.
+
+volumes:
+  codex-auth:
