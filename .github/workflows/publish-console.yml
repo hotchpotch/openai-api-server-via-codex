@@ -1,0 +1,114 @@
+# Publishes the console image — the `runtime-ui` target, which bundles the Codex
+# CLI so the operator console at /ui can run the device-code sign-in itself.
+#
+# Deliberately separate from release.yml's publish-container job, which builds
+# the `runtime` target (server only, no CLI, no sign-in) and is gated on the
+# upstream PyPI publish succeeding. Neither applies to a deployment image.
+#
+# The result is pulled by the host running docker-compose.console.yml, so this
+# runs on demand and on pushes that change what lands in the image, rather than
+# only on version tags.
+name: Publish console image
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: Target platforms to build
+        required: false
+        default: linux/amd64
+        type: choice
+        options:
+          - linux/amd64
+          - linux/arm64
+          - linux/amd64,linux/arm64
+  push:
+    branches:
+      - main
+      - feat/codex-proxy-signin-ui
+    paths:
+      - Dockerfile
+      - cmd/**
+      - internal/**
+      - go.mod
+      - go.sum
+      - .github/workflows/publish-console.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-console-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Build and push runtime-ui to GHCR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      # Only needed when a requested platform differs from the runner's. The Go
+      # server cross-compiles without it, but the runtime-ui stage runs apt and
+      # npm in the target arch, so those need emulation.
+      - name: Set up QEMU
+        if: contains(inputs.platforms || 'linux/amd64', 'arm64')
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # A distinct package from the release image, so publishing a deployment
+      # build can never overwrite a released `runtime` tag.
+      - name: Generate container metadata
+        id: metadata
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}-console
+          tags: |
+            type=ref,event=branch
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=openai-api-server-via-codex-console
+            org.opencontainers.image.description=OpenAI-compatible proxy backed by Codex credentials, with the operator console
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: Build and push console image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          target: runtime-ui
+          platforms: ${{ inputs.platforms || 'linux/amd64' }}
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=console-image
+          cache-to: type=gha,mode=max,scope=console-image
+
+      - name: Summarise what to pull
+        run: |
+          {
+            echo "### Console image published"
+            echo
+            echo '```'
+            echo "${{ steps.metadata.outputs.tags }}"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
