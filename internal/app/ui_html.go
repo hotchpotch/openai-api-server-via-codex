@@ -105,14 +105,15 @@ const uiHTML = `<!doctype html>
     <section>
       <h2>Sign in with a device code</h2>
       <div id="device-idle">
-        <p class="note">Starts a sign-in and shows a one-time code. Open the link on any
-          device with a browser, enter the code, and this proxy receives the tokens.</p>
+        <p class="note">Starts a sign-in and opens the verification page in a new tab.
+          Copy the one-time code, enter it there, and this proxy receives the tokens.</p>
         <button id="start">Start sign-in</button>
       </div>
       <div id="device-active" class="hide">
         <div class="code" id="user-code">…</div>
-        <p class="note">Open <a id="verify-url" href="#" target="_blank" rel="noreferrer noopener">the verification page</a>
-          and enter this code. It expires in about 15 minutes.</p>
+        <button id="copy">Copy code</button>
+        <p class="note">Enter it on <a id="verify-url" href="#" target="_blank" rel="noreferrer noopener">the verification page</a>
+          — opened in a new tab when sign-in started. It expires in about 15 minutes.</p>
         <p class="note" id="device-msg"></p>
         <button class="ghost" id="cancel">Cancel</button>
       </div>
@@ -134,6 +135,39 @@ const uiHTML = `<!doctype html>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var poll = null;
+
+  var VERIFY_URL = 'https://auth.openai.com/codex/device';
+
+  function selectText(el) {
+    var range = document.createRange();
+    range.selectNodeContents(el);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+
+  // navigator.clipboard exists only in a secure context. The console is normally
+  // reached over plain HTTP on a private address, where it is undefined — so the
+  // execCommand path is the one that actually runs in production, not the fallback.
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise(function (resolve, reject) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      // Keep it off-screen but focusable; display:none would not be selectable.
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '-1000px';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (_) { ok = false; }
+      document.body.removeChild(ta);
+      ok ? resolve() : reject(new Error('copy unavailable'));
+    });
+  }
 
   function show(text, kind) {
     var box = $('msg');
@@ -194,7 +228,7 @@ const uiHTML = `<!doctype html>
       $('device-idle').className = 'hide';
       $('device-active').className = '';
       $('user-code').textContent = d.user_code || '…';
-      $('verify-url').href = d.url || 'https://auth.openai.com/codex/device';
+      $('verify-url').href = d.url || VERIFY_URL;
       $('device-msg').textContent = d.message || '';
     } else {
       $('device-idle').className = '';
@@ -242,12 +276,32 @@ const uiHTML = `<!doctype html>
 
   $('start').onclick = function () {
     $('start').disabled = true;
+    // Opened synchronously inside the click handler: the code arrives later, over
+    // the poll, and a window.open() from that callback is outside the user-gesture
+    // window and gets swallowed by popup blockers. The URL is a constant, so there
+    // is nothing to wait for anyway.
+    var tab = window.open(VERIFY_URL, '_blank', 'noopener');
     api('signin/start', {}).then(function () {
       if (poll) { clearInterval(poll); }
       poll = setInterval(refresh, 3000);
       return refresh();
-    }).catch(function (e) { show(e.message); })
-      .then(function () { $('start').disabled = false; });
+    }).catch(function (e) {
+      // Nothing will be entered on that page now — don't leave it stranded.
+      if (tab) { try { tab.close(); } catch (_) {} }
+      show(e.message);
+    }).then(function () { $('start').disabled = false; });
+  };
+
+  $('copy').onclick = function () {
+    var code = $('user-code').textContent.trim();
+    if (!code || code === '…') { return; }
+    copyText(code).then(function () {
+      show('Code copied.', 'good');
+    }).catch(function () {
+      // Leave it selected so ⌘C / Ctrl-C still works.
+      selectText($('user-code'));
+      show('Could not copy automatically — the code is selected, press Ctrl/Cmd+C.');
+    });
   };
 
   $('cancel').onclick = function () {
