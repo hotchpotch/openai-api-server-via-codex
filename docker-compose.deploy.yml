@@ -17,6 +17,12 @@
 #
 # Then open http://<bind-host>:18080/ui, unlock with the API key, and sign in.
 
+# Declared for Compose v1 (the `docker-compose` binary from Ubuntu's docker.io
+# package). Without it v1 reads this as the legacy v1 file format and rejects
+# `services:` outright. Compose v2 ignores the key apart from a deprecation
+# warning, so keeping it here is what lets one file serve both.
+version: "3.8"
+
 services:
   codex-proxy:
     image: ${OPENAI_VIA_CODEX_IMAGE:?set OPENAI_VIA_CODEX_IMAGE to a published console image}
