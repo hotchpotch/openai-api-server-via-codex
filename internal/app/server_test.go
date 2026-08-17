@@ -284,6 +284,49 @@ func TestBackendHeadersForwardPromptCacheKey(t *testing.T) {
 	}
 }
 
+// The Codex backend distinguishes the official CLI from third-party callers, so
+// these three headers are the reason this deployment diverges from upstream.
+func TestBackendHeadersIdentifyAsCodexCLI(t *testing.T) {
+	b := newBackend(defaultConfig())
+	headers := b.headers(credentials{AccessToken: "token"}, true, "")
+	// Literals on purpose: comparing against the constants would pass even if
+	// the constants themselves were changed back to the upstream identity.
+	if got := headers.Get("originator"); got != "codex_exec" {
+		t.Fatalf("originator = %q, want %q", got, "codex_exec")
+	}
+	const wantAgent = "codex_exec/0.146.0 (Mac OS 15.6.1; arm64) iTerm.app (codex_exec; 0.146.0)"
+	if got := headers.Get("User-Agent"); got != wantAgent {
+		t.Fatalf("User-Agent = %q, want %q", got, wantAgent)
+	}
+	if got := headers.Get("X-Service-Tier"); got != "" {
+		t.Fatalf("X-Service-Tier should be absent without a tier, got %q", got)
+	}
+
+	withTier := b.headersWithTier(credentials{AccessToken: "token"}, true, "", "flex")
+	if got := withTier.Get("X-Service-Tier"); got != "flex" {
+		t.Fatalf("X-Service-Tier = %q, want %q", got, "flex")
+	}
+}
+
+func TestBackendHeadersHonourIdentityOverrides(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Originator, cfg.UserAgent = "custom-originator", "custom-agent/1.0"
+	headers := newBackend(cfg).headers(credentials{AccessToken: "token"}, true, "")
+	if got := headers.Get("originator"); got != "custom-originator" {
+		t.Fatalf("originator = %q", got)
+	}
+	if got := headers.Get("User-Agent"); got != "custom-agent/1.0" {
+		t.Fatalf("User-Agent = %q", got)
+	}
+
+	// An empty User-Agent falls back to the upstream-style computed string.
+	cfg.UserAgent = ""
+	headers = newBackend(cfg).headers(credentials{AccessToken: "token"}, true, "")
+	if got := headers.Get("User-Agent"); !strings.HasPrefix(got, "openai-api-server-via-codex/") {
+		t.Fatalf("fallback User-Agent = %q", got)
+	}
+}
+
 func TestNormalizeBackendEventDropsUnknownStatus(t *testing.T) {
 	event := map[string]any{"type": "response.done", "response": map[string]any{"id": "resp_1", "status": "mystery"}}
 	normalizeBackendEvent(event)

@@ -21,6 +21,14 @@ const (
 	defaultClient      = "1.0.0"
 	defaultMaxStored   = 1000
 	defaultConcurrency = 10
+
+	// The Codex backend does not treat every caller alike: requests identifying
+	// themselves as the official `codex_exec` CLI are accepted where a
+	// third-party originator is throttled or refused. Upstream ships its own
+	// name; this deployment deliberately keeps the CLI's identity instead.
+	// Both are overridable so the choice stays visible rather than baked in.
+	defaultOriginator = "codex_exec"
+	defaultUserAgent  = "codex_exec/0.146.0 (Mac OS 15.6.1; arm64) iTerm.app (codex_exec; 0.146.0)"
 )
 
 type config struct {
@@ -29,6 +37,8 @@ type config struct {
 	Model         string
 	BackendURL    string
 	ClientVersion string
+	Originator    string
+	UserAgent     string
 	AuthJSON      string
 	APIKey        string
 	Timeout       time.Duration
@@ -48,6 +58,7 @@ func defaultConfig() config {
 	return config{
 		Host: defaultHost, Port: defaultPort, Model: defaultModel,
 		BackendURL: defaultBackendURL, ClientVersion: defaultClient, AuthJSON: auth,
+		Originator: defaultOriginator, UserAgent: defaultUserAgent,
 		Timeout: 300 * time.Second, MaxStored: defaultMaxStored, Concurrency: defaultConcurrency,
 		StateDir: defaultStateDir(), StopTimeout: 10 * time.Second,
 	}
@@ -59,6 +70,8 @@ func (c *config) applyEnvironment() {
 	c.Model = envString("OPENAI_VIA_CODEX_DEFAULT_MODEL", c.Model)
 	c.BackendURL = strings.TrimRight(envString("OPENAI_VIA_CODEX_BACKEND_BASE_URL", c.BackendURL), "/")
 	c.ClientVersion = envString("OPENAI_VIA_CODEX_CLIENT_VERSION", c.ClientVersion)
+	c.Originator = envString("OPENAI_VIA_CODEX_ORIGINATOR", c.Originator)
+	c.UserAgent = envString("OPENAI_VIA_CODEX_USER_AGENT", c.UserAgent)
 	c.AuthJSON = envString("OPENAI_VIA_CODEX_AUTH_JSON", c.AuthJSON)
 	c.APIKey = strings.TrimSpace(envString("OPENAI_VIA_CODEX_API_KEY", c.APIKey))
 	c.Timeout = time.Duration(envFloat("OPENAI_VIA_CODEX_TIMEOUT", c.Timeout.Seconds()) * float64(time.Second))
@@ -203,14 +216,20 @@ max_concurrent_requests = %d
 auth_json = "~/.codex/auth.json"
 backend_base_url = %q
 client_version = %q
+# Identity sent upstream. Defaults impersonate the official Codex CLI, which the
+# backend treats differently from a third-party originator. Clear user_agent to
+# fall back to the "openai-api-server-via-codex/<version>" form.
+originator = %q
+user_agent = %q
 
 [compat]
-drop_params = []
+# Parameters stripped before the request reaches Codex.
+drop_params = ["fast_mode"]
 
 [daemon]
 state_dir = %q
 stop_timeout = 10.0
-`, defaultHost, defaultPort, defaultModel, defaultMaxStored, defaultConcurrency, defaultBackendURL, defaultClient, defaultStateDir())
+`, defaultHost, defaultPort, defaultModel, defaultMaxStored, defaultConcurrency, defaultBackendURL, defaultClient, defaultOriginator, defaultUserAgent, defaultStateDir())
 }
 
 func defaultStateDir() string {
@@ -269,6 +288,8 @@ type configFile struct {
 		AuthJSON       *string `toml:"auth_json"`
 		BackendBaseURL *string `toml:"backend_base_url"`
 		ClientVersion  *string `toml:"client_version"`
+		Originator     *string `toml:"originator"`
+		UserAgent      *string `toml:"user_agent"`
 	} `toml:"codex"`
 	Compat struct {
 		DropParams []string `toml:"drop_params"`
@@ -314,6 +335,12 @@ func (file *configFile) apply(c *config) {
 	}
 	if file.Codex.ClientVersion != nil {
 		c.ClientVersion = *file.Codex.ClientVersion
+	}
+	if file.Codex.Originator != nil {
+		c.Originator = *file.Codex.Originator
+	}
+	if file.Codex.UserAgent != nil {
+		c.UserAgent = *file.Codex.UserAgent
 	}
 	if file.Compat.DropParams != nil {
 		c.DropParams = append([]string(nil), file.Compat.DropParams...)

@@ -46,10 +46,28 @@ func newBackend(cfg config) *backend {
 }
 
 func (b *backend) headers(cred credentials, stream bool, requestID string) http.Header {
+	return b.headersWithTier(cred, stream, requestID, "")
+}
+
+// headersWithTier builds the upstream request headers. serviceTier travels as
+// X-Service-Tier rather than only in the body: the payload field alone did not
+// take effect against the Codex backend, so the header carries it as well.
+func (b *backend) headersWithTier(cred credentials, stream bool, requestID, serviceTier string) http.Header {
 	h := make(http.Header)
 	h.Set("Authorization", "Bearer "+cred.AccessToken)
-	h.Set("originator", "openai-api-server-via-codex")
-	h.Set("User-Agent", fmt.Sprintf("openai-api-server-via-codex/%s (%s; %s)", b.cfg.ClientVersion, runtime.GOOS, runtime.GOARCH))
+	originator := b.cfg.Originator
+	if originator == "" {
+		originator = defaultOriginator
+	}
+	h.Set("originator", originator)
+	userAgent := b.cfg.UserAgent
+	if userAgent == "" {
+		userAgent = fmt.Sprintf("openai-api-server-via-codex/%s (%s; %s)", b.cfg.ClientVersion, runtime.GOOS, runtime.GOARCH)
+	}
+	h.Set("User-Agent", userAgent)
+	if serviceTier != "" {
+		h.Set("X-Service-Tier", serviceTier)
+	}
 	if cred.AccountID != "" {
 		h.Set("ChatGPT-Account-ID", cred.AccountID)
 	}
@@ -143,7 +161,9 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 		if err != nil {
 			return nil, err
 		}
-		req.Header = b.headers(cred, true, stringValue(prepared["prompt_cache_key"]))
+		// Read the tier from prepared, not payload, so --drop-params service_tier
+		// removes it from the header too rather than only from the body.
+		req.Header = b.headersWithTier(cred, true, stringValue(prepared["prompt_cache_key"]), stringValue(prepared["service_tier"]))
 		return req, nil
 	})
 	if err != nil {
