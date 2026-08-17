@@ -38,6 +38,10 @@ RUN apt-get update \
 
 COPY --chmod=755 docker/codex-login-entrypoint.sh /usr/local/bin/codex-login-entrypoint
 
+# Same reason as the runtime-ui stage: the volume mounted here must be writable
+# by uid 1000, and a volume over a missing path is created root-owned.
+RUN mkdir -p /home/node/.codex && chown node:node /home/node/.codex
+
 ENV CODEX_HOME=/home/node/.codex
 USER node
 EXPOSE 1456
@@ -72,6 +76,13 @@ RUN apt-get update \
 
 COPY --from=server-builder /out/openai-api-server-via-codex /usr/local/bin/openai-api-server-via-codex
 
+# Create CODEX_HOME in the image, owned by the runtime user. A fresh named volume
+# inherits the ownership of the path it covers, so if this directory does not
+# exist Docker creates the mountpoint as root:root and the container — running as
+# uid 1000 — cannot write auth.json. Sign-in then fails with a bare permission
+# error, and token refresh fails the same way later.
+RUN mkdir -p /home/node/.codex && chown node:node /home/node/.codex
+
 ENV CODEX_HOME=/home/node/.codex \
     OPENAI_VIA_CODEX_HOST=0.0.0.0 \
     OPENAI_VIA_CODEX_PORT=18080 \
@@ -102,7 +113,9 @@ LABEL org.opencontainers.image.title="openai-api-server-via-codex" \
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -g 1000 app \
-    && adduser -D -u 1000 -G app app
+    && adduser -D -u 1000 -G app app \
+    && mkdir -p /home/app/.codex \
+    && chown app:app /home/app/.codex
 
 COPY --from=server-builder /out/openai-api-server-via-codex /usr/local/bin/openai-api-server-via-codex
 
