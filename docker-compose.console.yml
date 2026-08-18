@@ -17,6 +17,7 @@
 # Exposure: publishing on 0.0.0.0 puts the console on every interface. Prefer
 # binding to the private address the caller uses and let a security group do the
 # rest — anyone who reaches the port and holds the key controls the account.
+version: "3.8"
 
 services:
   codex-proxy:
@@ -32,9 +33,6 @@ services:
       OPENAI_VIA_CODEX_API_KEY: ${OPENAI_VIA_CODEX_API_KEY:?set OPENAI_VIA_CODEX_API_KEY}
       OPENAI_VIA_CODEX_DEFAULT_MODEL: ${OPENAI_VIA_CODEX_DEFAULT_MODEL:-gpt-5.6-luna}
       OPENAI_VIA_CODEX_VERBOSE: ${OPENAI_VIA_CODEX_VERBOSE:-0}
-      # `fast_mode` measurably hurt latency against Codex, so it is stripped
-      # before the request goes upstream.
-      OPENAI_VIA_CODEX_DROP_PARAMS: fast_mode
     volumes:
       # Read-write, and owned by exactly one container: the server writes rotated
       # refresh tokens back here. Two writers rotate each other's token and break
@@ -43,7 +41,17 @@ services:
       - codex-auth:/home/node/.codex
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "-m", "4", "-o", "/dev/null", "http://127.0.0.1:18080/healthz"]
+      test:
+        [
+          "CMD",
+          "curl",
+          "-fsS",
+          "-m",
+          "4",
+          "-o",
+          "/dev/null",
+          "http://127.0.0.1:18080/healthz",
+        ]
       interval: 30s
       timeout: 5s
       start_period: 5s
