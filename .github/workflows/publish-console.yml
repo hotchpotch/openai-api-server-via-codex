@@ -77,10 +77,15 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: ghcr.io/${{ github.repository }}-console
+          # `latest` would normally track the default branch only, but this fork
+          # cuts its deployment images from the signin-UI branch and the EC2 host
+          # pulls `latest`. Both branches therefore move the tag. The released
+          # `runtime` image lives in a separate package, so nothing published here
+          # can overwrite a release tag.
           tags: |
             type=ref,event=branch
             type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.ref_name == 'main' || github.ref_name == 'feat/codex-proxy-signin-ui' }}
           labels: |
             org.opencontainers.image.title=openai-api-server-via-codex-console
             org.opencontainers.image.description=OpenAI-compatible proxy backed by Codex credentials, with the operator console
