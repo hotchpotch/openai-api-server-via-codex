@@ -162,6 +162,22 @@ python scripts/release-notes.py vX.Y.Z
   `reasoning.encrypted_content`, and add Codex-compatible stream headers.
   Public `store=true` compatibility is handled by local in-memory stores, not
   by forwarding `store=true` to ChatGPT Codex.
+- `/v1/images/generations` and `/v1/images/edits` share one path: both translate
+  into a Codex Responses call driven by the hosted `image_generation` tool.
+  Supplying input images switches the tool to `action="edit"`, uploads travel as
+  `input_image` parts, and a `mask` becomes the tool's `input_image_mask`. Codex
+  accepts `image_url` or a `file`-prefixed `file_id` there, but exposes no upload
+  endpoint, so only inlined data URLs are usable.
+- Codex never emits an `image_generation_call.completed` event. Streamed images
+  must take the finished image from `response.output_item.done`, and hold it until
+  the terminal response event so the completed frame can carry usage. Codex
+  reports the real `size`/`quality`/`background`/`output_format` on its
+  `partial_image` events and treats `partial_images` as a hint only: live runs
+  have produced both fewer and more previews than requested, so never assert an
+  exact preview count. Codex may also ignore a requested `size`.
+- Images are returned as `data[].b64_json`. `response_format="url"` stays
+  unimplemented on purpose: Codex returns image bytes, so a URL would require this
+  server to host the blobs itself rather than to proxy anything.
 - Config is loaded from `--config`, `OPENAI_VIA_CODEX_CONFIG`, or the XDG path
   `$XDG_CONFIG_HOME/openai-api-server-via-codex/config.toml`, falling back to
   `~/.config/openai-api-server-via-codex/config.toml`. Setting precedence is

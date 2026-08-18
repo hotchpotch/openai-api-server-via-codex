@@ -450,7 +450,7 @@ for chunk in stream:
 </details>
 
 <details>
-<summary><strong>Image input and image generation</strong></summary>
+<summary><strong>Image input, generation, and editing</strong></summary>
 
 Image input:
 
@@ -489,8 +489,53 @@ with open("ramen.png", "wb") as file:
     file.write(base64.b64decode(image.data[0].b64_json))
 ```
 
-Image generation returns `data[].b64_json`. URL results, image editing, and
-streamed partial images are not implemented.
+Image editing:
+
+```python
+edited = client.images.edit(
+    model="gpt-image-2",
+    image=open("ramen.png", "rb"),
+    prompt="Make the bowl blue and keep everything else unchanged.",
+    quality="medium",
+    output_format="png",
+)
+
+with open("ramen-blue.png", "wb") as file:
+    file.write(base64.b64decode(edited.data[0].b64_json))
+```
+
+Pass a list to `image=` to supply several reference images, and `mask=` to edit
+only the masked region. Uploads are inlined as data URLs, so `file_id`
+references are not supported.
+
+Streamed generation and editing, with intermediate previews:
+
+```python
+stream = client.images.generate(
+    model="gpt-image-2",
+    prompt="A cozy pixel art bowl of ramen, no text.",
+    stream=True,
+    partial_images=2,
+)
+
+for event in stream:
+    if event.type == "image_generation.partial_image":
+        print("preview", event.partial_image_index)
+    elif event.type == "image_generation.completed":
+        with open("ramen.png", "wb") as file:
+            file.write(base64.b64decode(event.b64_json))
+```
+
+Edits emit `image_edit.partial_image` and `image_edit.completed` instead.
+`partial_images` accepts `0`-`3` and is only a hint: observed live runs have
+returned both fewer and more previews than requested, so treat the count as
+unpredictable and rely on the completed event, which is the only guaranteed one.
+Streaming requires `n=1`.
+
+Images are always returned as `data[].b64_json`; `response_format="url"` is not
+implemented, because Codex returns image bytes rather than a hosted URL. Codex
+also decides the final pixel dimensions, so a `size` request is a hint rather
+than a guarantee.
 
 </details>
 
@@ -533,7 +578,8 @@ response = client.responses.create(
 - function/tool calling and streamed tool arguments
 - JSON mode and structured outputs
 - URL and data-URL image input
-- hosted image generation translated through a Codex Responses tool
+- hosted image generation and editing translated through a Codex Responses tool
+- streamed image previews via `partial_images`
 - optional incoming API-key authentication
 - bounded request concurrency and in-memory stores
 
@@ -561,6 +607,7 @@ when it is absent from the upstream catalog returned by `/v1/models`.
 | `POST` | `/v1/responses/input_tokens` |
 | `POST` | `/v1/audio/transcriptions` |
 | `POST` | `/v1/images/generations` |
+| `POST` | `/v1/images/edits` |
 | `POST` | `/v1/chat/completions` |
 | `GET` | `/v1/chat/completions` |
 | `GET` | `/v1/chat/completions/{completion_id}` |

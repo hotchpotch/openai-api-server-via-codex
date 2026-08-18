@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -234,7 +237,9 @@ func (s *server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && path == "audio/transcriptions":
 		s.audio(w, r)
 	case r.Method == http.MethodPost && path == "images/generations":
-		s.images(w, r)
+		s.images(w, r, false)
+	case r.Method == http.MethodPost && path == "images/edits":
+		s.images(w, r, true)
 	default:
 		s.proxy(w, r, path)
 	}
@@ -810,14 +815,21 @@ func (s *server) audio(w http.ResponseWriter, r *http.Request) {
 	copyProxyResponse(w, resp)
 }
 
-func (s *server) images(w http.ResponseWriter, r *http.Request) {
-	body, err := decodeObject(r)
+// images serves both /v1/images/generations and /v1/images/edits. Edits differ
+// only in the request decoding and in the Codex tool action, so both routes share
+// one validation, payload, and streaming path.
+func (s *server) images(w http.ResponseWriter, r *http.Request, edit bool) {
+	body, err := decodeImageRequest(r)
 	if err != nil {
-		writeError(w, 400, "Invalid JSON body.", "invalid_request_error", nil, nil)
+		writeError(w, 400, "Invalid image request body.", "invalid_request_error", nil, nil)
 		return
 	}
-	if err := validateImage(body); err != nil {
+	if err := validateImage(body, edit); err != nil {
 		writeError(w, 400, err.Message, "invalid_request_error", strPtr(err.Param), nil)
+		return
+	}
+	if imageStreamRequested(body) {
+		s.streamImages(w, r, body, edit)
 		return
 	}
 	count := intValue(body["n"])
@@ -847,7 +859,114 @@ func (s *server) images(w http.ResponseWriter, r *http.Request) {
 		}
 		data = append(data, image)
 	}
-	result := map[string]any{"created": created, "data": data, "output_format": valueOr(body["output_format"], "png")}
+	result := map[string]any{"created": created, "data": data}
+	for key, value := range imageResultMetadata(body) {
+		result[key] = value
+	}
+	writeJSON(w, 200, result)
+}
+
+// streamImages translates the Codex image_generation stream into the public
+// image_generation.* / image_edit.* SSE events. The final image is taken from
+// response.output_item.done because Codex does not emit an
+// image_generation_call.completed event, and it is held back until the terminal
+// response event so the completed frame can carry usage.
+func (s *server) streamImages(w http.ResponseWriter, r *http.Request, body map[string]any, edit bool) {
+	setSSE(w)
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, 500, "Streaming unsupported.", "api_error", nil, nil)
+		return
+	}
+	if s.acquire(r.Context()) != nil {
+		return
+	}
+	defer s.release()
+	prefix := "image_generation"
+	if edit {
+		prefix = "image_edit"
+	}
+	metadata := imageResultMetadata(body)
+	created := int(time.Now().Unix())
+	var final map[string]any
+	var usage map[string]any
+	emit := func(event map[string]any) {
+		writeSSE(w, event)
+		flusher.Flush()
+	}
+	err := s.backend.stream(r.Context(), imageResponsePayload(body, s.cfg.Model), func(event map[string]any) error {
+		switch stringValue(event["type"]) {
+		case "response.image_generation_call.partial_image":
+			partial := imageStreamEvent(prefix+".partial_image", metadata, created, stringValue(event["partial_image_b64"]), event)
+			partial["partial_image_index"] = intValue(event["partial_image_index"])
+			emit(partial)
+		case "response.output_item.done":
+			if image := imageFromItem(mapAny(event["item"])); image != nil {
+				final = imageStreamEvent(prefix+".completed", metadata, created, stringValue(image["b64_json"]), event)
+			}
+		case "response.completed", "response.incomplete", "response.failed":
+			response := mapAny(event["response"])
+			if response == nil {
+				return nil
+			}
+			if u := mapAny(response["usage"]); u != nil {
+				usage = u
+			}
+			if v := intValue(response["created_at"]); v != 0 {
+				created = v
+			}
+			if final == nil {
+				if image := imageFromResponse(response); image != nil {
+					final = imageStreamEvent(prefix+".completed", metadata, created, stringValue(image["b64_json"]), event)
+				}
+			}
+		}
+		return nil
+	})
+	switch {
+	case err != nil:
+		emit(map[string]any{"type": "error", "code": nil, "message": publicStreamError(err), "param": nil})
+	case final == nil:
+		emit(map[string]any{
+			"type": "error", "code": nil, "param": nil,
+			"message": "Codex backend did not return an image_generation_call.",
+		})
+	default:
+		final["created_at"] = created
+		if usage != nil {
+			final["usage"] = usage
+		}
+		emit(final)
+	}
+	io.WriteString(w, "data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+// imageStreamEvent builds one public image stream frame. The clients treat
+// size/quality/background/output_format as always present, so each frame starts
+// from documented defaults, takes the requested settings over those, and finally
+// prefers whatever the Codex event reports, which is the only source that knows
+// the real rendered size.
+func imageStreamEvent(eventType string, metadata map[string]any, created int, b64 string, event map[string]any) map[string]any {
+	frame := map[string]any{
+		"type": eventType, "b64_json": b64, "created_at": created,
+		"background": "auto", "quality": "auto", "size": "auto", "output_format": "png",
+	}
+	for key, value := range metadata {
+		frame[key] = value
+	}
+	for _, key := range []string{"size", "quality", "background", "output_format"} {
+		if value := stringValue(event[key]); value != "" {
+			frame[key] = value
+		}
+	}
+	return frame
+}
+
+// imageResultMetadata echoes back the settings the public image APIs report
+// alongside the image, restricted to the values OpenAI documents.
+func imageResultMetadata(body map[string]any) map[string]any {
+	metadata := map[string]any{"output_format": valueOr(body["output_format"], "png")}
 	for _, allowed := range []struct {
 		key    string
 		values map[string]bool
@@ -857,10 +976,10 @@ func (s *server) images(w http.ResponseWriter, r *http.Request) {
 		{"size", map[string]bool{"1024x1024": true, "1024x1536": true, "1536x1024": true}},
 	} {
 		if value := stringValue(body[allowed.key]); allowed.values[value] {
-			result[allowed.key] = value
+			metadata[allowed.key] = value
 		}
 	}
-	writeJSON(w, 200, result)
+	return metadata
 }
 
 func (s *server) proxy(w http.ResponseWriter, r *http.Request, path string) {
@@ -1025,15 +1144,164 @@ func estimateTokens(prepared map[string]any) int {
 	return n
 }
 
+const (
+	// maxImageEditInputs matches the number of reference images the GPT image
+	// models accept for a single edit.
+	maxImageEditInputs = 16
+	// maxImagePartials is the ceiling Codex enforces on tools[].partial_images.
+	maxImagePartials = 3
+	// maxImageUploadBytes bounds a single uploaded image or mask. Uploads are
+	// inlined as base64 data URLs, so this also bounds the upstream request.
+	maxImageUploadBytes = 32 << 20
+	// imageUploadMemoryLimit is how much of a multipart form is buffered in memory
+	// before net/http spills the remainder to temporary files.
+	imageUploadMemoryLimit = 16 << 20
+)
+
+// decodeImageRequest normalizes the two shapes the OpenAI clients use for image
+// requests into a single body map. JSON bodies pass through unchanged; multipart
+// uploads (what client.images.edit sends) become base64 data URLs under "image"
+// and "mask" so validation, payload building, and streaming stay shared.
+func decodeImageRequest(r *http.Request) (map[string]any, error) {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/") {
+		return decodeObject(r)
+	}
+	defer r.Body.Close()
+	if err := r.ParseMultipartForm(imageUploadMemoryLimit); err != nil {
+		return nil, err
+	}
+	defer func() { _ = r.MultipartForm.RemoveAll() }()
+	body := map[string]any{}
+	for name, values := range r.MultipartForm.Value {
+		if len(values) == 0 {
+			continue
+		}
+		// Clients send repeated fields as either "image" or "image[]"; the last
+		// value wins for scalars, matching net/http form semantics.
+		body[strings.TrimSuffix(name, "[]")] = values[len(values)-1]
+	}
+	for name, files := range r.MultipartForm.File {
+		urls := make([]any, 0, len(files))
+		for _, header := range files {
+			url, err := dataURLFromUpload(header)
+			if err != nil {
+				return nil, err
+			}
+			urls = append(urls, url)
+		}
+		if len(urls) > 0 {
+			body[strings.TrimSuffix(name, "[]")] = urls
+		}
+	}
+	return body, nil
+}
+
+// dataURLFromUpload reads one uploaded file into a base64 data URL.
+func dataURLFromUpload(header *multipart.FileHeader) (string, error) {
+	file, err := header.Open()
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxImageUploadBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", errors.New("uploaded image is empty")
+	}
+	if len(data) > maxImageUploadBytes {
+		return "", errors.New("uploaded image is too large")
+	}
+	return "data:" + uploadMediaType(header, data) + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+// uploadMediaType trusts a declared image content type and otherwise sniffs the
+// bytes, so an upload without a usable part header still produces a valid data URL.
+func uploadMediaType(header *multipart.FileHeader, data []byte) string {
+	if declared, _, err := mime.ParseMediaType(header.Header.Get("Content-Type")); err == nil {
+		if strings.HasPrefix(declared, "image/") {
+			return declared
+		}
+	}
+	if sniffed, _, err := mime.ParseMediaType(http.DetectContentType(data)); err == nil {
+		if strings.HasPrefix(sniffed, "image/") {
+			return sniffed
+		}
+	}
+	return "image/png"
+}
+
+// dataURLList accepts the single-value and repeated forms of an image field.
+func dataURLList(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		if typed == "" {
+			return nil
+		}
+		return []string{typed}
+	case []any:
+		urls := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if url := stringValue(item); url != "" {
+				urls = append(urls, url)
+			}
+		}
+		return urls
+	}
+	return nil
+}
+
+// imageStreamRequested reads the stream flag from either a JSON boolean or the
+// string a multipart form carries.
+func imageStreamRequested(body map[string]any) bool {
+	switch value := body["stream"].(type) {
+	case bool:
+		return value
+	case string:
+		return value == "true" || value == "1"
+	}
+	return false
+}
+
 type imageValidationError struct{ Message, Param string }
 
-func validateImage(body map[string]any) *imageValidationError {
+func validateImage(body map[string]any, edit bool) *imageValidationError {
 	prompt, ok := body["prompt"].(string)
 	if !ok || strings.TrimSpace(prompt) == "" {
 		return &imageValidationError{"prompt is required.", "prompt"}
 	}
-	if boolValue(body["stream"]) {
-		return &imageValidationError{"stream=true is not supported for image generations.", "stream"}
+	images := dataURLList(body["image"])
+	if edit && len(images) == 0 {
+		return &imageValidationError{"image is required.", "image"}
+	}
+	if !edit && len(images) > 0 {
+		return &imageValidationError{"image is only supported for image edits.", "image"}
+	}
+	if len(images) > maxImageEditInputs {
+		return &imageValidationError{fmt.Sprintf("image accepts at most %d files.", maxImageEditInputs), "image"}
+	}
+	for _, image := range images {
+		if !strings.HasPrefix(image, "data:") && !strings.HasPrefix(image, "https://") {
+			return &imageValidationError{"image must be an uploaded file, a data URL, or an https URL.", "image"}
+		}
+	}
+	if masks := dataURLList(body["mask"]); len(masks) > 1 {
+		return &imageValidationError{"mask accepts at most one file.", "mask"}
+	} else if len(masks) == 1 && !edit {
+		return &imageValidationError{"mask is only supported for image edits.", "mask"}
+	}
+	if body["partial_images"] != nil {
+		partials, valid := exactInt(body["partial_images"])
+		if !valid {
+			return &imageValidationError{"partial_images must be an integer between 0 and 3.", "partial_images"}
+		}
+		if partials < 0 || partials > maxImagePartials {
+			return &imageValidationError{fmt.Sprintf("partial_images must be between 0 and %d.", maxImagePartials), "partial_images"}
+		}
 	}
 	if body["response_format"] != nil {
 		return &imageValidationError{"response_format is not supported for GPT image generations; images are always returned as b64_json.", "response_format"}
@@ -1048,6 +1316,11 @@ func validateImage(body map[string]any) *imageValidationError {
 	}
 	if n < 1 || n > 10 {
 		return &imageValidationError{"n must be between 1 and 10.", "n"}
+	}
+	// One streamed request carries a single image, so n>1 has no way to report the
+	// extra images through the partial/completed event pair.
+	if n > 1 && imageStreamRequested(body) {
+		return &imageValidationError{"n must be 1 when stream is true.", "n"}
 	}
 	format := stringValue(valueOr(body["output_format"], "png"))
 	if !map[string]bool{"png": true, "jpeg": true, "webp": true}[format] {
@@ -1088,8 +1361,8 @@ func validateImage(body map[string]any) *imageValidationError {
 	if body["style"] != nil {
 		return &imageValidationError{"style is not supported for GPT image generations.", "style"}
 	}
-	if body["partial_images"] != nil {
-		return &imageValidationError{"partial_images requires streamed image generations, which are not supported.", "partial_images"}
+	if body["input_fidelity"] != nil && !map[string]bool{"high": true, "low": true}[stringValue(body["input_fidelity"])] {
+		return &imageValidationError{"input_fidelity must be one of high or low.", "input_fidelity"}
 	}
 	return nil
 }
@@ -1111,13 +1384,24 @@ func exactInt(value any) (int, bool) {
 		return 0, false
 	}
 }
+
+// imageResponsePayload translates a public image request into a Codex Responses
+// call driven by the hosted image_generation tool. Supplying input images switches
+// the tool to action "edit"; Codex edits whatever images the conversation carries.
 func imageResponsePayload(body map[string]any, model string) map[string]any {
 	format := stringValue(body["output_format"])
 	if format == "" {
 		format = "png"
 	}
-	tool := map[string]any{"type": "image_generation", "action": "generate", "output_format": format}
-	for _, k := range []string{"size", "quality", "background", "moderation"} {
+	images := dataURLList(body["image"])
+	action := "generate"
+	instructions := "Use the image_generation tool to generate the requested image."
+	if len(images) > 0 {
+		action = "edit"
+		instructions = "Use the image_generation tool to edit the provided image as requested."
+	}
+	tool := map[string]any{"type": "image_generation", "action": action, "output_format": format}
+	for _, k := range []string{"size", "quality", "background", "moderation", "input_fidelity"} {
 		if body[k] != nil {
 			tool[k] = body[k]
 		}
@@ -1126,28 +1410,45 @@ func imageResponsePayload(body map[string]any, model string) map[string]any {
 		compression, _ := exactInt(body["output_compression"])
 		tool["output_compression"] = compression
 	}
+	if body["partial_images"] != nil && imageStreamRequested(body) {
+		partials, _ := exactInt(body["partial_images"])
+		tool["partial_images"] = partials
+	}
+	if masks := dataURLList(body["mask"]); len(masks) > 0 {
+		tool["input_image_mask"] = map[string]any{"image_url": masks[0]}
+	}
+	content := []any{map[string]any{
+		"type": "input_text", "text": strings.TrimSpace(stringValue(body["prompt"])),
+	}}
+	for _, image := range images {
+		content = append(content, map[string]any{"type": "input_image", "image_url": image})
+	}
 	return map[string]any{
 		"model":        model,
-		"instructions": "Use the image_generation tool to generate the requested image.",
-		"input": []any{map[string]any{
-			"role": "user",
-			"content": []any{map[string]any{
-				"type": "input_text", "text": strings.TrimSpace(stringValue(body["prompt"])),
-			}},
-		}},
-		"store": false, "tools": []any{tool}, "tool_choice": "auto", "parallel_tool_calls": true,
+		"instructions": instructions,
+		"input":        []any{map[string]any{"role": "user", "content": content}},
+		"store":        false, "tools": []any{tool}, "tool_choice": "auto", "parallel_tool_calls": true,
 	}
 }
 func imageFromResponse(response map[string]any) map[string]any {
 	for _, raw := range sliceAny(response["output"]) {
-		item := mapAny(raw)
-		if item["type"] == "image_generation_call" && stringValue(item["result"]) != "" {
-			result := map[string]any{"b64_json": item["result"]}
-			if item["revised_prompt"] != nil {
-				result["revised_prompt"] = item["revised_prompt"]
-			}
-			return result
+		if image := imageFromItem(mapAny(raw)); image != nil {
+			return image
 		}
 	}
 	return nil
+}
+
+// imageFromItem converts one Codex output item into a public image payload. The
+// streamed and collected paths both need it: Codex reports the finished image as an
+// image_generation_call item rather than a dedicated completion event.
+func imageFromItem(item map[string]any) map[string]any {
+	if item == nil || item["type"] != "image_generation_call" || stringValue(item["result"]) == "" {
+		return nil
+	}
+	result := map[string]any{"b64_json": item["result"]}
+	if item["revised_prompt"] != nil {
+		result["revised_prompt"] = item["revised_prompt"]
+	}
+	return result
 }

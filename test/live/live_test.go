@@ -3,11 +3,13 @@ package live_test
 import (
 	"bufio"
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -301,6 +303,85 @@ func TestLiveGoServerCompatibilityMatrix(t *testing.T) {
 		t.Logf("image generation: %dx%d bytes=%d", width, height, len(decoded))
 	})
 
+	t.Run("image editing and streamed partial images", func(t *testing.T) {
+		// Send a real 64x64 red square and ask for it in blue. Codex only reports the
+		// finished image as an image_generation_call item, so this exercises both the
+		// multipart edit translation and the partial-image stream translation.
+		source := solidPNG(64, 0xff, 0x00, 0x00)
+		var multipartBody bytes.Buffer
+		writer := multipart.NewWriter(&multipartBody)
+		file, err := writer.CreateFormFile("image", "square.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := file.Write(source); err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range map[string]string{
+			"prompt":        "Replace the red square with a solid blue square of the same size.",
+			"quality":       "low",
+			"output_format": "png",
+		} {
+			if err := writer.WriteField(name, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		response, data := client.raw(t, http.MethodPost, "/images/edits", &multipartBody, map[string]string{
+			"Content-Type": writer.FormDataContentType(),
+		})
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("image edit status=%d body=%s", response.StatusCode, data)
+		}
+		var edited map[string]any
+		if err := json.Unmarshal(data, &edited); err != nil {
+			t.Fatalf("invalid image edit response: %v; body=%s", err, data)
+		}
+		editedImages := sliceValue(edited["data"])
+		if len(editedImages) != 1 {
+			t.Fatalf("image edit returned %d images", len(editedImages))
+		}
+		editedPNG, err := base64.StdEncoding.DecodeString(stringValue(mapValue(editedImages[0])["b64_json"]))
+		if err != nil || len(editedPNG) < 24 || !bytes.Equal(editedPNG[:8], []byte("\x89PNG\r\n\x1a\n")) {
+			t.Fatalf("invalid edited PNG: bytes=%d err=%v", len(editedPNG), err)
+		}
+		t.Logf("image edit: %dx%d bytes=%d",
+			binary.BigEndian.Uint32(editedPNG[16:20]),
+			binary.BigEndian.Uint32(editedPNG[20:24]), len(editedPNG))
+
+		events := client.sseLarge(t, http.MethodPost, "/images/generations", map[string]any{
+			"model": "gpt-image-2", "quality": "low", "output_format": "png",
+			"prompt": "A simple centered blue triangle on a plain white background. No text.",
+			"stream": true, "partial_images": 2,
+		}, http.StatusOK)
+		partials, completed := 0, 0
+		for _, event := range events {
+			switch stringValue(event["type"]) {
+			case "image_generation.partial_image":
+				if stringValue(event["b64_json"]) == "" {
+					t.Fatalf("partial image event without data: %v", event["type"])
+				}
+				partials++
+			case "image_generation.completed":
+				final, err := base64.StdEncoding.DecodeString(stringValue(event["b64_json"]))
+				if err != nil || !bytes.Equal(final[:8], []byte("\x89PNG\r\n\x1a\n")) {
+					t.Fatalf("invalid streamed PNG: bytes=%d err=%v", len(final), err)
+				}
+				completed++
+			case "error":
+				t.Fatalf("streamed image reported an error: %v", event["message"])
+			}
+		}
+		// Codex treats partial_images as best effort, so only the completed frame is
+		// guaranteed; the count is logged rather than asserted.
+		if completed != 1 {
+			t.Fatalf("streamed image completed events = %d, want 1; events=%v", completed, eventTypes(events))
+		}
+		t.Logf("image stream: partials=%d events=%v", partials, eventTypes(events))
+	})
+
 	t.Run("audio transcription and fallback proxy", func(t *testing.T) {
 		var multipartBody bytes.Buffer
 		writer := multipart.NewWriter(&multipartBody)
@@ -518,6 +599,45 @@ func (client *liveClient) sse(t *testing.T, method, path string, payload any, st
 	return events
 }
 
+// sseLarge reads an SSE stream whose individual events can be far larger than
+// bufio.Scanner's default token limit. A single streamed partial image is close to
+// a megabyte of base64, so the image stream needs this instead of sse.
+func (client *liveClient) sseLarge(t *testing.T, method, path string, payload any, status int) []map[string]any {
+	t.Helper()
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, data := client.raw(t, method, path, bytes.NewReader(encoded), map[string]string{
+		"Accept": "text/event-stream", "Content-Type": "application/json",
+	})
+	if response.StatusCode != status {
+		t.Fatalf("%s %s status=%d, want=%d; body=%s", method, path, response.StatusCode, status, data)
+	}
+	var events []map[string]any
+	reader := bufio.NewReaderSize(bytes.NewReader(data), 1<<20)
+	for {
+		line, err := reader.ReadString('\n')
+		if trimmed := strings.TrimRight(line, "\r\n"); strings.HasPrefix(trimmed, "data:") {
+			raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+			if raw != "" && raw != "[DONE]" {
+				var event map[string]any
+				if jsonErr := json.Unmarshal([]byte(raw), &event); jsonErr != nil {
+					t.Fatalf("invalid SSE event: %v; bytes=%d", jsonErr, len(raw))
+				}
+				events = append(events, event)
+			}
+		}
+		if err != nil {
+			if err != io.EOF {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	return events
+}
+
 func (client *liveClient) raw(t *testing.T, method, path string, body io.Reader, headers map[string]string) (*http.Response, []byte) {
 	t.Helper()
 	request, err := http.NewRequest(method, client.baseURL+path, body)
@@ -654,6 +774,39 @@ func eventTypes(events []map[string]any) []string {
 		result = append(result, stringValue(event["type"]))
 	}
 	return result
+}
+
+// solidPNG builds a square single-color PNG so the edit probe sends real image
+// bytes rather than a placeholder the model cannot act on.
+func solidPNG(side int, red, green, blue byte) []byte {
+	chunk := func(tag string, payload []byte) []byte {
+		out := make([]byte, 0, len(payload)+12)
+		out = binary.BigEndian.AppendUint32(out, uint32(len(payload)))
+		out = append(out, tag...)
+		out = append(out, payload...)
+		return binary.BigEndian.AppendUint32(out, crc32.ChecksumIEEE(append([]byte(tag), payload...)))
+	}
+	rows := make([]byte, 0, side*(side*3+1))
+	for y := 0; y < side; y++ {
+		rows = append(rows, 0) // no filter for this scanline
+		for x := 0; x < side; x++ {
+			rows = append(rows, red, green, blue)
+		}
+	}
+	var deflated bytes.Buffer
+	compressor := zlib.NewWriter(&deflated)
+	compressor.Write(rows)
+	compressor.Close()
+
+	header := make([]byte, 0, 13)
+	header = binary.BigEndian.AppendUint32(header, uint32(side))
+	header = binary.BigEndian.AppendUint32(header, uint32(side))
+	header = append(header, 8, 2, 0, 0, 0) // 8-bit truecolor RGB
+
+	out := append([]byte{}, 0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n')
+	out = append(out, chunk("IHDR", header)...)
+	out = append(out, chunk("IDAT", deflated.Bytes())...)
+	return append(out, chunk("IEND", nil)...)
 }
 
 func silentWAV() []byte {

@@ -157,7 +157,47 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
                     },
                 ]
             )
-        elif not is_image:
+        elif is_image:
+            image_tool = next(
+                (tool for tool in tools if tool.get("type") == "image_generation"), {}
+            )
+            # Codex announces progress and streams partial frames, but never emits an
+            # image_generation_call.completed event: the finished image only arrives
+            # with response.output_item.done below.
+            events.extend(
+                [
+                    {
+                        "type": "response.image_generation_call.in_progress",
+                        "sequence_number": 1,
+                        "output_index": 0,
+                        "item_id": item["id"],
+                    },
+                    {
+                        "type": "response.image_generation_call.generating",
+                        "sequence_number": 2,
+                        "output_index": 0,
+                        "item_id": item["id"],
+                    },
+                ]
+            )
+            for index in range(int(image_tool.get("partial_images") or 0)):
+                events.append(
+                    {
+                        "type": "response.image_generation_call.partial_image",
+                        "sequence_number": 3,
+                        "output_index": 0,
+                        "item_id": item["id"],
+                        "partial_image_index": index,
+                        "partial_image_b64": base64.b64encode(
+                            b"\x89PNG\r\n\x1a\npartial-" + str(index).encode()
+                        ).decode(),
+                        "size": "1024x1024",
+                        "quality": "low",
+                        "background": "opaque",
+                        "output_format": image_tool.get("output_format") or "png",
+                    }
+                )
+        else:
             message_text = cast(dict[str, Any], cast(list[Any], item["content"])[0])[
                 "text"
             ]
@@ -554,3 +594,80 @@ async def test_contract_images_audio_and_unknown_proxy(
         "/backend-api/codex/files/100%25done"
     ), runtime
     assert encoded_traversal.status_code == 400, runtime
+
+
+async def test_contract_image_edit_through_sdk(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    """client.images.edit posts multipart; it must become a Codex edit call."""
+    runtime, _ = runtime_server
+    edited = await contract_client.images.edit(
+        model="gpt-image-2",
+        image=("square.png", b"\x89PNG\r\n\x1a\nsource", "image/png"),
+        prompt="make the square blue",
+        quality="low",
+        output_format="png",
+    )
+    assert edited.data is not None and edited.data[0].b64_json is not None, runtime
+    assert base64.b64decode(edited.data[0].b64_json).startswith(b"\x89PNG"), runtime
+
+
+async def test_contract_image_edit_with_mask_and_multiple_images(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    """Several reference images plus a mask must survive the multipart round trip."""
+    runtime, _ = runtime_server
+    edited = await contract_client.images.edit(
+        model="gpt-image-2",
+        image=[
+            ("first.png", b"\x89PNG\r\n\x1a\nfirst", "image/png"),
+            ("second.png", b"\x89PNG\r\n\x1a\nsecond", "image/png"),
+        ],
+        mask=("mask.png", b"\x89PNG\r\n\x1a\nmask", "image/png"),
+        prompt="replace the masked area",
+        input_fidelity="high",
+    )
+    assert edited.data is not None and edited.data[0].b64_json is not None, runtime
+
+
+async def test_contract_image_generation_streaming_through_sdk(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    """Streamed generations must parse as the SDK image_generation.* models."""
+    runtime, _ = runtime_server
+    stream = await contract_client.images.generate(
+        model="gpt-image-2",
+        prompt="draw a streamed contract",
+        stream=True,
+        partial_images=2,
+    )
+    partials: list[int] = []
+    completed: list[str] = []
+    async for event in stream:
+        if event.type == "image_generation.partial_image":
+            partials.append(event.partial_image_index)
+            assert base64.b64decode(event.b64_json).startswith(b"\x89PNG"), runtime
+            assert event.output_format == "png", runtime
+        elif event.type == "image_generation.completed":
+            completed.append(event.b64_json)
+    assert partials == [0, 1], runtime
+    assert len(completed) == 1, runtime
+    assert base64.b64decode(completed[0]).startswith(b"\x89PNG"), runtime
+
+
+async def test_contract_image_edit_streaming_through_sdk(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    """Streamed edits use the image_edit.* event names, not image_generation.*."""
+    runtime, _ = runtime_server
+    stream = await contract_client.images.edit(
+        model="gpt-image-2",
+        image=("square.png", b"\x89PNG\r\n\x1a\nsource", "image/png"),
+        prompt="make the square blue",
+        stream=True,
+        partial_images=1,
+    )
+    seen: list[str] = []
+    async for event in stream:
+        seen.append(event.type)
+    assert seen == ["image_edit.partial_image", "image_edit.completed"], runtime

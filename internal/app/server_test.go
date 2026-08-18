@@ -3,9 +3,11 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -355,7 +357,7 @@ func TestImageGenerationUsesCompatibilityModelAndCodexPayload(t *testing.T) {
 		"model": "gpt-image-2", "prompt": "  draw ramen  ", "size": "1024x1024",
 		"quality": "medium", "output_format": "png", "output_compression": 80,
 	}
-	if validation := validateImage(body); validation != nil {
+	if validation := validateImage(body, false); validation != nil {
 		t.Fatalf("validation = %#v", validation)
 	}
 	payload := imageResponsePayload(body, "gpt-5.6-luna")
@@ -371,28 +373,160 @@ func TestImageGenerationUsesCompatibilityModelAndCodexPayload(t *testing.T) {
 	if tool["type"] != "image_generation" || intValue(tool["output_compression"]) != 80 {
 		t.Fatalf("tool = %#v", tool)
 	}
+	if tool["action"] != "generate" {
+		t.Fatalf("generation must not request an edit: %#v", tool)
+	}
+	if tool["partial_images"] != nil {
+		t.Fatalf("non-streamed generation must not request partial images: %#v", tool)
+	}
+}
+
+// Edits reach Codex as the same hosted tool switched to action "edit", with the
+// uploads carried as input_image parts and the mask on the tool itself.
+func TestImageEditPayloadUsesEditActionInputImagesAndMask(t *testing.T) {
+	body := map[string]any{
+		"prompt": " make it blue ", "output_format": "webp",
+		"image":          []any{"data:image/png;base64,AAAA", "data:image/png;base64,BBBB"},
+		"mask":           []any{"data:image/png;base64,CCCC"},
+		"input_fidelity": "high",
+		"partial_images": 2, "stream": true,
+	}
+	if validation := validateImage(body, true); validation != nil {
+		t.Fatalf("validation = %#v", validation)
+	}
+	payload := imageResponsePayload(body, "gpt-5.6-luna")
+	tool := mapAny(sliceAny(payload["tools"])[0])
+	if tool["action"] != "edit" || tool["output_format"] != "webp" || tool["input_fidelity"] != "high" {
+		t.Fatalf("tool = %#v", tool)
+	}
+	if intValue(tool["partial_images"]) != 2 {
+		t.Fatalf("streamed edit must forward partial_images: %#v", tool)
+	}
+	if mask := mapAny(tool["input_image_mask"]); mask["image_url"] != "data:image/png;base64,CCCC" {
+		t.Fatalf("mask = %#v", tool["input_image_mask"])
+	}
+	content := sliceAny(mapAny(sliceAny(payload["input"])[0])["content"])
+	if len(content) != 3 {
+		t.Fatalf("content = %#v", content)
+	}
+	if text := mapAny(content[0]); text["type"] != "input_text" || text["text"] != "make it blue" {
+		t.Fatalf("prompt part = %#v", text)
+	}
+	for index, want := range []string{"data:image/png;base64,AAAA", "data:image/png;base64,BBBB"} {
+		part := mapAny(content[index+1])
+		if part["type"] != "input_image" || part["image_url"] != want {
+			t.Fatalf("image part %d = %#v", index, part)
+		}
+	}
+}
+
+// partial_images is only meaningful while streaming; a non-streamed request must
+// not push it upstream, where it would change Codex behavior for no visible gain.
+func TestImagePartialImagesOnlyForwardedWhenStreaming(t *testing.T) {
+	body := map[string]any{"prompt": "x", "partial_images": 3}
+	if validation := validateImage(body, false); validation != nil {
+		t.Fatalf("validation = %#v", validation)
+	}
+	tool := mapAny(sliceAny(imageResponsePayload(body, "m")["tools"])[0])
+	if tool["partial_images"] != nil {
+		t.Fatalf("tool = %#v", tool)
+	}
+	body["stream"] = true
+	tool = mapAny(sliceAny(imageResponsePayload(body, "m")["tools"])[0])
+	if intValue(tool["partial_images"]) != 3 {
+		t.Fatalf("tool = %#v", tool)
+	}
 }
 
 func TestImageGenerationValidationMatchesPublicContract(t *testing.T) {
 	tests := []struct {
 		name, param string
+		edit        bool
 		body        map[string]any
 	}{
-		{"prompt", "prompt", map[string]any{}},
-		{"stream", "stream", map[string]any{"prompt": "x", "stream": true}},
-		{"response format", "response_format", map[string]any{"prompt": "x", "response_format": "b64_json"}},
-		{"fractional n", "n", map[string]any{"prompt": "x", "n": 1.5}},
-		{"quality", "quality", map[string]any{"prompt": "x", "quality": "ultra"}},
-		{"compression", "output_compression", map[string]any{"prompt": "x", "output_compression": 101}},
-		{"style", "style", map[string]any{"prompt": "x", "style": "vivid"}},
+		{"prompt", "prompt", false, map[string]any{}},
+		{"response format", "response_format", false, map[string]any{"prompt": "x", "response_format": "b64_json"}},
+		{"fractional n", "n", false, map[string]any{"prompt": "x", "n": 1.5}},
+		{"quality", "quality", false, map[string]any{"prompt": "x", "quality": "ultra"}},
+		{"compression", "output_compression", false, map[string]any{"prompt": "x", "output_compression": 101}},
+		{"style", "style", false, map[string]any{"prompt": "x", "style": "vivid"}},
+		{"partial images range", "partial_images", false, map[string]any{"prompt": "x", "partial_images": 4}},
+		{"partial images type", "partial_images", false, map[string]any{"prompt": "x", "partial_images": 1.5}},
+		{"input fidelity", "input_fidelity", false, map[string]any{"prompt": "x", "input_fidelity": "ultra"}},
+		{"streamed n", "n", false, map[string]any{"prompt": "x", "n": 2, "stream": true}},
+		{"missing edit image", "image", true, map[string]any{"prompt": "x"}},
+		{"image on generation", "image", false, map[string]any{"prompt": "x", "image": "data:image/png;base64,AA"}},
+		{"mask on generation", "mask", false, map[string]any{"prompt": "x", "mask": "data:image/png;base64,AA"}},
+		{"unsupported image reference", "image", true, map[string]any{"prompt": "x", "image": "file-123"}},
+		{"multiple masks", "mask", true, map[string]any{
+			"prompt": "x", "image": "data:image/png;base64,AA",
+			"mask": []any{"data:image/png;base64,AA", "data:image/png;base64,BB"},
+		}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := validateImage(test.body)
+			err := validateImage(test.body, test.edit)
 			if err == nil || err.Param != test.param {
 				t.Fatalf("validation = %#v", err)
 			}
 		})
+	}
+}
+
+// Multipart uploads are the shape client.images.edit sends; they must arrive as
+// data URLs with the scalar fields preserved.
+func TestDecodeImageRequestNormalizesMultipartUploads(t *testing.T) {
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	for _, name := range []string{"image", "image"} {
+		part, err := writer.CreateFormFile(name, "square.png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		part.Write([]byte("\x89PNG\r\n\x1a\nfake"))
+	}
+	mask, err := writer.CreateFormFile("mask", "mask.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mask.Write([]byte("\x89PNG\r\n\x1a\nmask"))
+	writer.WriteField("prompt", "make it blue")
+	writer.WriteField("n", "1")
+	writer.WriteField("stream", "true")
+	writer.WriteField("partial_images", "2")
+	writer.Close()
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/images/edits", &buffer)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	body, err := decodeImageRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := dataURLList(body["image"])
+	if len(images) != 2 {
+		t.Fatalf("images = %#v", body["image"])
+	}
+	wantImage := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte("\x89PNG\r\n\x1a\nfake"))
+	if images[0] != wantImage {
+		t.Fatalf("image data URL = %q", images[0])
+	}
+	if masks := dataURLList(body["mask"]); len(masks) != 1 {
+		t.Fatalf("mask = %#v", body["mask"])
+	}
+	if body["prompt"] != "make it blue" {
+		t.Fatalf("prompt = %#v", body["prompt"])
+	}
+	// Multipart carries every scalar as a string, so the flag and integer readers
+	// have to cope with that rather than only with JSON types.
+	if !imageStreamRequested(body) {
+		t.Fatalf("stream = %#v", body["stream"])
+	}
+	if validation := validateImage(body, true); validation != nil {
+		t.Fatalf("validation = %#v", validation)
+	}
+	tool := mapAny(sliceAny(imageResponsePayload(body, "m")["tools"])[0])
+	if intValue(tool["partial_images"]) != 2 {
+		t.Fatalf("tool = %#v", tool)
 	}
 }
 

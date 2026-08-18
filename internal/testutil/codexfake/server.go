@@ -140,7 +140,7 @@ func (s *Server) responses(w http.ResponseWriter, payload map[string]any) {
 		return
 	}
 	item := outputMessage(number, text)
-	if hasTool(payload, "image_generation") {
+	if imageTool := toolByType(payload, "image_generation"); imageTool != nil {
 		item = map[string]any{
 			"id": fmt.Sprintf("ig_go_contract_%d", number), "type": "image_generation_call",
 			"status":         "completed",
@@ -181,7 +181,34 @@ func (s *Server) responses(w http.ResponseWriter, payload map[string]any) {
 	if strings.Contains(text, "FAKE_UPSTREAM_ERROR") {
 		return
 	}
-	if item["type"] == "function_call" {
+	if item["type"] == "image_generation_call" {
+		// Codex reports progress and partial frames, but never an
+		// image_generation_call.completed event: the finished image arrives with
+		// response.output_item.done below.
+		writeSSE(w, map[string]any{
+			"type":            "response.image_generation_call.in_progress",
+			"sequence_number": 1, "output_index": 0, "item_id": item["id"],
+		})
+		writeSSE(w, map[string]any{
+			"type":            "response.image_generation_call.generating",
+			"sequence_number": 2, "output_index": 0, "item_id": item["id"],
+		})
+		imageTool := toolByType(payload, "image_generation")
+		for index := 0; index < intValue(imageTool["partial_images"]); index++ {
+			writeSSE(w, map[string]any{
+				"type":            "response.image_generation_call.partial_image",
+				"sequence_number": 3, "output_index": 0, "item_id": item["id"],
+				"partial_image_index": index,
+				"partial_image_b64": base64.StdEncoding.EncodeToString(
+					[]byte(fmt.Sprintf("\x89PNG\r\n\x1a\nGo-partial-%d", index))),
+				"size": "1024x1024", "quality": "low",
+				"background": "opaque", "output_format": valueOr(imageTool["output_format"], "png"),
+			})
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	} else if item["type"] == "function_call" {
 		added := clone(item)
 		added["arguments"] = ""
 		added["status"] = "in_progress"
@@ -231,13 +258,30 @@ func firstFunctionTool(payload map[string]any) map[string]any {
 	return nil
 }
 
-func hasTool(payload map[string]any, toolType string) bool {
+func toolByType(payload map[string]any, toolType string) map[string]any {
 	for _, raw := range slice(payload["tools"]) {
 		if tool, ok := raw.(map[string]any); ok && tool["type"] == toolType {
-			return true
+			return tool
 		}
 	}
-	return false
+	return nil
+}
+
+func hasTool(payload map[string]any, toolType string) bool {
+	return toolByType(payload, toolType) != nil
+}
+
+func intValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case float64:
+		return int(typed)
+	case json.Number:
+		number, _ := typed.Int64()
+		return int(number)
+	}
+	return 0
 }
 
 func flattenText(value any) string {

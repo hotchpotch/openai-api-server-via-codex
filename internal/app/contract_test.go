@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -564,4 +565,216 @@ func containsString(values []any, want string) bool {
 		}
 	}
 	return false
+}
+
+// multipartImageRequest builds the multipart body client.images.edit sends.
+func multipartImageRequest(
+	t *testing.T,
+	environment *contractEnvironment,
+	fields map[string]string,
+	files map[string][]byte,
+) (*http.Response, []byte) {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := multipart.NewWriter(&buffer)
+	for name, value := range fields {
+		if err := writer.WriteField(name, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, content := range files {
+		part, err := writer.CreateFormFile(name, name+".png")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, environment.server.URL+"/v1/images/edits", &buffer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+contractAPIKey)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	response, err := environment.client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response, data
+}
+
+// A multipart edit must reach Codex as an image_generation tool set to action
+// "edit", with the upload inlined as an input_image and the mask on the tool.
+func TestGoHTTPContractImageEditsTranslateUploadsToCodexEditTool(t *testing.T) {
+	environment := newContractEnvironment(t, nil)
+	source := []byte("\x89PNG\r\n\x1a\nsource")
+	response, data := multipartImageRequest(t, environment,
+		map[string]string{"prompt": "make it blue", "quality": "low", "output_format": "png"},
+		map[string][]byte{"image": source, "mask": []byte("\x89PNG\r\n\x1a\nmask")},
+	)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", response.StatusCode, data)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("invalid JSON: %v; body=%s", err, data)
+	}
+	images := sliceAny(document["data"])
+	if len(images) != 1 {
+		t.Fatalf("data = %#v", document)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(stringValue(mapAny(images[0])["b64_json"]))
+	if err != nil || !bytes.HasPrefix(decoded, []byte("\x89PNG")) {
+		t.Fatalf("image data = %q, error=%v", decoded, err)
+	}
+	if document["output_format"] != "png" || document["quality"] != "low" {
+		t.Fatalf("metadata = %#v", document)
+	}
+
+	upstream := environment.upstream.LastResponseRequest(t)
+	tool := mapAny(sliceAny(upstream.JSON["tools"])[0])
+	if tool["type"] != "image_generation" || tool["action"] != "edit" {
+		t.Fatalf("tool = %#v", tool)
+	}
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(source)
+	if mask := mapAny(tool["input_image_mask"]); stringValue(mask["image_url"]) == "" {
+		t.Fatalf("mask not forwarded: %#v", tool)
+	}
+	content := sliceAny(mapAny(sliceAny(upstream.JSON["input"])[0])["content"])
+	if len(content) != 2 {
+		t.Fatalf("content = %#v", content)
+	}
+	image := mapAny(content[1])
+	if image["type"] != "input_image" || image["image_url"] != wantURL {
+		t.Fatalf("input image = %#v", image)
+	}
+	// store=true must never reach ChatGPT Codex, streaming or not.
+	if upstream.JSON["store"] != false {
+		t.Fatalf("store = %#v", upstream.JSON["store"])
+	}
+}
+
+// Streaming generations translate the Codex image_generation_call stream into the
+// public image_generation.* frames, ending with a completed frame that carries the
+// finished image and usage.
+func TestGoHTTPContractImageGenerationStreamsPartialImages(t *testing.T) {
+	environment := newContractEnvironment(t, nil)
+	response, data := environment.request(t, http.MethodPost, "/v1/images/generations", map[string]any{
+		"prompt": "GO-IMAGE-STREAM", "stream": true, "partial_images": 2,
+		"size": "1024x1024", "quality": "low", "output_format": "png",
+	})
+	if response.StatusCode != http.StatusOK ||
+		!strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("status = %d, content-type = %q; body=%s",
+			response.StatusCode, response.Header.Get("Content-Type"), data)
+	}
+	events := parseSSE(t, data)
+	var partials, completed int
+	for _, event := range events {
+		switch stringValue(event["type"]) {
+		case "image_generation.partial_image":
+			if intValue(event["partial_image_index"]) != partials {
+				t.Fatalf("partial index = %#v, want %d", event["partial_image_index"], partials)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(stringValue(event["b64_json"]))
+			if err != nil || !bytes.HasPrefix(decoded, []byte("\x89PNG")) {
+				t.Fatalf("partial image = %q, error=%v", decoded, err)
+			}
+			if event["output_format"] != "png" || event["size"] != "1024x1024" {
+				t.Fatalf("partial metadata = %#v", event)
+			}
+			partials++
+		case "image_generation.completed":
+			decoded, err := base64.StdEncoding.DecodeString(stringValue(event["b64_json"]))
+			if err != nil || !bytes.HasPrefix(decoded, []byte("\x89PNG")) {
+				t.Fatalf("final image = %q, error=%v", decoded, err)
+			}
+			if mapAny(event["usage"]) == nil {
+				t.Fatalf("completed event missing usage: %#v", event)
+			}
+			if intValue(event["created_at"]) == 0 {
+				t.Fatalf("completed event missing created_at: %#v", event)
+			}
+			completed++
+		case "error":
+			t.Fatalf("unexpected error event: %#v", event)
+		}
+	}
+	if partials != 2 || completed != 1 {
+		t.Fatalf("partials = %d, completed = %d; events=%#v", partials, completed, events)
+	}
+	// The completed frame must be last so clients can stop on it.
+	if stringValue(events[len(events)-1]["type"]) != "image_generation.completed" {
+		t.Fatalf("last event = %#v", events[len(events)-1])
+	}
+	if !bytes.HasSuffix(bytes.TrimSpace(data), []byte("data: [DONE]")) {
+		t.Fatalf("stream did not terminate with [DONE]: %s", data)
+	}
+	if intValue(mapAny(sliceAny(environment.upstream.LastResponseRequest(t).JSON["tools"])[0])["partial_images"]) != 2 {
+		t.Fatal("partial_images not forwarded to Codex")
+	}
+}
+
+// Streamed edits use the image_edit.* event names, matching the public API.
+func TestGoHTTPContractImageEditStreamUsesEditEventNames(t *testing.T) {
+	environment := newContractEnvironment(t, nil)
+	response, data := multipartImageRequest(t, environment,
+		map[string]string{"prompt": "make it blue", "stream": "true", "partial_images": "1"},
+		map[string][]byte{"image": []byte("\x89PNG\r\n\x1a\nsource")},
+	)
+	if response.StatusCode != http.StatusOK ||
+		!strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("status = %d, content-type = %q; body=%s",
+			response.StatusCode, response.Header.Get("Content-Type"), data)
+	}
+	var seen []string
+	for _, event := range parseSSE(t, data) {
+		seen = append(seen, stringValue(event["type"]))
+	}
+	want := []string{"image_edit.partial_image", "image_edit.completed"}
+	if len(seen) != len(want) {
+		t.Fatalf("events = %#v, want %#v", seen, want)
+	}
+	for index, expected := range want {
+		if seen[index] != expected {
+			t.Fatalf("events = %#v, want %#v", seen, want)
+		}
+	}
+}
+
+// A streamed request whose Codex stream yields no image must report an error
+// event rather than closing as if it had succeeded.
+func TestGoHTTPContractImageStreamReportsMissingImage(t *testing.T) {
+	environment := newContractEnvironment(t, nil)
+	response, data := environment.request(t, http.MethodPost, "/v1/images/generations", map[string]any{
+		"prompt": "FAKE_UPSTREAM_ERROR", "stream": true,
+	})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", response.StatusCode, data)
+	}
+	events := parseSSE(t, data)
+	if len(events) != 1 || stringValue(events[0]["type"]) != "error" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+// Rejections must stay real HTTP errors: the SSE upgrade only happens after the
+// request validates, so a bad streamed request still gets a 400 body.
+func TestGoHTTPContractImageStreamValidationStaysHTTPError(t *testing.T) {
+	environment := newContractEnvironment(t, nil)
+	document := environment.json(t, http.MethodPost, "/v1/images/generations", map[string]any{
+		"prompt": "x", "stream": true, "n": 3,
+	}, http.StatusBadRequest)
+	if mapAny(document["error"])["param"] != "n" {
+		t.Fatalf("error = %#v", document)
+	}
 }
