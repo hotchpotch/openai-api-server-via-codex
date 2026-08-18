@@ -236,8 +236,10 @@ originator = %q
 user_agent = %q
 
 [compat]
-# Parameters stripped before the request reaches Codex.
-drop_params = ["fast_mode"]
+# Parameters stripped before the request reaches Codex. Empty by default: fast_mode used to be
+# stripped here, but the caller now decides per request, so removing it centrally would make the
+# toggle silently inert. Add names back to strip a parameter Codex rejects.
+drop_params = []
 
 [daemon]
 state_dir = %q

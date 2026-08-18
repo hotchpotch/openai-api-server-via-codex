@@ -303,10 +303,22 @@ func TestBackendHeadersIdentifyAsCodexCLI(t *testing.T) {
 	if got := headers.Get("X-Service-Tier"); got != "" {
 		t.Fatalf("X-Service-Tier should be absent without a tier, got %q", got)
 	}
+	if got := headers.Get("X-Fast-Mode"); got != "" {
+		t.Fatalf("X-Fast-Mode should be absent when fast mode is off, got %q", got)
+	}
 
-	withTier := b.headersWithTier(credentials{AccessToken: "token"}, true, "", "flex")
+	withTier := b.headersWithTier(credentials{AccessToken: "token"}, true, "", "flex", false)
 	if got := withTier.Get("X-Service-Tier"); got != "flex" {
 		t.Fatalf("X-Service-Tier = %q, want %q", got, "flex")
+	}
+	if got := withTier.Get("X-Fast-Mode"); got != "" {
+		t.Fatalf("X-Fast-Mode should stay absent when fast mode is off, got %q", got)
+	}
+
+	// Codex acts on the header, not the body field — see headersWithTier.
+	withFast := b.headersWithTier(credentials{AccessToken: "token"}, true, "", "", true)
+	if got := withFast.Get("X-Fast-Mode"); got != "true" {
+		t.Fatalf("X-Fast-Mode = %q, want %q", got, "true")
 	}
 }
 

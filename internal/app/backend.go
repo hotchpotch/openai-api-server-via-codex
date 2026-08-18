@@ -46,13 +46,15 @@ func newBackend(cfg config) *backend {
 }
 
 func (b *backend) headers(cred credentials, stream bool, requestID string) http.Header {
-	return b.headersWithTier(cred, stream, requestID, "")
+	return b.headersWithTier(cred, stream, requestID, "", false)
 }
 
-// headersWithTier builds the upstream request headers. serviceTier travels as
-// X-Service-Tier rather than only in the body: the payload field alone did not
-// take effect against the Codex backend, so the header carries it as well.
-func (b *backend) headersWithTier(cred credentials, stream bool, requestID, serviceTier string) http.Header {
+// headersWithTier builds the upstream request headers. serviceTier and fastMode travel as
+// X-Service-Tier / X-Fast-Mode rather than only in the body: the payload fields alone did not
+// take effect against the Codex backend, so the headers carry them as well. Established for
+// service_tier upstream and for fast_mode in the fork this deployment came from, which moved
+// fast_mode from the body to a header (and popped it from the body) for exactly this reason.
+func (b *backend) headersWithTier(cred credentials, stream bool, requestID, serviceTier string, fastMode bool) http.Header {
 	h := make(http.Header)
 	h.Set("Authorization", "Bearer "+cred.AccessToken)
 	originator := b.cfg.Originator
@@ -67,6 +69,9 @@ func (b *backend) headersWithTier(cred credentials, stream bool, requestID, serv
 	h.Set("User-Agent", userAgent)
 	if serviceTier != "" {
 		h.Set("X-Service-Tier", serviceTier)
+	}
+	if fastMode {
+		h.Set("X-Fast-Mode", "true")
 	}
 	if cred.AccountID != "" {
 		h.Set("ChatGPT-Account-ID", cred.AccountID)
@@ -155,6 +160,11 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 		include = append(include, "reasoning.encrypted_content")
 	}
 	prepared["include"] = include
+	// Same rule as the tier: read from prepared so drop_params still governs it. The body copy is
+	// then removed — Codex acts on the header, and leaving an unknown field in the payload risks a
+	// 400 from a backend that validates strictly.
+	fastMode := boolValue(prepared["fast_mode"])
+	delete(prepared, "fast_mode")
 	body, _ := json.Marshal(prepared)
 	resp, err := b.doAuthenticated(func(cred credentials) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.cfg.BackendURL+"/responses", bytes.NewReader(body))
@@ -163,7 +173,7 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 		}
 		// Read the tier from prepared, not payload, so --drop-params service_tier
 		// removes it from the header too rather than only from the body.
-		req.Header = b.headersWithTier(cred, true, stringValue(prepared["prompt_cache_key"]), stringValue(prepared["service_tier"]))
+		req.Header = b.headersWithTier(cred, true, stringValue(prepared["prompt_cache_key"]), stringValue(prepared["service_tier"]), fastMode)
 		return req, nil
 	})
 	if err != nil {

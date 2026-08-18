@@ -567,6 +567,47 @@ func containsString(values []any, want string) bool {
 	return false
 }
 
+// fast_mode must reach Codex as the X-Fast-Mode HEADER and NOT as a body field. The fork this
+// deployment came from established that: it first passed fast_mode in the body, found it had no
+// effect, and moved it to a header while popping it from the payload — the same conclusion it
+// reached for service_tier. Sending it only in the body would leave the toggle silently inert.
+func TestUpstreamCarriesFastModeAsHeaderNotBody(t *testing.T) {
+	environment := newContractEnvironment(t, nil)
+
+	resp, _ := environment.request(t, http.MethodPost, "/v1/responses", map[string]any{
+		"model":     "gpt-5.5",
+		"input":     "hello",
+		"fast_mode": true,
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	upstream := environment.upstream.LastResponseRequest(t)
+	if got := upstream.Headers.Get("X-Fast-Mode"); got != "true" {
+		t.Fatalf("X-Fast-Mode header = %q, want %q", got, "true")
+	}
+	if _, present := upstream.JSON["fast_mode"]; present {
+		t.Fatalf("fast_mode must be stripped from the upstream body, got %#v", upstream.JSON["fast_mode"])
+	}
+}
+
+// Without the flag the header stays off — it must not leak in as a default.
+func TestUpstreamOmitsFastModeHeaderByDefault(t *testing.T) {
+	environment := newContractEnvironment(t, nil)
+
+	resp, _ := environment.request(t, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "gpt-5.5",
+		"input": "hello",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := environment.upstream.LastResponseRequest(t).Headers.Get("X-Fast-Mode"); got != "" {
+		t.Fatalf("X-Fast-Mode = %q, want empty", got)
+	}
+}
+
 // multipartImageRequest builds the multipart body client.images.edit sends.
 func multipartImageRequest(
 	t *testing.T,
