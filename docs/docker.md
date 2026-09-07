@@ -56,7 +56,7 @@ $ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
 
 `latest` tracks the newest stable release. Every release also has its exact Git
-tag, for example `ghcr.io/hotchpotch/openai-api-server-via-codex:v0.2.0`.
+tag, for example `ghcr.io/hotchpotch/openai-api-server-via-codex:v0.2.1`.
 Prereleases publish only their exact tag and never replace `latest`.
 
 Use the published image with the repository's Compose configuration without
