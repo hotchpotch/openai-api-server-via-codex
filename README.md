@@ -200,16 +200,16 @@ Windows archives use `.zip`.
 For example, on an Apple silicon Mac:
 
 ```console
-$ curl -LO https://github.com/hotchpotch/openai-api-server-via-codex/releases/download/v0.2.0/openai-api-server-via-codex_0.2.0_darwin_arm64.tar.gz
-$ curl -LO https://github.com/hotchpotch/openai-api-server-via-codex/releases/download/v0.2.0/checksums.txt
+$ curl -LO https://github.com/hotchpotch/openai-api-server-via-codex/releases/download/v0.2.1/openai-api-server-via-codex_0.2.1_darwin_arm64.tar.gz
+$ curl -LO https://github.com/hotchpotch/openai-api-server-via-codex/releases/download/v0.2.1/checksums.txt
 $ grep 'darwin_arm64.tar.gz' checksums.txt | shasum -a 256 --check
-$ tar -xzf openai-api-server-via-codex_0.2.0_darwin_arm64.tar.gz
+$ tar -xzf openai-api-server-via-codex_0.2.1_darwin_arm64.tar.gz
 $ ./openai-api-server-via-codex --version
 ```
 
 The stable archive URLs and SHA-256 checksums are suitable for Homebrew
 Formulae. Installing a historical version through Homebrew requires a tap to
-retain a versioned Formula such as `openai-api-server-via-codex@0.2.0`.
+retain a versioned Formula such as `openai-api-server-via-codex@0.2.1`.
 
 </details>
 
@@ -219,7 +219,7 @@ retain a versioned Formula such as `openai-api-server-via-codex@0.2.0`.
 
 Stable Linux x86_64 and ARM64 images are published at
 `ghcr.io/hotchpotch/openai-api-server-via-codex`. `latest` tracks the newest
-stable release. Exact tags such as `v0.2.0` provide reproducible deployments;
+stable release. Exact tags such as `v0.2.1` provide reproducible deployments;
 prereleases publish only their exact version tag.
 
 The final Alpine image contains the Go server and CA certificates, but no

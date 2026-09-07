@@ -1,6 +1,6 @@
 # Responses WebSocket mode with Codex
 
-Planned for 0.2.1; currently available from this development branch.
+Available since 0.2.1.
 
 `GET /v1/responses` accepts a WebSocket upgrade and opens a matching connection
 at the configured Codex backend. The Go server substitutes Codex authentication
