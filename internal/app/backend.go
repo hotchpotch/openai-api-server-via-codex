@@ -110,10 +110,12 @@ func logAuthFailure(stage string, err error) {
 	)
 }
 
-func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {
-	b.debugf("codex.stream.start model=%s endpoint=%s/responses", stringValue(payload["model"]), b.cfg.BackendURL)
-	prepared := cloneMap(payload)
-	for _, name := range b.cfg.DropParams {
+func prepareCodexPayload(payload map[string]any, dropParams []string) map[string]any {
+	return normalizeCodexPayload(cloneMap(payload), dropParams)
+}
+
+func normalizeCodexPayload(prepared map[string]any, dropParams []string) map[string]any {
+	for _, name := range dropParams {
 		delete(prepared, name)
 	}
 	delete(prepared, "max_output_tokens")
@@ -137,6 +139,12 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 		include = append(include, "reasoning.encrypted_content")
 	}
 	prepared["include"] = include
+	return prepared
+}
+
+func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {
+	b.debugf("codex.stream.start model=%s endpoint=%s/responses", stringValue(payload["model"]), b.cfg.BackendURL)
+	prepared := prepareCodexPayload(payload, b.cfg.DropParams)
 	body, _ := json.Marshal(prepared)
 	resp, err := b.doAuthenticated(func(cred credentials) (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.cfg.BackendURL+"/responses", bytes.NewReader(body))

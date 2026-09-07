@@ -21,7 +21,7 @@ RED_SQUARE_PNG_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC"
 )
-LIVE_LONG_TEST_MODEL = "gpt-5.4-mini"
+LIVE_LONG_TEST_MODEL = os.environ.get("OPENAI_VIA_CODEX_TEST_MODEL", "gpt-5.4-mini")
 
 
 @pytest.mark.asyncio

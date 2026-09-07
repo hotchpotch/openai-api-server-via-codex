@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/subtle"
@@ -16,8 +17,11 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 type server struct {
@@ -26,6 +30,10 @@ type server struct {
 	responses *responseStore
 	chats     *chatStore
 	slots     chan struct{}
+	wsMu      sync.Mutex
+	wsWG      sync.WaitGroup
+	wsCancels map[*websocket.Conn]websocketLifecycle
+	wsClosing bool
 }
 
 type codexBackend interface {
@@ -48,6 +56,7 @@ func serve(cfg config, version string) error {
 		return preflightAuthError(err)
 	}
 	s := &server{cfg: cfg, backend: b, responses: newResponseStore(cfg.MaxStored), chats: newChatStore(cfg.MaxStored)}
+	defer s.abortWebSockets()
 	if cfg.Concurrency > 0 {
 		s.slots = make(chan struct{}, cfg.Concurrency)
 	}
@@ -85,8 +94,7 @@ func serve(cfg config, version string) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := httpServer.Shutdown(ctx); err != nil {
-			_ = httpServer.Close()
+		if err := s.shutdown(ctx, httpServer); err != nil {
 			return err
 		}
 		err := <-serveResult
@@ -95,6 +103,21 @@ func serve(cfg config, version string) error {
 		}
 		return err
 	}
+}
+
+// HTTP and hijacked WebSocket connections share the caller's shutdown deadline.
+func (s *server) shutdown(ctx context.Context, httpServer *http.Server) error {
+	wsDone := make(chan error, 1)
+	go func() { wsDone <- s.closeWebSocketsContext(ctx) }()
+	httpErr := httpServer.Shutdown(ctx)
+	if httpErr != nil {
+		_ = httpServer.Close()
+	}
+	wsErr := <-wsDone
+	if httpErr != nil {
+		return httpErr
+	}
+	return wsErr
 }
 
 func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +165,15 @@ func (w *responseCapture) Write(data []byte) (int, error) {
 	return written, err
 }
 
+func (w *responseCapture) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, rw, err := http.NewResponseController(w.ResponseWriter).Hijack()
+	if err == nil {
+		w.status = http.StatusSwitchingProtocols
+		w.wroteHeader = true
+	}
+	return conn, rw, err
+}
+
 func (w *responseCapture) Flush() {
 	if !w.wroteHeader {
 		w.WriteHeader(http.StatusOK)
@@ -187,6 +219,8 @@ func (s *server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && path == "models":
 		s.models(w, r)
+	case r.Method == http.MethodGet && path == "responses":
+		s.websocketResponse(w, r)
 	case r.Method == http.MethodPost && path == "responses":
 		s.createResponse(w, r)
 	case r.Method == http.MethodPost && path == "responses/input_tokens":
@@ -235,15 +269,22 @@ func validBearer(header, key string) bool {
 	want := []byte(key)
 	return len(got) == len(want) && subtle.ConstantTimeCompare(got, want) == 1
 }
-func (s *server) acquire(ctx context.Context) error {
+
+// Reject saturation explicitly: persistent WebSockets may retain every slot.
+func (s *server) acquireRequest(w http.ResponseWriter, r *http.Request) bool {
 	if s.slots == nil {
-		return nil
+		return true
+	}
+	if r.Context().Err() != nil {
+		return false
 	}
 	select {
 	case s.slots <- struct{}{}:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+		return true
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, http.StatusServiceUnavailable, "Backend concurrency limit reached. Close idle WebSocket connections or retry later.", "api_error", nil, nil)
+		return false
 	}
 }
 func (s *server) release() {
@@ -253,7 +294,7 @@ func (s *server) release() {
 }
 
 func (s *server) models(w http.ResponseWriter, r *http.Request) {
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()
@@ -271,6 +312,11 @@ func (s *server) createResponse(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "Invalid JSON body.", "invalid_request_error", nil, nil)
 		return
 	}
+	if boolValue(body["background"]) {
+		writeError(w, 400, backgroundUnsupportedMessage, "invalid_request_error", strPtr("background"), "unsupported_parameter")
+		return
+	}
+	delete(body, "background")
 	prepared := prepareResponse(body, s.cfg.Model)
 	previous := stringValue(prepared["previous_response_id"])
 	if previous != "" {
@@ -287,7 +333,7 @@ func (s *server) createResponse(w http.ResponseWriter, r *http.Request) {
 		s.streamResponse(w, r, prepared, downstream, previous)
 		return
 	}
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()
@@ -311,7 +357,7 @@ func (s *server) streamResponse(w http.ResponseWriter, r *http.Request, prepared
 		writeError(w, 500, "Streaming unsupported.", "api_error", nil, nil)
 		return
 	}
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()
@@ -523,7 +569,7 @@ func (s *server) chatCollection(w http.ResponseWriter, r *http.Request) {
 		s.streamChat(w, r, responsePayload, body, legacy)
 		return
 	}
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()
@@ -549,7 +595,7 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 	if !ok {
 		return
 	}
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()
@@ -763,7 +809,7 @@ func (s *server) chatResource(w http.ResponseWriter, r *http.Request, resource s
 }
 
 func (s *server) audio(w http.ResponseWriter, r *http.Request) {
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()
@@ -790,7 +836,7 @@ func (s *server) images(w http.ResponseWriter, r *http.Request) {
 	if count == 0 {
 		count = 1
 	}
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()
@@ -834,7 +880,7 @@ func (s *server) proxy(w http.ResponseWriter, r *http.Request, path string) {
 		writeError(w, 400, "Invalid proxy path.", "api_error", nil, nil)
 		return
 	}
-	if s.acquire(r.Context()) != nil {
+	if !s.acquireRequest(w, r) {
 		return
 	}
 	defer s.release()

@@ -87,3 +87,20 @@ func TestPrepareResponseNormalizesReasoningAndDefaults(t *testing.T) {
 		t.Fatalf("input = %#v", input)
 	}
 }
+
+func TestAsyncResponseHistoryPreservesPendingCalls(t *testing.T) {
+	items := []any{
+		map[string]any{"type": "function_call", "call_id": "call_async", "name": "lookup", "arguments": "{}", "async": true, "future_field": "kept"},
+		map[string]any{"type": "custom_tool_call", "call_id": "custom_async", "name": "custom", "input": "query", "async": true},
+		map[string]any{"type": "reasoning", "encrypted_content": "opaque", "summary": []any{}},
+		map[string]any{"type": "message", "role": "assistant", "phase": "commentary", "content": []any{map[string]any{"type": "output_text", "text": "independent"}}},
+	}
+	for _, history := range [][]any{normalizeResponseInput(items), responseContext(map[string]any{"output": items})} {
+		if len(history) != 4 {
+			t.Fatalf("lost history items: %#v", history)
+		}
+		if mapAny(history[0])["async"] != true || mapAny(history[0])["future_field"] != "kept" || mapAny(history[1])["async"] != true || mapAny(history[2])["encrypted_content"] != "opaque" || mapAny(history[3])["phase"] != "commentary" {
+			t.Fatalf("lost history fields: %#v", history)
+		}
+	}
+}

@@ -122,9 +122,18 @@ func normalizeInputItem(value any) any {
 			return result
 		}
 	case "function_call":
-		return map[string]any{"type": "function_call", "call_id": valueOr(item["call_id"], item["id"]), "name": item["name"], "arguments": valueOr(item["arguments"], "{}")}
+		result := cloneMap(item)
+		delete(result, "id")
+		delete(result, "status")
+		result["call_id"] = valueOr(item["call_id"], item["id"])
+		result["arguments"] = valueOr(item["arguments"], "{}")
+		return result
 	case "function_call_output":
-		return map[string]any{"type": "function_call_output", "call_id": valueOr(item["call_id"], "unknown"), "output": stringValue(item["output"])}
+		result := cloneMap(item)
+		delete(result, "id")
+		delete(result, "status")
+		result["call_id"] = valueOr(item["call_id"], "unknown")
+		return result
 	}
 	return cloneMap(item)
 }
@@ -425,13 +434,11 @@ func responseContext(response map[string]any) []any {
 	var result []any
 	for _, raw := range sliceAny(response["output"]) {
 		item := mapAny(raw)
-		switch item["type"] {
-		case "function_call":
-			result = append(result, map[string]any{"type": "function_call", "call_id": valueOr(item["call_id"], item["id"]), "name": item["name"], "arguments": valueOr(item["arguments"], "{}")})
-		case "message":
-			if text := messageText(item); text != "" {
-				result = append(result, map[string]any{"role": "assistant", "content": text})
-			}
+		if item == nil {
+			continue
+		}
+		if normalized := normalizeInputItem(item); normalized != nil {
+			result = append(result, normalized)
 		}
 	}
 	if len(result) == 0 {

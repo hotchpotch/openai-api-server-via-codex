@@ -7,7 +7,7 @@ import socket
 import subprocess
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
@@ -32,7 +32,9 @@ def _flatten_text(value: Any) -> str:
         if value.get("type") in {"input_text", "output_text", "text"}:
             return str(value.get("text") or "")
         return " ".join(
-            filter(None, (_flatten_text(value.get(key)) for key in ("content", "input")))
+            filter(
+                None, (_flatten_text(value.get(key)) for key in ("content", "input"))
+            )
         )
     return ""
 
@@ -82,6 +84,9 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
         self._proxy_response()
 
     def _responses_stream(self, payload: dict[str, Any]) -> None:
+        if payload.get("metadata", {}).get("contract") == "async_history":
+            self._async_history_stream(payload)
+            return
         type(self).counter += 1
         number = type(self).counter
         response_id = f"resp_contract_{number}"
@@ -115,9 +120,7 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
                 "role": "assistant",
                 "status": "completed",
                 "phase": "final_answer",
-                "content": [
-                    {"type": "output_text", "text": text, "annotations": []}
-                ],
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
             }
         response = {
             "id": response_id,
@@ -187,10 +190,13 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
                 },
             ]
         )
-        chunks = "".join(
-            f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
-            for event in events
-        ) + "data: [DONE]\n\n"
+        chunks = (
+            "".join(
+                f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                for event in events
+            )
+            + "data: [DONE]\n\n"
+        )
         encoded = chunks.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
@@ -209,6 +215,118 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
             },
             headers={"x-upstream-request-id": "contract-upstream"},
         )
+
+    def _async_history_stream(self, payload: dict[str, Any]) -> None:
+        type(self).counter += 1
+        rid = f"resp_history_{type(self).counter}"
+        history = payload["input"]
+        calls = [item for item in history if item.get("type") == "function_call"]
+        if calls:
+            assert calls[0]["async"] is True
+            assert calls[0]["future_field"] == "preserved"
+            assert any(
+                item.get("type") == "custom_tool_call" and item.get("async")
+                for item in history
+            )
+            assert any(item.get("encrypted_content") == "opaque" for item in history)
+            assert any(item.get("phase") == "commentary" for item in history)
+            final = any(item.get("type") == "function_call_output" for item in history)
+            if final:
+                result = next(
+                    item
+                    for item in history
+                    if item.get("type") == "function_call_output"
+                )
+                assert result["output"] == [{"type": "input_text", "text": "value"}]
+                assert any(
+                    item.get("type") == "custom_tool_call_output"
+                    and item["output"] == "custom result"
+                    for item in history
+                )
+            items = [
+                {
+                    "id": "msg_history",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "FINAL_OK" if final else "PENDING_OK",
+                            "annotations": [],
+                        }
+                    ],
+                }
+            ]
+        else:
+            items = [
+                {
+                    "id": "fc_history",
+                    "type": "function_call",
+                    "call_id": "call_history",
+                    "name": "lookup",
+                    "arguments": "{}",
+                    "async": True,
+                    "future_field": "preserved",
+                    "status": "completed",
+                },
+                {
+                    "id": "custom_history",
+                    "type": "custom_tool_call",
+                    "call_id": "call_custom",
+                    "name": "custom_lookup",
+                    "input": "demo",
+                    "async": True,
+                },
+                {
+                    "id": "rs_history",
+                    "type": "reasoning",
+                    "encrypted_content": "opaque",
+                    "summary": [],
+                },
+                {
+                    "id": "msg_history",
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "commentary",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "INDEPENDENT_OK",
+                            "annotations": [],
+                        }
+                    ],
+                },
+            ]
+        response = {
+            "id": rid,
+            "object": "response",
+            "created_at": 0,
+            "model": payload["model"],
+            "status": "completed",
+            "output": items,
+        }
+        events: list[dict[str, Any]] = [
+            {
+                "type": "response.created",
+                "response": {**response, "status": "in_progress", "output": []},
+            }
+        ]
+        events.extend(
+            {"type": "response.output_item.done", "output_index": index, "item": item}
+            for index, item in enumerate(items)
+        )
+        events.append({"type": "response.completed", "response": response})
+        encoded = "".join(
+            "data: " + json.dumps({**event, "sequence_number": index}) + "\n\n"
+            for index, event in enumerate(events)
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
 
     def _json(
         self,
@@ -239,16 +357,6 @@ def fake_codex_url() -> Iterator[str]:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
-
-
-@pytest.fixture(scope="module")
-def go_binary(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    binary = tmp_path_factory.mktemp("go-bin") / "openai-api-server-via-codex"
-    subprocess.run(
-        ["go", "build", "-o", str(binary), "./cmd/openai-api-server-via-codex"],
-        check=True,
-    )
-    return binary
 
 
 @pytest.fixture(scope="module")
@@ -321,9 +429,14 @@ def runtime_server(
 
 
 @pytest.fixture
-def contract_client(runtime_server: tuple[str, str]) -> AsyncOpenAI:
+async def contract_client(
+    runtime_server: tuple[str, str],
+) -> AsyncIterator[AsyncOpenAI]:
     _, base_url = runtime_server
-    return AsyncOpenAI(api_key="contract-server-key", base_url=f"{base_url}/v1")
+    async with AsyncOpenAI(
+        api_key="contract-server-key", base_url=f"{base_url}/v1"
+    ) as client:
+        yield client
 
 
 async def test_contract_health_and_models(runtime_server: tuple[str, str]) -> None:
@@ -355,9 +468,9 @@ async def test_contract_health_and_models(runtime_server: tuple[str, str]) -> No
     assert root.status_code == 307, runtime
     assert root.headers["location"].endswith("/v1/"), runtime
     assert root_with_slash.status_code == 200, runtime
-    assert root_with_slash.json()["request_path"].endswith(
-        "/backend-api/codex/"
-    ), runtime
+    assert root_with_slash.json()["request_path"].endswith("/backend-api/codex/"), (
+        runtime
+    )
 
 
 async def test_contract_responses_lifecycle_and_streaming(
@@ -444,18 +557,20 @@ async def test_contract_chat_lifecycle_streaming_and_tools(
         store=True,
         metadata={"suite": "contract"},
     )
-    assert "chat lifecycle marker" in (completion.choices[0].message.content or ""), runtime
+    assert "chat lifecycle marker" in (completion.choices[0].message.content or ""), (
+        runtime
+    )
 
     retrieved = await contract_client.chat.completions.retrieve(completion.id)
     assert retrieved.id == completion.id, runtime
-    listed = await contract_client.chat.completions.list(
-        metadata={"suite": "contract"}
-    )
+    listed = await contract_client.chat.completions.list(metadata={"suite": "contract"})
     assert completion.id in [item.id for item in listed.data], runtime
     updated = await contract_client.chat.completions.update(
         completion.id, metadata={"suite": "updated"}
     )
-    assert updated.model_dump().get("metadata") == {"suite": "updated"}, runtime
+    assert updated.model_dump(by_alias=True).get("metadata") == {"suite": "updated"}, (
+        runtime
+    )
     messages = await contract_client.chat.completions.messages.list(completion.id)
     assert messages.data[0].role == "assistant", runtime
     descending_messages = await contract_client.chat.completions.messages.list(
@@ -490,9 +605,9 @@ async def test_contract_chat_lifecycle_streaming_and_tools(
         )
         for index in (0, 1)
     }
-    assert all(
-        "chat stream marker" in text for text in streamed_by_choice.values()
-    ), runtime
+    assert all("chat stream marker" in text for text in streamed_by_choice.values()), (
+        runtime
+    )
     assert any(chunk.usage is not None for chunk in chunks), runtime
 
     tool = await contract_client.chat.completions.create(
@@ -516,7 +631,9 @@ async def test_contract_chat_lifecycle_streaming_and_tools(
     )
     tool_calls = tool.choices[0].message.tool_calls
     assert tool_calls is not None, runtime
-    assert tool_calls[0].model_dump()["function"]["name"] == "lookup_weather", runtime
+    assert (
+        tool_calls[0].model_dump(by_alias=True)["function"]["name"] == "lookup_weather"
+    ), runtime
 
     deleted = await contract_client.chat.completions.delete(completion.id)
     assert deleted.deleted is True, runtime
@@ -542,7 +659,9 @@ async def test_contract_images_audio_and_unknown_proxy(
         base_url=base_url, headers={"Authorization": "Bearer contract-server-key"}
     ) as direct:
         proxied = await direct.get("/v1/batches?limit=3")
-        encoded_delimiters = await direct.get("/v1/files/report%3Fformat%23section?limit=1")
+        encoded_delimiters = await direct.get(
+            "/v1/files/report%3Fformat%23section?limit=1"
+        )
         literal_percent = await direct.get("/v1/files/100%25done")
         encoded_traversal = await direct.get("/v1/files/%2e%2e/auth")
     assert proxied.json()["object"] == "list", runtime
@@ -554,3 +673,440 @@ async def test_contract_images_audio_and_unknown_proxy(
         "/backend-api/codex/files/100%25done"
     ), runtime
     assert encoded_traversal.status_code == 400, runtime
+
+
+@pytest.fixture
+def websocket_runtime(
+    go_binary: Path,
+    tmp_path: Path,
+) -> Iterator[tuple[str, list[dict[str, Any]]]]:
+    from websockets.exceptions import ConnectionClosed
+    from websockets.sync.server import ServerConnection, serve
+
+    from tests.websocket_helpers import spawned_server
+
+    received: list[dict[str, Any]] = []
+    failures: list[str] = []
+
+    def handler(connection: ServerConnection) -> None:
+        assert connection.request is not None
+        assert connection.request.headers["Authorization"] == "Bearer fake-ws-token"
+        assert connection.request.headers["ChatGPT-Account-ID"] == "fake-ws-account"
+        sequence = 0
+
+        def emit(event: dict[str, Any]) -> None:
+            nonlocal sequence
+            connection.send(json.dumps({"sequence_number": sequence, **event}))
+            sequence += 1
+
+        def response(rid: str, status: str = "completed") -> dict[str, Any]:
+            return {
+                "id": rid,
+                "object": "response",
+                "created_at": 0,
+                "model": "gpt-6-astra",
+                "status": status,
+                "output": [],
+            }
+
+        def finish(rid: str, text: str, call: bool = False) -> None:
+            emit({"type": "response.created", "response": response(rid, "in_progress")})
+            if call:
+                emit(
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": {
+                            "id": "fc_async",
+                            "type": "function_call",
+                            "call_id": "call_async",
+                            "name": "lookup",
+                            "arguments": '{"key":"demo"}',
+                            "async": True,
+                            "status": "completed",
+                            "future_field": "preserved",
+                        },
+                    }
+                )
+            emit(
+                {
+                    "type": "response.output_item.done",
+                    "output_index": int(call),
+                    "item": {
+                        "id": "msg_" + rid,
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "phase": "final_answer",
+                        "content": [
+                            {"type": "output_text", "text": text, "annotations": []}
+                        ],
+                    },
+                }
+            )
+            # Codex may leave final response.output empty; consumers must collect
+            # output_item.done. The proxy must not synthesize response contents.
+            emit({"type": "response.completed", "response": response(rid)})
+
+        try:
+            for raw in connection:
+                event = json.loads(raw)
+                received.append(event)
+                if "stream_id" in event:
+                    emit(
+                        {
+                            "type": "error",
+                            "status": 400,
+                            "error": {
+                                "type": "invalid_request_error",
+                                "message": "Unsupported parameter: stream_id",
+                            },
+                        }
+                    )
+                    continue
+                if event["type"] == "response.steer":
+                    assert event["previous_response_id"] == "resp_steering"
+                    assert event["input"] == "Reply exactly STEER_OK"
+                    emit(
+                        {
+                            "type": "response.steer.accepted",
+                            "steer": {
+                                "id": "steer_1",
+                                "previous_response_id": "resp_steering",
+                            },
+                        }
+                    )
+                    emit(
+                        {
+                            "type": "response.incomplete",
+                            "response": {
+                                **response("resp_steering", "incomplete"),
+                                "incomplete_details": {"reason": "steered"},
+                            },
+                        }
+                    )
+                    finish("resp_successor", "STEER_OK")
+                    continue
+                assert event["type"] == "response.create"
+                assert event["store"] is False and "stream" not in event
+                if _flatten_text(event["input"]) == "steer-start":
+                    emit(
+                        {
+                            "type": "response.created",
+                            "response": response("resp_steering", "in_progress"),
+                        }
+                    )
+                elif event.get("previous_response_id") == "resp_async":
+                    assert event["input"] == [{"role": "user", "content": "pending"}]
+                    finish("resp_pending", "PENDING_OK")
+                elif event.get("previous_response_id") == "resp_pending":
+                    assert event["input"][0]["call_id"] == "call_async"
+                    assert event["input"][0]["output"] == "VALUE_OK"
+                    finish("resp_result", "VALUE_OK")
+                elif event.get("tools"):
+                    assert event["tools"][0]["async"] is True
+                    finish("resp_async", "INDEPENDENT_OK", call=True)
+                else:
+                    finish("resp_basic", "WS_OK")
+        except ConnectionClosed:
+            pass
+        except Exception as error:
+            failures.append(str(error))
+            raise
+
+    auth = tmp_path / "auth.json"
+    auth.write_text(
+        json.dumps(
+            {
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": "fake-ws-token",
+                    "account_id": "fake-ws-account",
+                },
+            }
+        )
+    )
+    with serve(handler, "127.0.0.1", 0) as backend:
+        thread = threading.Thread(target=backend.serve_forever, daemon=True)
+        thread.start()
+        port = backend.socket.getsockname()[1]
+        try:
+            with spawned_server(
+                go_binary,
+                tmp_path,
+                backend_url=f"http://127.0.0.1:{port}",
+                auth_json=auth,
+            ) as base:
+                yield base, received
+        finally:
+            backend.shutdown()
+            thread.join(timeout=5)
+    assert not failures, failures
+
+
+async def test_contract_websocket_async_tools_and_upstream_context(
+    websocket_runtime: tuple[str, list[dict[str, Any]]],
+) -> None:
+    from openai.types.responses import ToolParam
+
+    from tests.websocket_helpers import (
+        API_KEY,
+        ASYNC_TOOL,
+        MODEL,
+        output_text,
+        receive_terminal,
+    )
+
+    base, received = websocket_runtime
+    async with (
+        AsyncOpenAI(api_key=API_KEY, base_url=base + "/v1") as client,
+        client.responses.connect(max_retries=0) as connection,
+    ):
+        await connection.response.create(
+            model=MODEL, input="initial", tools=[cast(ToolParam, ASYNC_TOOL)]
+        )
+        first, items, _ = await receive_terminal(connection)
+        call = next(item for item in items if item["type"] == "function_call")
+        assert call["async"] is True and call["future_field"] == "preserved"
+        assert output_text(items) == "INDEPENDENT_OK"
+        await connection.response.create(
+            model=MODEL, input="pending", previous_response_id=first["id"]
+        )
+        pending, items, _ = await receive_terminal(connection)
+        assert output_text(items) == "PENDING_OK"
+        await connection.response.create(
+            model=MODEL,
+            previous_response_id=pending["id"],
+            input=[
+                {
+                    "type": "function_call_output",
+                    "call_id": call["call_id"],
+                    "output": "VALUE_OK",
+                }
+            ],
+        )
+        result, items, _ = await receive_terminal(connection)
+        assert result["status"] == "completed" and output_text(items) == "VALUE_OK"
+        with pytest.raises(NotFoundError):
+            await client.responses.retrieve(first["id"])
+    assert len(received) == 3
+
+
+async def test_contract_websocket_steering(
+    websocket_runtime: tuple[str, list[dict[str, Any]]],
+) -> None:
+    from tests.websocket_helpers import API_KEY, MODEL, output_text, receive_terminal
+
+    base, _ = websocket_runtime
+    async with (
+        AsyncOpenAI(api_key=API_KEY, base_url=base + "/v1") as client,
+        client.responses.connect(max_retries=0) as connection,
+    ):
+        await connection.response.create(model=MODEL, input="steer-start")
+        created = await connection.recv()
+        assert created.type == "response.created"
+        await connection.response.steer(
+            previous_response_id=created.model_dump()["response"]["id"],
+            input="Reply exactly STEER_OK",
+        )
+        interrupted, _, types = await receive_terminal(connection)
+        assert "response.steer.accepted" in types
+        assert interrupted["incomplete_details"]["reason"] == "steered"
+        successor, items, _ = await receive_terminal(connection)
+        assert successor["id"] != interrupted["id"]
+        assert successor["status"] == "completed" and output_text(items) == "STEER_OK"
+
+
+def test_contract_websocket_sync_and_background_rejection(
+    websocket_runtime: tuple[str, list[dict[str, Any]]],
+) -> None:
+    from openai import BadRequestError, OpenAI
+
+    from tests.websocket_helpers import API_KEY, MODEL
+
+    base, received = websocket_runtime
+    with OpenAI(api_key=API_KEY, base_url=base + "/v1") as client:
+        with pytest.raises(BadRequestError) as error:
+            client.responses.create(model=MODEL, input="hello", background=True)
+        assert error.value.code == "unsupported_parameter"
+        assert error.value.param == "background"
+        with client.responses.connect(max_retries=0) as connection:
+            connection.response.create(model=MODEL, input="hello", background=True)
+            rejected = connection.recv()
+            assert (
+                rejected.type == "error"
+                and rejected.model_dump()["error"]["code"] == "unsupported_parameter"
+            )
+            connection.response.create(model=MODEL, input="hello", background=False)
+            text = ""
+            completed = False
+            for event in connection:
+                data = event.model_dump(by_alias=True)
+                if (
+                    data["type"] == "response.output_item.done"
+                    and data["item"]["type"] == "message"
+                ):
+                    text += data["item"]["content"][0]["text"]
+                if event.type == "response.completed":
+                    assert text == "WS_OK"
+                    completed = True
+                    break
+            assert completed
+    assert len(received) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_contract_http_async_history(
+    contract_client: AsyncOpenAI, stream: bool
+) -> None:
+    from openai.types.responses import ResponseInputParam
+
+    first_items: list[dict[str, Any]] = []
+    metadata = {"contract": "async_history"}
+    if stream:
+        events = await contract_client.responses.create(
+            model="gpt-6-astra", input="initial", metadata=metadata, stream=True
+        )
+        first_id = ""
+        async for event in events:
+            data = event.model_dump(by_alias=True, exclude_none=True)
+            if data["type"] == "response.output_item.done":
+                first_items.append(data["item"])
+            if data["type"] == "response.completed":
+                first_id = data["response"]["id"]
+        assert first_id
+    else:
+        response = await contract_client.responses.create(
+            model="gpt-6-astra", input="initial", metadata=metadata
+        )
+        first_id = response.id
+        first_items = [
+            item.model_dump(by_alias=True, exclude_none=True)
+            for item in response.output
+        ]
+    assert first_items[0]["async"] is True
+    for mode in ["stored", "explicit"]:
+        kwargs: dict[str, Any] = (
+            {"previous_response_id": first_id, "input": "pending"}
+            if mode == "stored"
+            else {
+                "input": [
+                    {"role": "user", "content": "initial"},
+                    *first_items,
+                    {"role": "user", "content": "pending"},
+                ],
+            }
+        )
+        pending = await contract_client.responses.create(
+            model="gpt-6-astra", metadata=metadata, **kwargs
+        )
+        assert pending.output_text == "PENDING_OK"
+        final = await contract_client.responses.create(
+            model="gpt-6-astra",
+            metadata=metadata,
+            previous_response_id=pending.id,
+            input=cast(
+                ResponseInputParam,
+                [
+                    {
+                        "type": "function_call_output",
+                        "call_id": "call_history",
+                        "output": [{"type": "input_text", "text": "value"}],
+                    },
+                    {
+                        "type": "custom_tool_call_output",
+                        "call_id": "call_custom",
+                        "output": "custom result",
+                    },
+                ],
+            ),
+        )
+        assert final.output_text == "FINAL_OK"
+
+
+async def test_contract_websocket_upstream_named_stream_error(
+    websocket_runtime: tuple[str, list[dict[str, Any]]],
+) -> None:
+    from tests.websocket_helpers import API_KEY, MODEL
+
+    base, received = websocket_runtime
+    async with (
+        AsyncOpenAI(api_key=API_KEY, base_url=base + "/v1") as client,
+        client.responses.connect(max_retries=0) as connection,
+    ):
+        await connection.response.create(model=MODEL, stream_id="alpha", input="hello")
+        event = (await connection.recv()).model_dump(by_alias=True, exclude_none=True)
+        assert event["type"] == "error" and event["status"] == 400
+        assert event["error"] == {
+            "type": "invalid_request_error",
+            "message": "Unsupported parameter: stream_id",
+        }
+    assert received[0]["stream_id"] == "alpha"
+
+
+def test_contract_saturated_connections_return_sdk_error(
+    websocket_runtime: tuple[str, list[dict[str, Any]]],
+) -> None:
+    from contextlib import ExitStack
+
+    from openai import InternalServerError, OpenAI
+
+    from tests.websocket_helpers import API_KEY
+
+    base, _ = websocket_runtime
+    with (
+        OpenAI(
+            api_key=API_KEY, base_url=base + "/v1", max_retries=0, timeout=3
+        ) as client,
+        ExitStack() as connections,
+    ):
+        for _ in range(10):
+            connections.enter_context(client.responses.connect(max_retries=0))
+        with pytest.raises(InternalServerError) as error:
+            client.models.list()
+        assert error.value.status_code == 503
+        assert error.value.response.headers["retry-after"] == "1"
+        assert "concurrency limit" in error.value.message
+
+
+async def test_contract_websocket_saturation_recovers_under_load(
+    websocket_runtime: tuple[str, list[dict[str, Any]]],
+) -> None:
+    import asyncio
+    from contextlib import AsyncExitStack
+
+    from openai import InternalServerError
+
+    from tests.websocket_helpers import API_KEY, MODEL, receive_terminal
+
+    base, _ = websocket_runtime
+    async with AsyncOpenAI(
+        api_key=API_KEY, base_url=base + "/v1", max_retries=0, timeout=5
+    ) as client:
+
+        async def overloaded_request() -> None:
+            with pytest.raises(InternalServerError) as error:
+                await client.responses.create(model=MODEL, input="overloaded")
+            assert error.value.status_code == 503
+            assert error.value.response.headers["retry-after"] == "1"
+
+        for cycle in range(10):
+            async with AsyncExitStack() as connections:
+                for _ in range(10):
+                    await connections.enter_async_context(
+                        client.responses.connect(max_retries=0)
+                    )
+                await asyncio.wait_for(
+                    asyncio.gather(*(overloaded_request() for _ in range(50))), 10
+                )
+                async with httpx.AsyncClient() as health:
+                    assert (await health.get(base + "/healthz")).status_code == 200
+            # Exercise model traffic again after all capacity is released.
+            async with client.responses.connect(max_retries=0) as connection:
+                await connection.response.create(model=MODEL, input="recovery")
+                response, _, _ = await receive_terminal(connection)
+                assert response["status"] == "completed"
+            print(
+                f"saturation cycle {cycle + 1}/10: 50 rejected, recovery completed",
+                flush=True,
+            )
