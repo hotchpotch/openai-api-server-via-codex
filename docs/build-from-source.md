@@ -214,3 +214,11 @@ $ docker compose up --build -d
 The builder stage uses the Go toolchain; the final Alpine image contains only
 the server executable, CA certificates, and base BusyBox utilities. See the
 [Docker guide](docker.md) for authentication and runtime configuration.
+
+## Responses WebSocket transport
+
+The same standalone Go binary serves HTTP/SSE and the Responses WebSocket
+upgrade on `/v1/responses`; no additional server process is required. See
+[WebSocket mode](websocket-mode.md) for SDK examples, async tools, steering,
+connection limits, and live validation. Codex Background mode and named
+WebSocket streams are currently unsupported upstream.

@@ -477,6 +477,8 @@ response = client.responses.create(
 
 - sync and async `openai-python` clients
 - non-streaming and streaming Responses and Chat Completions
+- Responses WebSocket relay with upstream conversation state, async tools, and
+  mid-turn steering ([usage and Codex limitations](docs/websocket-mode.md))
 - `previous_response_id` backed by bounded local context
 - stored Chat list/retrieve/update/delete/messages APIs
 - Responses retrieve streaming, delete, cancel, and input-token count
@@ -487,7 +489,7 @@ response = client.responses.create(
 - optional incoming API-key authentication
 - bounded request concurrency and in-memory stores
 
-At the Codex boundary, requests are normalized to `stream=true`, `store=false`,
+At the Codex HTTP boundary, requests are normalized to `stream=true`, `store=false`,
 low text verbosity by default, Codex-compatible tool defaults, and encrypted
 reasoning content. Public storage compatibility is implemented in the server's
 bounded in-memory stores.
@@ -504,6 +506,7 @@ when it is absent from the upstream catalog returned by `/v1/models`.
 | --- | --- |
 | `GET` | `/healthz` |
 | `GET` | `/v1/models` |
+| `GET` (WebSocket upgrade) | `/v1/responses` |
 | `POST` | `/v1/responses` |
 | `GET` | `/v1/responses/{response_id}` |
 | `DELETE` | `/v1/responses/{response_id}` |
@@ -517,6 +520,10 @@ when it is absent from the upstream catalog returned by `/v1/models`.
 | `POST` | `/v1/chat/completions/{completion_id}` |
 | `DELETE` | `/v1/chat/completions/{completion_id}` |
 | `GET` | `/v1/chat/completions/{completion_id}/messages` |
+
+WebSocket responses stay on the upstream connection and are not registered with
+the local HTTP retrieve/cancel helpers. Codex currently rejects Background mode
+and named WebSocket streams (`stream_id`); these features are not emulated.
 
 Unknown `/v1/...` requests use a best-effort fallback proxy. The server
 forwards the method, path, query, safe OpenAI-style headers, and body with its
@@ -578,7 +585,7 @@ stop_timeout = 10.0
 | `server.default_model` | `gpt-5.6-luna` | Model used when a request omits one |
 | `server.api_key` | unset | Protect incoming `/v1/...` requests |
 | `server.max_stored_items` | `1000` | Bound local stores; `0` disables storage |
-| `server.max_concurrent_requests` | `10` | Bound complete requests/streams; `0` disables the cap |
+| `server.max_concurrent_requests` | `10` | Bound HTTP requests/streams and open WebSocket connections; full capacity returns 503 with `Retry-After`; `0` disables the cap |
 | `server.timeout` | `300.0` | Codex backend timeout in seconds |
 | `server.verbose` | `false` | Enable redacted application diagnostics |
 | `codex.auth_json` | `~/.codex/auth.json` | Codex OAuth file |
@@ -682,6 +689,7 @@ Real Codex tests are opt-in because they use the current login, network, model
 allowance, and image quota:
 
 ```console
+$ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_astra_websocket.py -q -s
 $ RUN_CODEX_LIVE_TESTS=1 go test ./test/live -v -count=1 -timeout=20m
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_integration.py -q -s
 $ RUN_CODEX_LIVE_TESTS=1 uv run python -m pytest tests/test_live_codex_http_compatibility.py -q -s
