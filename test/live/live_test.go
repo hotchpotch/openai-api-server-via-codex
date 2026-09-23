@@ -389,7 +389,11 @@ func startLiveServer(t *testing.T) *liveServer {
 		t.Fatalf("build live Go server: %v\n%s", err, output)
 	}
 
-	command := exec.Command(binaryPath, "serve", "--host", "127.0.0.1", "--port", "0")
+	host := os.Getenv("OPENAI_VIA_CODEX_TEST_HOST")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	command := exec.Command(binaryPath, "serve", "--host", host, "--port", "0")
 	command.Env = append(os.Environ(), "OPENAI_VIA_CODEX_API_KEY="+liveAPIKey)
 	reader, writer, err := os.Pipe()
 	if err != nil {
@@ -554,7 +558,7 @@ func chooseLiveModel(t *testing.T, client *liveClient) string {
 	}
 	requested := os.Getenv("OPENAI_VIA_CODEX_TEST_MODEL")
 	if requested == "" {
-		requested = "gpt-5.4-mini"
+		requested = "gpt-6-luna"
 	}
 	for _, model := range available {
 		if model == requested {
