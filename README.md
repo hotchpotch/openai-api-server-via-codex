@@ -66,8 +66,9 @@ from openai import OpenAI
 
 client = OpenAI()
 response = client.responses.create(
-    model="gpt-5.6-luna",
+    model="gpt-6-luna",
     input="Hello",
+    reasoning={"effort": "low"},
 )
 print(response.output_text)
 ```
@@ -355,7 +356,7 @@ from openai import OpenAI
 
 client = OpenAI()
 chat = client.chat.completions.create(
-    model="gpt-5.6-luna",
+    model="gpt-6-luna",
     messages=[{"role": "user", "content": "Hello"}],
     reasoning_effort="low",
 )
@@ -371,7 +372,7 @@ Responses:
 
 ```python
 stream = client.responses.create(
-    model="gpt-5.6-luna",
+    model="gpt-6-luna",
     input="Stream a short reply.",
     stream=True,
     reasoning={"effort": "low"},
@@ -386,7 +387,7 @@ Chat Completions:
 
 ```python
 stream = client.chat.completions.create(
-    model="gpt-5.6-luna",
+    model="gpt-6-luna",
     messages=[{"role": "user", "content": "Stream a short reply."}],
     stream=True,
     reasoning_effort="low",
@@ -406,7 +407,7 @@ Image input:
 
 ```python
 response = client.responses.create(
-    model="gpt-5.6-luna",
+    model="gpt-6-luna",
     input=[
         {
             "role": "user",
@@ -449,7 +450,7 @@ streamed partial images are not implemented.
 
 ```python
 response = client.responses.create(
-    model="gpt-5.6-luna",
+    model="gpt-6-luna",
     input="What is the weather in Tokyo?",
     tools=[
         {
@@ -554,11 +555,13 @@ Settings resolve in this order:
 CLI flag -> environment variable -> config file -> default
 ```
 
+Example configuration using `gpt-6-luna`:
+
 ```toml
 [server]
 host = "127.0.0.1"
 port = 18080
-default_model = "gpt-5.6-luna"
+default_model = "gpt-6-luna"
 timeout = 300.0
 verbose = false
 max_stored_items = 1000

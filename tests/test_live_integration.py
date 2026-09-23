@@ -54,7 +54,8 @@ async def test_live_openai_client_requests_through_go_server() -> None:
         client = AsyncOpenAI(api_key="test", base_url=f"{base_url}/v1")
         try:
             models = await client.models.list()
-            model = os.environ.get("OPENAI_VIA_CODEX_TEST_MODEL") or models.data[0].id
+            assert models.data
+            model = os.environ.get("OPENAI_VIA_CODEX_TEST_MODEL") or "gpt-6-luna"
 
             first = await client.responses.create(
                 model=model,

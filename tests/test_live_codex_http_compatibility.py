@@ -21,7 +21,7 @@ RED_SQUARE_PNG_DATA_URL = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJ0lEQVR42u3NsQkAAAjAsP7/tF7hIASyp6lTCQQCgUAgEAgEgi/BAjLD/C5w/SM9AAAAAElFTkSuQmCC"
 )
-LIVE_LONG_TEST_MODEL = os.environ.get("OPENAI_VIA_CODEX_TEST_MODEL", "gpt-5.4-mini")
+LIVE_LONG_TEST_MODEL = os.environ.get("OPENAI_VIA_CODEX_TEST_MODEL", "gpt-6-luna")
 
 
 @pytest.mark.asyncio
@@ -1746,10 +1746,10 @@ def _select_model(models: list[str]) -> str:
     requested = os.environ.get("OPENAI_VIA_CODEX_TEST_MODEL")
     if requested:
         return requested
-    for preferred in ("gpt-5.4-mini", "gpt-5.4", "gpt-5.5"):
+    for preferred in ("gpt-6-luna", "gpt-5.4-mini", "gpt-5.4", "gpt-5.5"):
         if preferred in models:
             return preferred
-    return models[0] if models else "gpt-5.4"
+    return models[0] if models else "gpt-6-luna"
 
 
 def _free_port() -> int:
