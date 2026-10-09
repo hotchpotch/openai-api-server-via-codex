@@ -119,6 +119,11 @@ func normalizeCodexPayload(prepared map[string]any, dropParams []string) map[str
 		delete(prepared, name)
 	}
 	delete(prepared, "max_output_tokens")
+	for _, item := range sliceAny(prepared["input"]) {
+		for _, part := range sliceAny(mapAny(item)["content"]) {
+			delete(mapAny(part), "prompt_cache_breakpoint")
+		}
+	}
 	prepared["stream"], prepared["store"] = true, false
 	setDefault(prepared, "tool_choice", "auto")
 	setDefault(prepared, "parallel_tool_calls", true)

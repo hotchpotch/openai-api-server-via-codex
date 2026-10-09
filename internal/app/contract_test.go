@@ -164,7 +164,9 @@ func TestGoHTTPContractResponsesLifecycleAndStreaming(t *testing.T) {
 		"model": "gpt-5.6-luna",
 		"input": []any{
 			map[string]any{"role": "user", "content": "GO-RESP-FIRST"},
-			map[string]any{"role": "user", "content": "GO-RESP-SECOND"},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "input_text", "text": "GO-RESP-SECOND", "prompt_cache_breakpoint": map[string]any{"mode": "explicit"}},
+			}},
 		},
 		"max_output_tokens": 32,
 		"prompt_cache_key":  "go-contract-request",
@@ -181,6 +183,10 @@ func TestGoHTTPContractResponsesLifecycleAndStreaming(t *testing.T) {
 	upstream := environment.upstream.LastResponseRequest(t)
 	if upstream.JSON["stream"] != true || upstream.JSON["store"] != false || upstream.JSON["max_output_tokens"] != nil {
 		t.Fatalf("normalized upstream payload = %#v", upstream.JSON)
+	}
+	upstreamParts := sliceAny(mapAny(sliceAny(upstream.JSON["input"])[1])["content"])
+	if _, ok := mapAny(upstreamParts[0])["prompt_cache_breakpoint"]; ok || mapAny(upstreamParts[0])["text"] != "GO-RESP-SECOND" {
+		t.Fatalf("upstream content parts = %#v", upstreamParts)
 	}
 	textConfig := mapAny(upstream.JSON["text"])
 	if textConfig["verbosity"] != "low" {

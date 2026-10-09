@@ -609,6 +609,8 @@ Use `drop_params` only for parameters known to be rejected by Codex:
 drop_params = ["temperature", "top_p"]
 ```
 
+`prompt_cache_breakpoint` on `input` content parts is always removed because Codex rejects it; `prompt_cache_key` is still forwarded.
+
 </details>
 
 <details>
