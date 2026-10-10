@@ -39,6 +39,17 @@ def _flatten_text(value: Any) -> str:
     return ""
 
 
+def _has_prompt_cache_breakpoint(value: Any) -> bool:
+    for item in value or []:
+        content = item.get("content") if isinstance(item, dict) else None
+        if isinstance(content, list) and any(
+            isinstance(part, dict) and "prompt_cache_breakpoint" in part
+            for part in content
+        ):
+            return True
+    return False
+
+
 class _FakeCodexHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     counter = 0
@@ -86,6 +97,19 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
     def _responses_stream(self, payload: dict[str, Any]) -> None:
         if payload.get("metadata", {}).get("contract") == "async_history":
             self._async_history_stream(payload)
+            return
+        if _has_prompt_cache_breakpoint(payload.get("input")):
+            self._json(
+                {
+                    "error": {
+                        "message": "prompt_cache_breakpoint is not supported on this model",
+                        "type": "api_error",
+                        "code": None,
+                        "param": None,
+                    }
+                },
+                status=400,
+            )
             return
         type(self).counter += 1
         number = type(self).counter
@@ -471,6 +495,33 @@ async def test_contract_health_and_models(runtime_server: tuple[str, str]) -> No
     assert root_with_slash.json()["request_path"].endswith("/backend-api/codex/"), (
         runtime
     )
+
+
+async def test_contract_strips_prompt_cache_breakpoint(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    from openai.types.responses import ResponseInputParam
+
+    runtime, _ = runtime_server
+    created = await contract_client.responses.create(
+        model="gpt-5.6-luna",
+        input=cast(
+            ResponseInputParam,
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "cache boundary marker",
+                            "prompt_cache_breakpoint": {"mode": "explicit"},
+                        }
+                    ],
+                }
+            ],
+        ),
+    )
+    assert "cache boundary marker" in created.output_text, runtime
 
 
 async def test_contract_responses_lifecycle_and_streaming(
