@@ -1,10 +1,1 @@
 # HEAD
-
-- Strip `prompt_cache_breakpoint` from `input` content parts before forwarding
-  to Codex, which rejects the explicit cache boundary OpenAI accepts on
-  GPT-5.6 and later models; `prompt_cache_key` is still forwarded.
-- Pin the development type checker to `ty 0.0.83` so local validation and CI
-  use the same version and avoid unexpected failures from automatic upgrades.
-- Update README usage and configuration examples to use `gpt-6-luna`.
-- Prefer `gpt-6-luna` in general live tests and specify low reasoning effort
-  in the README quickstart.
