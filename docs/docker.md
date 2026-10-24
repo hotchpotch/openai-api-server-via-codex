@@ -76,6 +76,25 @@ $ docker run --rm -p 127.0.0.1:18080:18080 \
     ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
 
+## Refresh images after CA security updates
+
+For the October 2026 eMudhra CA incident, source builds require Go 1.27.3
+and the runtime installs Alpine `ca-certificates` 20261020-r0 or newer.
+The login helper uses Node.js 22.23.4 with updated CA certificates.
+
+Refresh base images and bypass cached package-install layers when rebuilding:
+
+```console
+$ docker compose build --pull --no-cache openai-api-server-via-codex codex-login
+$ docker compose up --no-build -d openai-api-server-via-codex
+```
+
+For published images, pull a release containing these fixes and recreate the
+server using the commands above under [Published image](#published-image).
+Updating a host toolchain or pulling an image does not replace a running
+container. The release workflow also refreshes base images and rebuilds the
+runtime package-install layer on every container publication.
+
 ## Getting a Codex login
 
 The server borrows a Codex ChatGPT login from `auth.json`. Any one of these

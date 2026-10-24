@@ -6,9 +6,15 @@ or runtime.
 
 ## Requirements
 
-- Go 1.23 or newer
+- Go 1.27.3 or newer
+- uv 0.13.4 or newer for Python SDK tests and packaging checks (optional)
 - Git, when cloning the repository or deriving a version string
 - A Codex ChatGPT login for running the completed server
+
+Go 1.27.3 includes the `crypto/x509` mitigation for the compromised eMudhra
+intermediate CA keys (CVE-2026-111943). Rebuild and replace existing binaries
+to pick up this protection; installing a newer Go toolchain alone does not
+update an already-built server. Keep the host CA certificates updated too.
 
 The default authentication file is `~/.codex/auth.json`. Never copy that file
 into a binary, container image, source archive, or repository.

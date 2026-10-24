@@ -38,6 +38,7 @@ include = ["openai_api_server_via_codex*"]
 
 [dependency-groups]
 dev = [
+    "certifi>=2026.10.19",
     "httpx>=0.28.1",
     "openai[realtime]>=3.8.0,<4",
     "websockets>=15,<16",
@@ -47,9 +48,13 @@ dev = [
     "tomli>=2.3.0; python_version < '3.11'",
     "tox>=4.53.1",
     "tox-uv>=1.35.1",
+    "uv>=0.13.5",
     "twine>=6.2.0",
     "ty==0.0.83",
 ]
+
+[tool.uv]
+required-version = ">=0.13.4"
 
 [tool.tox]
 legacy_tox_ini = """
