@@ -1,19 +1,1 @@
 # HEAD
-
-## Security
-
-- Require Go 1.27.3 for source, CI, and release builds to reject compromised
-  eMudhra intermediate CA keys (CVE-2026-111943).
-- Refresh Docker trust stores: require Alpine CA certificates 20261020-r0 or
-  newer, update the login helper to Node.js 22.23.4, and refresh the runtime
-  package layer and base images during container publication.
-- Update the Python SDK-test and release-tooling CA bundle to certifi
-  2026.10.19 or newer, require uv 0.13.4 or newer, and use uv 0.13.5 in CI.
-- Existing installations must replace their Go executable or platform wheel
-  and restart the server after installing a release containing these fixes.
-  Container users must pull/rebuild the fixed image and recreate the container;
-  updating the host Go/Python installation alone does not update bundled binaries.
-
-References: [Go security announcement](https://groups.google.com/g/golang-announce/c/66pojueaQek),
-[Python security notice](https://discuss.python.org/t/information-for-python-users-regarding-emudhra-emsign-ca-certificate-security-incident/109576),
-and [Node.js 22.23.4](https://nodejs.org/en/blog/release/v22.23.4).
