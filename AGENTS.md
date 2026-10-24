@@ -19,7 +19,7 @@ client API rather than only raw HTTP payloads.
 
 ## Environment
 
-- Use Go 1.23 or newer for the server, CLI, and Go tests.
+- Use Go 1.27.3 or newer for the server, CLI, and Go tests.
 - Use Python 3.10 or newer only for the `uvx` launcher, OpenAI SDK consumer
   tests, and packaging/release tooling.
 - Use `uv` for Python development dependencies and validation commands.

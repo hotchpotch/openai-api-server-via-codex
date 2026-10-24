@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build the production server as a static Go executable.
-FROM --platform=$BUILDPLATFORM golang:1.23-bookworm AS server-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS server-builder
 
 WORKDIR /src
 
@@ -23,11 +23,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Login helper stage: bundles the official Codex CLI so `codex login` can run
 # in a container without Codex installed on the host. Not part of the default
 # build; used by the `codex-login` compose service (or --target login).
-FROM node:22-slim AS login
+FROM node:22.23.4-bookworm-slim AS login
 
 ARG CODEX_VERSION=latest
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends socat \
+    && apt-get install -y --no-install-recommends ca-certificates socat \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g "@openai/codex@${CODEX_VERSION}"
 
@@ -52,7 +52,7 @@ LABEL org.opencontainers.image.title="openai-api-server-via-codex" \
     org.opencontainers.image.revision="${REVISION}" \
     org.opencontainers.image.licenses="Apache-2.0"
 
-RUN apk add --no-cache ca-certificates \
+RUN apk add --no-cache 'ca-certificates>=20261020-r0' \
     && addgroup -g 1000 app \
     && adduser -D -u 1000 -G app app
 

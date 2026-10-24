@@ -159,8 +159,8 @@ This server is useful when you want to:
 | [`uvx openai-api-server-via-codex`](#install-uvx) | `uv` and a Codex login | Most users |
 | [GitHub Release archive](#install-standalone-binary) | A Codex login | A standalone executable without Python or `uv` |
 | [GHCR image](#install-docker) | Docker and a Codex login | Containers and reproducible deployment |
-| [`go install ...@latest`](#install-go) | Go 1.23+ and a Codex login | Go users |
-| [Build from a checkout](docs/build-from-source.md#build-for-the-current-machine) | Go 1.23+ and a Codex login | Development and customization |
+| [`go install ...@latest`](#install-go) | Go 1.27.3+ and a Codex login | Go users |
+| [Build from a checkout](docs/build-from-source.md#build-for-the-current-machine) | Go 1.27.3+ and a Codex login | Development and customization |
 
 <a id="install-uvx"></a>
 <details>
@@ -664,7 +664,7 @@ contract, and release tooling.
 
 Requirements:
 
-- Go 1.23 or newer
+- Go 1.27.3 or newer
 - Python 3.10 or newer
 - `uv`
 
