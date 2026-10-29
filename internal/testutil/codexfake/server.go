@@ -186,7 +186,11 @@ func (s *Server) responses(w http.ResponseWriter, payload map[string]any) {
 		added["arguments"] = ""
 		added["status"] = "in_progress"
 		writeSSE(w, map[string]any{"type": "response.output_item.added", "sequence_number": 1, "output_index": 0, "item": added})
-		writeSSE(w, map[string]any{"type": "response.function_call_arguments.delta", "sequence_number": 2, "output_index": 0, "delta": `{"city":"Tokyo"}`})
+		// The real backend sends no argument deltas for parallel tool calls;
+		// the arguments arrive only on response.output_item.done.
+		if !strings.Contains(text, "FAKE_NO_ARGUMENT_DELTA") {
+			writeSSE(w, map[string]any{"type": "response.function_call_arguments.delta", "sequence_number": 2, "output_index": 0, "delta": `{"city":"Tokyo"}`})
+		}
 	} else if item["type"] == "message" {
 		writeSSE(w, map[string]any{
 			"type": "response.output_text.delta", "sequence_number": 1,
