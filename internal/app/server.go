@@ -637,23 +637,23 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 			idx := intValue(event["output_index"])
 			delta := stringValue(event["delta"])
 			emitted[idx] += delta
-			var d map[string]any
-			if legacy {
-				d = map[string]any{"function_call": map[string]any{"arguments": delta}}
-			} else {
-				d = map[string]any{"tool_calls": []any{map[string]any{"index": idx, "function": map[string]any{"arguments": delta}}}}
-			}
-			emit(chatChunk(state, d, nil, nil, nil))
+			emit(chatChunk(state, argumentsDelta(idx, delta, legacy), nil, nil, nil))
 		case "response.output_item.done":
 			item := mapAny(event["item"])
 			if item != nil {
 				outputs = append(outputs, item)
 				if item["type"] == "function_call" {
 					idx := intValue(event["output_index"])
-					if _, ok := emitted[idx]; !ok {
+					args := stringValue(item["arguments"])
+					if sent, ok := emitted[idx]; !ok {
 						role()
-						emitted[idx] = stringValue(item["arguments"])
-						emit(chatChunk(state, toolDelta(item, idx, emitted[idx], true, legacy), nil, nil, nil))
+						emitted[idx] = args
+						emit(chatChunk(state, toolDelta(item, idx, args, true, legacy), nil, nil, nil))
+					} else if rest, found := strings.CutPrefix(args, sent); found && rest != "" {
+						// Parallel tool calls arrive with no argument deltas, so the
+						// final item carries arguments the client has not seen yet.
+						emitted[idx] = args
+						emit(chatChunk(state, argumentsDelta(idx, rest, legacy), nil, nil, nil))
 					}
 				} else if item["type"] == "message" && !state.SawText {
 					if text := messageText(item); text != "" {
@@ -738,6 +738,13 @@ func chatChunk(s chatStreamState, delta map[string]any, finish *string, choices 
 	}
 	return result
 }
+func argumentsDelta(index int, args string, legacy bool) map[string]any {
+	if legacy {
+		return map[string]any{"function_call": map[string]any{"arguments": args}}
+	}
+	return map[string]any{"tool_calls": []any{map[string]any{"index": index, "function": map[string]any{"arguments": args}}}}
+}
+
 func toolDelta(item map[string]any, index int, args string, identity, legacy bool) map[string]any {
 	if legacy {
 		fn := map[string]any{"arguments": args}

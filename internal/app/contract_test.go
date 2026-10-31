@@ -387,6 +387,30 @@ func TestGoHTTPContractChatLifecycleToolsAndStreaming(t *testing.T) {
 		t.Fatalf("chat stream chunks = %#v", chunks)
 	}
 
+	for _, marker := range []string{"Use the weather tool", "Use the weather tool FAKE_NO_ARGUMENT_DELTA"} {
+		toolStreamResponse, toolStreamData := environment.request(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model": "gpt-5.6-luna", "stream": true,
+			"messages": []any{map[string]any{"role": "user", "content": marker}},
+			"tools": []any{map[string]any{"type": "function", "function": map[string]any{
+				"name": "lookup_weather", "parameters": map[string]any{"type": "object"},
+			}}},
+		})
+		if toolStreamResponse.StatusCode != http.StatusOK {
+			t.Fatalf("tool stream status = %d", toolStreamResponse.StatusCode)
+		}
+		arguments := ""
+		for _, chunk := range parseSSE(t, toolStreamData) {
+			for _, rawChoice := range sliceAny(chunk["choices"]) {
+				for _, rawCall := range sliceAny(mapAny(mapAny(rawChoice)["delta"])["tool_calls"]) {
+					arguments += stringValue(mapAny(mapAny(rawCall)["function"])["arguments"])
+				}
+			}
+		}
+		if arguments != `{"city":"Tokyo"}` {
+			t.Fatalf("%q: streamed tool arguments = %q", marker, arguments)
+		}
+	}
+
 	deleted := environment.json(t, http.MethodDelete, "/v1/chat/completions/"+chatID, nil, http.StatusOK)
 	if deleted["deleted"] != true {
 		t.Fatalf("deleted chat = %#v", deleted)
