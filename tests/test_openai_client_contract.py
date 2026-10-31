@@ -892,14 +892,72 @@ async def test_contract_chat_legacy_function_stream_returns_first_call(
     )
     name = ""
     arguments = ""
+    finish_reason = None
     async for chunk in stream:
         for choice in chunk.choices:
+            finish_reason = choice.finish_reason or finish_reason
             call = choice.delta.function_call
             if call is not None:
                 name += call.name or ""
                 arguments += call.arguments or ""
     assert name == "lookup_city", runtime
     assert json.loads(arguments) == {"city": "Paris"}, runtime
+    assert finish_reason == "function_call", runtime
+
+
+async def test_contract_chat_legacy_function_call_finish_reason(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    completion = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "look up Paris"}],
+        functions=[
+            {
+                "name": "lookup_city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+    )
+    choice = completion.choices[0]
+    assert choice.finish_reason == "function_call", runtime
+    assert choice.message.content is None, runtime
+    assert choice.message.function_call is not None, runtime
+    assert json.loads(choice.message.function_call.arguments) == {"city": "Paris"}
+
+
+async def test_contract_chat_keeps_text_before_tool_calls_when_stored(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    completion = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "say something, then look up cities"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_after_text",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        store=True,
+    )
+    message = completion.choices[0].message
+    assert message.content == "Checking", runtime
+    assert message.tool_calls is not None and len(message.tool_calls) == 2, runtime
+    retrieved = await contract_client.chat.completions.retrieve(completion.id)
+    assert retrieved.choices[0].message.content == "Checking", runtime
+    assert retrieved.choices[0].message.tool_calls is not None, runtime
 
 
 async def test_contract_images_audio_and_unknown_proxy(

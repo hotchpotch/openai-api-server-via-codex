@@ -153,6 +153,10 @@ func chatToResponse(body map[string]any, model string) map[string]any {
 	result := map[string]any{"model": valueOr(body["model"], model), "input": []any{}, "store": false}
 	var instructions []string
 	var input []any
+	// Legacy function messages carry no call id, so results pair with their
+	// calls by function name, in order.
+	legacyCallCount := 0
+	pendingLegacyCalls := map[string][]string{}
 	for _, raw := range sliceAny(body["messages"]) {
 		msg := mapAny(raw)
 		if msg == nil {
@@ -165,10 +169,24 @@ func chatToResponse(body map[string]any, model string) map[string]any {
 				instructions = append(instructions, t)
 			}
 		case "tool", "function":
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": valueOr(msg["tool_call_id"], valueOr(msg["name"], "unknown")), "output": contentText(msg["content"])})
+			callID := valueOr(msg["tool_call_id"], valueOr(msg["name"], "unknown"))
+			if name := stringValue(msg["name"]); msg["tool_call_id"] == nil && len(pendingLegacyCalls[name]) > 0 {
+				callID = pendingLegacyCalls[name][0]
+				pendingLegacyCalls[name] = pendingLegacyCalls[name][1:]
+			}
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": callID, "output": contentText(msg["content"])})
 		case "assistant":
-			if fc := mapAny(msg["function_call"]); fc != nil {
-				input = append(input, map[string]any{"type": "function_call", "call_id": valueOr(fc["name"], "function"), "name": fc["name"], "arguments": valueOr(fc["arguments"], "{}")})
+			fc := mapAny(msg["function_call"])
+			// Text precedes its calls, so a call stays adjacent to its result.
+			if text := contentText(msg["content"]); text != "" || (fc == nil && len(sliceAny(msg["tool_calls"])) == 0) {
+				input = append(input, map[string]any{"role": "assistant", "content": text})
+			}
+			if fc != nil {
+				legacyCallCount++
+				callID := fmt.Sprintf("call_legacy_%d", legacyCallCount)
+				name := stringValue(fc["name"])
+				pendingLegacyCalls[name] = append(pendingLegacyCalls[name], callID)
+				input = append(input, map[string]any{"type": "function_call", "call_id": callID, "name": fc["name"], "arguments": valueOr(fc["arguments"], "{}")})
 			}
 			for _, tcRaw := range sliceAny(msg["tool_calls"]) {
 				tc := mapAny(tcRaw)
@@ -176,9 +194,6 @@ func chatToResponse(body map[string]any, model string) map[string]any {
 				if fn != nil {
 					input = append(input, map[string]any{"type": "function_call", "call_id": tc["id"], "name": fn["name"], "arguments": valueOr(fn["arguments"], "{}")})
 				}
-			}
-			if text := contentText(msg["content"]); text != "" || len(sliceAny(msg["tool_calls"])) == 0 {
-				input = append(input, map[string]any{"role": "assistant", "content": text})
 			}
 		case "user":
 			input = append(input, map[string]any{"role": "user", "content": chatContent(msg["content"])})
@@ -405,16 +420,18 @@ func responseToChat(response map[string]any, fallback string, legacy bool, n int
 			toolCalls = append(toolCalls, map[string]any{"id": stringValue(valueOr(item["call_id"], item["id"])), "type": "function", "function": fn})
 		}
 	}
-	message := map[string]any{"role": "assistant", "content": responseText(response)}
+	text := responseText(response)
+	message := map[string]any{"role": "assistant", "content": text}
+	finish := "stop"
 	if legacyCall != nil {
 		message["function_call"] = legacyCall
+		finish = "function_call"
 	} else if len(toolCalls) > 0 {
-		message["content"] = nil
 		message["tool_calls"] = toolCalls
-	}
-	finish := "stop"
-	if len(toolCalls) > 0 || legacyCall != nil {
 		finish = "tool_calls"
+	}
+	if finish != "stop" && text == "" {
+		message["content"] = nil
 	}
 	if response["status"] == "incomplete" {
 		finish = "length"

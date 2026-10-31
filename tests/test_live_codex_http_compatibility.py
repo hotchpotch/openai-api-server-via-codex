@@ -1331,6 +1331,10 @@ async def _assert_chat_legacy_functions(
     _assert_chat_api_shape(first, backend_name)
     function_call = first.choices[0].message.function_call
     assert function_call is not None, (backend_name, first.model_dump(mode="json"))
+    assert first.choices[0].finish_reason == "function_call", (
+        backend_name,
+        first.model_dump(mode="json"),
+    )
     arguments = _json_object(function_call.arguments)
     assert arguments.get("invoice_id") == "INV-5150", (
         backend_name,
@@ -1383,6 +1387,89 @@ async def _assert_chat_legacy_functions(
     print(f"{backend_name} chat legacy function result: {_short_text(second_text)}")
     assert _contains_marker(second_text, marker), (backend_name, second_text)
     assert "paid" in second_text.lower(), (backend_name, second_text)
+
+    await _assert_chat_legacy_function_stream(client, model, backend_name)
+    await _assert_chat_legacy_repeated_function_history(client, model, backend_name)
+
+
+async def _assert_chat_legacy_function_stream(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Call emit_legacy_probe with probe_id LEGACY-STREAM-1. "
+                    "Do not answer directly."
+                ),
+            },
+        ],
+        functions=cast(Any, [_probe_function("emit_legacy_probe")]),
+        stream=True,
+        reasoning_effort="low",
+    )
+    name = ""
+    arguments_text = ""
+    finish_reasons: list[str] = []
+    async for chunk in stream:
+        for choice in chunk.choices:
+            if choice.finish_reason:
+                finish_reasons.append(choice.finish_reason)
+            if choice.delta.function_call:
+                name += choice.delta.function_call.name or ""
+                arguments_text += choice.delta.function_call.arguments or ""
+    print(f"{backend_name} chat legacy stream: name={name} args={arguments_text}")
+    assert name == "emit_legacy_probe", (backend_name, name)
+    assert _json_object(arguments_text).get("probe_id") == "LEGACY-STREAM-1", (
+        backend_name,
+        arguments_text,
+    )
+    assert finish_reasons == ["function_call"], (backend_name, finish_reasons)
+
+
+async def _assert_chat_legacy_repeated_function_history(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    def call(probe_id: str) -> dict[str, Any]:
+        return {
+            "role": "assistant",
+            "content": None,
+            "function_call": {
+                "name": "emit_legacy_probe",
+                "arguments": json.dumps({"probe_id": probe_id}),
+            },
+        }
+
+    def result(marker: str) -> dict[str, Any]:
+        return {"role": "function", "name": "emit_legacy_probe", "content": marker}
+
+    first_marker = f"{backend_name}-REPEAT-A-11"
+    second_marker = f"{backend_name}-REPEAT-B-22"
+    completion = await client.chat.completions.create(
+        model=model,
+        messages=cast(
+            Any,
+            [
+                {"role": "user", "content": "Probe twice."},
+                call("A"),
+                result(first_marker),
+                call("B"),
+                result(second_marker),
+                {
+                    "role": "user",
+                    "content": "Repeat both function results exactly, first A then B.",
+                },
+            ],
+        ),
+        functions=cast(Any, [_probe_function("emit_legacy_probe")]),
+        function_call="none",
+        reasoning_effort="low",
+    )
+    text = completion.choices[0].message.content or ""
+    print(f"{backend_name} chat legacy repeated history: {_short_text(text)}")
+    _assert_contains_markers(text, [first_marker, second_marker], backend_name)
 
 
 async def _assert_chat_stream_include_usage(
@@ -1621,36 +1708,40 @@ async def _assert_chat_streaming_parallel_tool_calls(
 async def _assert_chat_stream_helper_tool_call_after_text(
     client: AsyncOpenAI, model: str, backend_name: str
 ) -> None:
-    async with client.chat.completions.stream(
-        model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "First write the single word Checking as text, then call "
-                    "emit_text_probe with probe_id TEXT-1."
-                ),
-            },
-        ],
-        tools=cast(
-            Any,
-            [
+    # The model occasionally skips the text, and without text before the call
+    # this would not exercise the index mapping.
+    for _ in range(3):
+        async with client.chat.completions.stream(
+            model=model,
+            messages=[
                 {
-                    "type": "function",
-                    "function": _probe_function("emit_text_probe"),
-                }
+                    "role": "user",
+                    "content": (
+                        "First write the single word Checking as text, then call "
+                        "emit_text_probe with probe_id TEXT-1."
+                    ),
+                },
             ],
-        ),
-        reasoning_effort="low",
-    ) as stream:
-        final = await stream.get_final_completion()
+            tools=cast(
+                Any,
+                [
+                    {
+                        "type": "function",
+                        "function": _probe_function("emit_text_probe"),
+                    }
+                ],
+            ),
+            reasoning_effort="low",
+        ) as stream:
+            final = await stream.get_final_completion()
+        message = final.choices[0].message
+        print(
+            f"{backend_name} chat stream helper text then tool: "
+            f"content={message.content!r} tool_calls={message.tool_calls}"
+        )
+        if message.content:
+            break
 
-    message = final.choices[0].message
-    print(
-        f"{backend_name} chat stream helper text then tool: "
-        f"content={message.content!r} tool_calls={message.tool_calls}"
-    )
-    # Without text before the call, this would not exercise the index mapping.
     assert "checking" in (message.content or "").lower(), (backend_name, message)
     assert message.tool_calls, (backend_name, message)
     assert _json_object(message.tool_calls[0].function.arguments) == {
