@@ -14,10 +14,13 @@ func TestChatToResponsePairsRepeatedLegacyFunctionCalls(t *testing.T) {
 	}
 	got := sliceAny(chatToResponse(map[string]any{"messages": []any{
 		call(`{"city":"Paris"}`), result("sunny"),
-		call(`{"city":"Tokyo"}`), result("rainy"),
+		call(`{"city":"Tokyo"}`), result("rainy"), result("resent"),
+		map[string]any{"role": "tool", "tool_call_id": "", "name": "lookup", "content": "empty id"},
+		map[string]any{"role": "tool", "tool_call_id": "lookup", "content": "name as id"},
+		map[string]any{"role": "tool", "tool_call_id": "call_real", "content": "real id"},
 		map[string]any{"role": "function", "name": "orphan", "content": "kept"},
 	}}, defaultModel)["input"])
-	if len(got) != 5 {
+	if len(got) != 9 {
 		t.Fatalf("input = %#v", got)
 	}
 	for index, want := range []struct{ kind, callID string }{
@@ -25,12 +28,40 @@ func TestChatToResponsePairsRepeatedLegacyFunctionCalls(t *testing.T) {
 		{"function_call_output", "call_legacy_1"},
 		{"function_call", "call_legacy_2"},
 		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_real"},
 		{"function_call_output", "orphan"},
 	} {
 		item := mapAny(got[index])
 		if item["type"] != want.kind || item["call_id"] != want.callID {
 			t.Fatalf("input[%d] = %#v, want %+v", index, item, want)
 		}
+	}
+}
+
+func TestUsesLegacyFunctions(t *testing.T) {
+	tools := []any{map[string]any{"type": "function"}}
+	functions := []any{map[string]any{"name": "lookup"}}
+	for name, test := range map[string]struct {
+		body map[string]any
+		want bool
+	}{
+		"functions":                 {map[string]any{"functions": functions}, true},
+		"function_call":             {map[string]any{"function_call": "auto"}, true},
+		"empty functions":           {map[string]any{"functions": []any{}}, false},
+		"tools":                     {map[string]any{"tools": tools}, false},
+		"tools and empty functions": {map[string]any{"tools": tools, "functions": []any{}}, false},
+		"tools and functions":       {map[string]any{"tools": tools, "functions": functions}, false},
+		"tools and function_call":   {map[string]any{"tools": tools, "function_call": "auto"}, false},
+		"neither":                   {map[string]any{}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := usesLegacyFunctions(test.body); got != test.want {
+				t.Fatalf("usesLegacyFunctions = %v, want %v", got, test.want)
+			}
+		})
 	}
 }
 
