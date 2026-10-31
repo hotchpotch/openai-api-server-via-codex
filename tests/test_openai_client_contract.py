@@ -98,6 +98,10 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
         if payload.get("metadata", {}).get("contract") == "async_history":
             self._async_history_stream(payload)
             return
+        tools = payload.get("tools") or []
+        if any(tool.get("name") == "lookup_city" for tool in tools):
+            self._parallel_tool_stream(payload)
+            return
         if _has_prompt_cache_breakpoint(payload.get("input")):
             self._json(
                 {
@@ -115,7 +119,6 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
         number = type(self).counter
         response_id = f"resp_contract_{number}"
         created = time.time()
-        tools = payload.get("tools") or []
         is_image = any(tool.get("type") == "image_generation" for tool in tools)
         is_tool = any(tool.get("type") == "function" for tool in tools)
 
@@ -341,6 +344,70 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
             {"type": "response.output_item.done", "output_index": index, "item": item}
             for index, item in enumerate(items)
         )
+        events.append({"type": "response.completed", "response": response})
+        encoded = "".join(
+            "data: " + json.dumps({**event, "sequence_number": index}) + "\n\n"
+            for index, event in enumerate(events)
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _parallel_tool_stream(self, payload: dict[str, Any]) -> None:
+        # Codex sends no function_call_arguments.delta events for parallel
+        # tool calls; the arguments arrive only on output_item.done.
+        type(self).counter += 1
+        rid = f"resp_parallel_{type(self).counter}"
+        items = [
+            {
+                "id": f"fc_parallel_{index}",
+                "type": "function_call",
+                "call_id": f"call_parallel_{index}",
+                "name": "lookup_city",
+                "arguments": json.dumps({"city": city}),
+                "status": "completed",
+            }
+            for index, city in enumerate(["Paris", "Tokyo"])
+        ]
+        response = {
+            "id": rid,
+            "object": "response",
+            "created_at": 0,
+            "model": payload["model"],
+            "status": "completed",
+            "output": items,
+            "parallel_tool_calls": True,
+            "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
+        }
+        events: list[dict[str, Any]] = [
+            {
+                "type": "response.created",
+                "response": {**response, "status": "in_progress", "output": []},
+            }
+        ]
+        for index, item in enumerate(items):
+            events.extend(
+                [
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": index,
+                        "item": {**item, "arguments": "", "status": "in_progress"},
+                    },
+                    {
+                        "type": "response.function_call_arguments.done",
+                        "output_index": index,
+                        "item_id": item["id"],
+                        "arguments": item["arguments"],
+                    },
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": index,
+                        "item": item,
+                    },
+                ]
+            )
         events.append({"type": "response.completed", "response": response})
         encoded = "".join(
             "data: " + json.dumps({**event, "sequence_number": index}) + "\n\n"
@@ -688,6 +755,49 @@ async def test_contract_chat_lifecycle_streaming_and_tools(
 
     deleted = await contract_client.chat.completions.delete(completion.id)
     assert deleted.deleted is True, runtime
+
+
+async def test_contract_chat_streams_parallel_tool_call_arguments(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    stream = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "look up Paris and Tokyo"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_city",
+                    "description": "Look up a city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        stream=True,
+    )
+    names: dict[int, str] = {}
+    arguments: dict[int, str] = {}
+    async for chunk in stream:
+        for choice in chunk.choices:
+            for call in choice.delta.tool_calls or []:
+                if call.function is None:
+                    continue
+                names[call.index] = names.get(call.index, "") + (
+                    call.function.name or ""
+                )
+                arguments[call.index] = arguments.get(call.index, "") + (
+                    call.function.arguments or ""
+                )
+    assert names == {0: "lookup_city", 1: "lookup_city"}, runtime
+    assert {index: json.loads(value) for index, value in arguments.items()} == {
+        0: {"city": "Paris"},
+        1: {"city": "Tokyo"},
+    }, runtime
 
 
 async def test_contract_images_audio_and_unknown_proxy(
