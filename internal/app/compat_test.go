@@ -5,6 +5,110 @@ import (
 	"testing"
 )
 
+func TestChatToResponsePairsRepeatedLegacyFunctionCalls(t *testing.T) {
+	call := func(arguments string) map[string]any {
+		return map[string]any{"role": "assistant", "content": nil, "function_call": map[string]any{"name": "lookup", "arguments": arguments}}
+	}
+	result := func(content string) map[string]any {
+		return map[string]any{"role": "function", "name": "lookup", "content": content}
+	}
+	got := sliceAny(chatToResponse(map[string]any{"messages": []any{
+		call(`{"city":"Paris"}`), result("sunny"),
+		call(`{"city":"Tokyo"}`), result("rainy"), result("resent"),
+		map[string]any{"role": "tool", "tool_call_id": "", "name": "lookup", "content": "empty id"},
+		map[string]any{"role": "tool", "tool_call_id": "lookup", "content": "name as id"},
+		map[string]any{"role": "tool", "tool_call_id": "call_real", "content": "real id"},
+		map[string]any{"role": "function", "name": "orphan", "content": "kept"},
+	}}, defaultModel)["input"])
+	if len(got) != 9 {
+		t.Fatalf("input = %#v", got)
+	}
+	for index, want := range []struct{ kind, callID string }{
+		{"function_call", "call_legacy_1"},
+		{"function_call_output", "call_legacy_1"},
+		{"function_call", "call_legacy_2"},
+		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_legacy_2"},
+		{"function_call_output", "call_real"},
+		{"function_call_output", "orphan"},
+	} {
+		item := mapAny(got[index])
+		if item["type"] != want.kind || item["call_id"] != want.callID {
+			t.Fatalf("input[%d] = %#v, want %+v", index, item, want)
+		}
+	}
+}
+
+func TestUsesLegacyFunctions(t *testing.T) {
+	tools := []any{map[string]any{"type": "function"}}
+	functions := []any{map[string]any{"name": "lookup"}}
+	for name, test := range map[string]struct {
+		body map[string]any
+		want bool
+	}{
+		"functions":                 {map[string]any{"functions": functions}, true},
+		"function_call":             {map[string]any{"function_call": "auto"}, true},
+		"empty functions":           {map[string]any{"functions": []any{}}, false},
+		"tools":                     {map[string]any{"tools": tools}, false},
+		"tools and empty functions": {map[string]any{"tools": tools, "functions": []any{}}, false},
+		"tools and functions":       {map[string]any{"tools": tools, "functions": functions}, false},
+		"tools and function_call":   {map[string]any{"tools": tools, "function_call": "auto"}, false},
+		"neither":                   {map[string]any{}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := usesLegacyFunctions(test.body); got != test.want {
+				t.Fatalf("usesLegacyFunctions = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestChatToResponseKeepsAssistantTextBeforeCalls(t *testing.T) {
+	for name, message := range map[string]map[string]any{
+		"tool_calls": {"role": "assistant", "content": "Checking", "tool_calls": []any{map[string]any{
+			"id": "call_1", "type": "function", "function": map[string]any{"name": "lookup", "arguments": "{}"},
+		}}},
+		"function_call": {"role": "assistant", "content": "Checking", "function_call": map[string]any{"name": "lookup", "arguments": "{}"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := sliceAny(chatToResponse(map[string]any{"messages": []any{message}}, defaultModel)["input"])
+			if len(got) != 2 || mapAny(got[0])["content"] != "Checking" || mapAny(got[1])["type"] != "function_call" {
+				t.Fatalf("input = %#v", got)
+			}
+		})
+	}
+}
+
+func TestResponseToChatKeepsTextAndLegacyFinishReason(t *testing.T) {
+	call := map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"}
+	text := map[string]any{"type": "message", "content": []any{map[string]any{"type": "output_text", "text": "Checking"}}}
+	for name, test := range map[string]struct {
+		output  []any
+		legacy  bool
+		content any
+		finish  string
+	}{
+		"tool call with text":    {[]any{text, call}, false, "Checking", "tool_calls"},
+		"tool call without text": {[]any{call}, false, nil, "tool_calls"},
+		"legacy with text":       {[]any{text, call}, true, "Checking", "function_call"},
+		"legacy without text":    {[]any{call}, true, nil, "function_call"},
+		"text only":              {[]any{text}, false, "Checking", "stop"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			completion := responseToChat(map[string]any{"id": "resp_1", "output": test.output}, defaultModel, test.legacy, 1)
+			choice := mapAny(sliceAny(completion["choices"])[0])
+			if content := mapAny(choice["message"])["content"]; content != test.content {
+				t.Fatalf("content = %#v, want %#v", content, test.content)
+			}
+			if choice["finish_reason"] != test.finish {
+				t.Fatalf("finish_reason = %#v, want %q", choice["finish_reason"], test.finish)
+			}
+		})
+	}
+}
+
 func TestChatToResponseTranslatesMessagesToolsAndStructuredOutput(t *testing.T) {
 	body := map[string]any{
 		"model": "gpt-test",

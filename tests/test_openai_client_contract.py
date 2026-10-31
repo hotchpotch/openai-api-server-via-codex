@@ -10,7 +10,7 @@ import time
 from collections.abc import AsyncIterator, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 import httpx
 import pytest
@@ -53,6 +53,7 @@ def _has_prompt_cache_breakpoint(value: Any) -> bool:
 class _FakeCodexHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     counter = 0
+    last_payload: ClassVar[dict[str, Any]] = {}
 
     def log_message(self, format: str, *args: Any) -> None:
         del format, args
@@ -95,6 +96,7 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
         self._proxy_response()
 
     def _responses_stream(self, payload: dict[str, Any]) -> None:
+        type(self).last_payload = payload
         if payload.get("metadata", {}).get("contract") == "async_history":
             self._async_history_stream(payload)
             return
@@ -892,14 +894,150 @@ async def test_contract_chat_legacy_function_stream_returns_first_call(
     )
     name = ""
     arguments = ""
+    finish_reason = None
     async for chunk in stream:
         for choice in chunk.choices:
+            finish_reason = choice.finish_reason or finish_reason
             call = choice.delta.function_call
             if call is not None:
                 name += call.name or ""
                 arguments += call.arguments or ""
     assert name == "lookup_city", runtime
     assert json.loads(arguments) == {"city": "Paris"}, runtime
+    assert finish_reason == "function_call", runtime
+
+
+async def test_contract_chat_legacy_function_call_finish_reason(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    completion = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "look up Paris"}],
+        functions=[
+            {
+                "name": "lookup_city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+    )
+    choice = completion.choices[0]
+    assert choice.finish_reason == "function_call", runtime
+    assert choice.message.content is None, runtime
+    assert choice.message.function_call is not None, runtime
+    assert json.loads(choice.message.function_call.arguments) == {"city": "Paris"}
+
+
+async def test_contract_chat_replays_legacy_function_history(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+
+    def call(city: str, content: str | None) -> dict[str, Any]:
+        return {
+            "role": "assistant",
+            "content": content,
+            "function_call": {
+                "name": "lookup_history",
+                "arguments": json.dumps({"city": city}),
+            },
+        }
+
+    def result(content: str) -> dict[str, Any]:
+        return {"role": "function", "name": "lookup_history", "content": content}
+
+    await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=cast(
+            Any,
+            [
+                {"role": "user", "content": "compare the cities"},
+                call("Paris", None),
+                result("sunny"),
+                call("Tokyo", "Checking"),
+                result("rainy"),
+            ],
+        ),
+    )
+    replayed = [
+        (
+            item.get("type") or item["role"],
+            item.get("call_id"),
+        )
+        for item in _FakeCodexHandler.last_payload["input"]
+    ]
+    assert replayed == [
+        ("user", None),
+        ("function_call", "call_legacy_1"),
+        ("function_call_output", "call_legacy_1"),
+        ("assistant", None),
+        ("function_call", "call_legacy_2"),
+        ("function_call_output", "call_legacy_2"),
+    ], runtime
+
+
+async def test_contract_chat_tools_ignore_empty_legacy_functions(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    completion = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "look up Paris and Tokyo"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_city",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        extra_body={"functions": []},
+    )
+    choice = completion.choices[0]
+    assert choice.finish_reason == "tool_calls", runtime
+    assert choice.message.function_call is None, runtime
+    assert choice.message.tool_calls is not None, runtime
+    assert len(choice.message.tool_calls) == 2, runtime
+    assert _FakeCodexHandler.last_payload["parallel_tool_calls"] is True, runtime
+
+
+async def test_contract_chat_keeps_text_before_tool_calls_when_stored(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    completion = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "say something, then look up cities"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_after_text",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        store=True,
+    )
+    message = completion.choices[0].message
+    assert message.content == "Checking", runtime
+    assert message.tool_calls is not None and len(message.tool_calls) == 2, runtime
+    retrieved = await contract_client.chat.completions.retrieve(completion.id)
+    assert retrieved.choices[0].message.content == "Checking", runtime
+    assert retrieved.choices[0].message.tool_calls is not None, runtime
 
 
 async def test_contract_images_audio_and_unknown_proxy(

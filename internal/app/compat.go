@@ -153,6 +153,11 @@ func chatToResponse(body map[string]any, model string) map[string]any {
 	result := map[string]any{"model": valueOr(body["model"], model), "input": []any{}, "store": false}
 	var instructions []string
 	var input []any
+	// Legacy function messages carry no call id and hold one call each, so a
+	// result pairs with the latest call of that function. Clients may also send
+	// the function name as tool_call_id.
+	legacyCallCount := 0
+	latestLegacyCalls := map[string]string{}
 	for _, raw := range sliceAny(body["messages"]) {
 		msg := mapAny(raw)
 		if msg == nil {
@@ -165,10 +170,22 @@ func chatToResponse(body map[string]any, model string) map[string]any {
 				instructions = append(instructions, t)
 			}
 		case "tool", "function":
-			input = append(input, map[string]any{"type": "function_call_output", "call_id": valueOr(msg["tool_call_id"], valueOr(msg["name"], "unknown")), "output": contentText(msg["content"])})
+			callID := valueOr(msg["tool_call_id"], valueOr(msg["name"], "unknown"))
+			if latest, ok := latestLegacyCalls[stringValue(callID)]; ok {
+				callID = latest
+			}
+			input = append(input, map[string]any{"type": "function_call_output", "call_id": callID, "output": contentText(msg["content"])})
 		case "assistant":
-			if fc := mapAny(msg["function_call"]); fc != nil {
-				input = append(input, map[string]any{"type": "function_call", "call_id": valueOr(fc["name"], "function"), "name": fc["name"], "arguments": valueOr(fc["arguments"], "{}")})
+			fc := mapAny(msg["function_call"])
+			// Text precedes its calls, so a call stays adjacent to its result.
+			if text := contentText(msg["content"]); text != "" || (fc == nil && len(sliceAny(msg["tool_calls"])) == 0) {
+				input = append(input, map[string]any{"role": "assistant", "content": text})
+			}
+			if fc != nil {
+				legacyCallCount++
+				callID := fmt.Sprintf("call_legacy_%d", legacyCallCount)
+				latestLegacyCalls[stringValue(fc["name"])] = callID
+				input = append(input, map[string]any{"type": "function_call", "call_id": callID, "name": fc["name"], "arguments": valueOr(fc["arguments"], "{}")})
 			}
 			for _, tcRaw := range sliceAny(msg["tool_calls"]) {
 				tc := mapAny(tcRaw)
@@ -176,9 +193,6 @@ func chatToResponse(body map[string]any, model string) map[string]any {
 				if fn != nil {
 					input = append(input, map[string]any{"type": "function_call", "call_id": tc["id"], "name": fn["name"], "arguments": valueOr(fn["arguments"], "{}")})
 				}
-			}
-			if text := contentText(msg["content"]); text != "" || len(sliceAny(msg["tool_calls"])) == 0 {
-				input = append(input, map[string]any{"role": "assistant", "content": text})
 			}
 		case "user":
 			input = append(input, map[string]any{"role": "user", "content": chatContent(msg["content"])})
@@ -375,7 +389,10 @@ func responseText(response map[string]any) string {
 }
 
 func usesLegacyFunctions(body map[string]any) bool {
-	return body["functions"] != nil || body["function_call"] != nil
+	if len(sliceAny(body["tools"])) > 0 {
+		return false
+	}
+	return len(sliceAny(body["functions"])) > 0 || body["function_call"] != nil
 }
 
 func responseToChat(response map[string]any, fallback string, legacy bool, n int) map[string]any {
@@ -405,15 +422,17 @@ func responseToChat(response map[string]any, fallback string, legacy bool, n int
 			toolCalls = append(toolCalls, map[string]any{"id": stringValue(valueOr(item["call_id"], item["id"])), "type": "function", "function": fn})
 		}
 	}
-	message := map[string]any{"role": "assistant", "content": responseText(response)}
-	if legacyCall != nil {
-		message["function_call"] = legacyCall
-	} else if len(toolCalls) > 0 {
+	text := responseText(response)
+	message := map[string]any{"role": "assistant", "content": text}
+	if text == "" && (legacyCall != nil || len(toolCalls) > 0) {
 		message["content"] = nil
-		message["tool_calls"] = toolCalls
 	}
 	finish := "stop"
-	if len(toolCalls) > 0 || legacyCall != nil {
+	if legacyCall != nil {
+		message["function_call"] = legacyCall
+		finish = "function_call"
+	} else if len(toolCalls) > 0 {
+		message["tool_calls"] = toolCalls
 		finish = "tool_calls"
 	}
 	if response["status"] == "incomplete" {
