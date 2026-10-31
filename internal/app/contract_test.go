@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -273,6 +274,147 @@ func TestGoHTTPContractResponsesLifecycleAndStreaming(t *testing.T) {
 		t.Fatalf("delete status = %d", response.StatusCode)
 	}
 	environment.json(t, http.MethodGet, "/v1/responses/"+createdID, nil, http.StatusNotFound)
+}
+
+func TestGoHTTPContractChatStreamToolCallEdgeCases(t *testing.T) {
+	functionCall := func(name, arguments string) map[string]any {
+		return map[string]any{"type": "function_call", "id": "fc_" + name, "call_id": "call_" + name, "name": name, "arguments": arguments}
+	}
+	added := func(index int, name string) map[string]any {
+		return map[string]any{"type": "response.output_item.added", "output_index": index, "item": functionCall(name, "")}
+	}
+	done := func(index int, name, arguments string) map[string]any {
+		return map[string]any{"type": "response.output_item.done", "output_index": index, "item": functionCall(name, arguments)}
+	}
+	delta := func(index int, text string) map[string]any {
+		return map[string]any{"type": "response.function_call_arguments.delta", "output_index": index, "delta": text}
+	}
+	created := map[string]any{"type": "response.created", "response": map[string]any{"id": "resp_edge", "status": "in_progress"}}
+	completed := func(items ...any) map[string]any {
+		return map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_edge", "status": "completed", "output": items}}
+	}
+	first, second := functionCall("first", `{"a":1}`), functionCall("second", `{"b":2}`)
+	reasoning := map[string]any{"type": "response.output_item.done", "output_index": 0, "item": map[string]any{"type": "reasoning", "id": "rs_edge"}}
+	message := map[string]any{"type": "message", "id": "msg_edge", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "Checking"}}}
+	tools := []any{map[string]any{"type": "function", "function": map[string]any{"name": "first", "parameters": map[string]any{"type": "object"}}}}
+	functions := []any{map[string]any{"name": "first", "parameters": map[string]any{"type": "object"}}}
+
+	stream := func(t *testing.T, events []map[string]any, request map[string]any) ([]map[string]any, map[string]any) {
+		t.Helper()
+		var forwarded map[string]any
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := json.NewDecoder(r.Body).Decode(&forwarded); err != nil {
+				t.Errorf("decode forwarded request: %v", err)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			for _, event := range events {
+				encoded, _ := json.Marshal(event)
+				fmt.Fprintf(w, "data: %s\n\n", encoded)
+			}
+		}))
+		t.Cleanup(upstream.Close)
+		environment := newContractEnvironment(t, func(cfg *config) { cfg.BackendURL = upstream.URL })
+		request["model"] = "gpt-5.6-luna"
+		request["stream"] = true
+		request["messages"] = []any{map[string]any{"role": "user", "content": "edge"}}
+		response, data := environment.request(t, http.MethodPost, "/v1/chat/completions", request)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d; body=%s", response.StatusCode, data)
+		}
+		return parseSSE(t, data), forwarded
+	}
+	assembleTools := func(chunks []map[string]any) map[int]string {
+		arguments := map[int]string{}
+		for _, chunk := range chunks {
+			for _, rawChoice := range sliceAny(chunk["choices"]) {
+				for _, rawCall := range sliceAny(mapAny(mapAny(rawChoice)["delta"])["tool_calls"]) {
+					call := mapAny(rawCall)
+					arguments[intValue(call["index"])] += stringValue(mapAny(call["function"])["arguments"])
+				}
+			}
+		}
+		return arguments
+	}
+
+	for name, events := range map[string][]map[string]any{
+		"reasoning before calls": {created, reasoning, added(1, "first"), done(1, "first", `{"a":1}`), added(2, "second"), done(2, "second", `{"b":2}`), completed(first, second)},
+		"text before calls": {
+			created,
+			{"type": "response.output_text.delta", "output_index": 0, "delta": "Checking"},
+			{"type": "response.output_item.done", "output_index": 0, "item": message},
+			added(1, "first"), delta(1, `{"a":1}`), done(1, "first", `{"a":1}`),
+			added(2, "second"), done(2, "second", `{"b":2}`),
+			completed(message, first, second),
+		},
+		"partial deltas": {created, added(0, "first"), delta(0, `{"a"`), done(0, "first", `{"a":1}`), added(1, "second"), delta(1, `{"b":2}`), done(1, "second", `{"b":2}`), completed(first, second)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			chunks, _ := stream(t, events, map[string]any{"tools": tools})
+			arguments := assembleTools(chunks)
+			if len(arguments) != 2 || arguments[0] != `{"a":1}` || arguments[1] != `{"b":2}` {
+				t.Fatalf("streamed tool arguments = %#v", arguments)
+			}
+		})
+	}
+
+	t.Run("legacy functions keep only the first call", func(t *testing.T) {
+		chunks, forwarded := stream(t, []map[string]any{
+			created, added(0, "first"), done(0, "first", `{"a":1}`),
+			added(1, "second"), delta(1, `{"b":2}`), done(1, "second", `{"b":2}`), completed(first, second),
+		}, map[string]any{"functions": functions})
+		if forwarded["parallel_tool_calls"] != false {
+			t.Fatalf("forwarded parallel_tool_calls = %#v", forwarded["parallel_tool_calls"])
+		}
+		name, arguments := "", ""
+		for _, chunk := range chunks {
+			for _, rawChoice := range sliceAny(chunk["choices"]) {
+				call := mapAny(mapAny(mapAny(rawChoice)["delta"])["function_call"])
+				name += stringValue(call["name"])
+				arguments += stringValue(call["arguments"])
+			}
+		}
+		if name != "first" || arguments != `{"a":1}` {
+			t.Fatalf("legacy function call name = %q arguments = %q", name, arguments)
+		}
+	})
+
+	for name, sent := range map[string]string{
+		"truncated": `{"secret": `,
+		"different": `{"secret":"other"}`,
+	} {
+		t.Run(name+" arguments log sizes only", func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			chunks, _ := stream(t, []map[string]any{
+				created, added(0, "first"), delta(0, sent), done(0, "first", `{"secret":"value"}`), completed(first),
+			}, map[string]any{"tools": tools})
+			if arguments := assembleTools(chunks); arguments[0] != sent {
+				t.Fatalf("streamed tool arguments = %#v", arguments)
+			}
+			want := fmt.Sprintf("chat.stream.tool_arguments_mismatch output_index=0 sent_bytes=%d final_bytes=18", len(sent))
+			if !strings.Contains(logs.String(), want) {
+				t.Fatalf("missing mismatch log: %s", logs.String())
+			}
+			if strings.Contains(logs.String(), "secret") {
+				t.Fatalf("log contains tool arguments: %s", logs.String())
+			}
+		})
+	}
+
+	t.Run("reformatted complete arguments do not log", func(t *testing.T) {
+		var logs bytes.Buffer
+		previous := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(previous) })
+		stream(t, []map[string]any{
+			created, added(0, "first"), delta(0, `{"a":1}`), done(0, "first", `{"a": 1}`), completed(first),
+		}, map[string]any{"tools": tools})
+		if strings.Contains(logs.String(), "tool_arguments_mismatch") {
+			t.Fatalf("unexpected mismatch log: %s", logs.String())
+		}
+	})
 }
 
 func TestGoHTTPContractChatLifecycleToolsAndStreaming(t *testing.T) {

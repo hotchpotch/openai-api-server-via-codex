@@ -102,6 +102,11 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
         if any(tool.get("name") == "lookup_city" for tool in tools):
             self._parallel_tool_stream(payload)
             return
+        if any(tool.get("name") == "lookup_after_text" for tool in tools):
+            self._parallel_tool_stream(
+                payload, name="lookup_after_text", text="Checking"
+            )
+            return
         if _has_prompt_cache_breakpoint(payload.get("input")):
             self._json(
                 {
@@ -355,7 +360,12 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _parallel_tool_stream(self, payload: dict[str, Any]) -> None:
+    def _parallel_tool_stream(
+        self,
+        payload: dict[str, Any],
+        name: str = "lookup_city",
+        text: str | None = None,
+    ) -> None:
         # Codex sends no function_call_arguments.delta events for parallel
         # tool calls; the arguments arrive only on output_item.done.
         type(self).counter += 1
@@ -365,19 +375,27 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
                 "id": f"fc_parallel_{index}",
                 "type": "function_call",
                 "call_id": f"call_parallel_{index}",
-                "name": "lookup_city",
+                "name": name,
                 "arguments": json.dumps({"city": city}),
                 "status": "completed",
             }
             for index, city in enumerate(["Paris", "Tokyo"])
         ]
+        message = {
+            "id": "msg_parallel",
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
+        }
+        offset = 0 if text is None else 1
         response = {
             "id": rid,
             "object": "response",
             "created_at": 0,
             "model": payload["model"],
             "status": "completed",
-            "output": items,
+            "output": [message, *items] if offset else items,
             "parallel_tool_calls": True,
             "usage": {"input_tokens": 3, "output_tokens": 5, "total_tokens": 8},
         }
@@ -387,7 +405,24 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
                 "response": {**response, "status": "in_progress", "output": []},
             }
         ]
-        for index, item in enumerate(items):
+        if offset:
+            events.extend(
+                [
+                    {
+                        "type": "response.output_text.delta",
+                        "output_index": 0,
+                        "content_index": 0,
+                        "item_id": message["id"],
+                        "delta": text,
+                    },
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": 0,
+                        "item": message,
+                    },
+                ]
+            )
+        for index, item in enumerate(items, start=offset):
             events.extend(
                 [
                     {
@@ -798,6 +833,73 @@ async def test_contract_chat_streams_parallel_tool_call_arguments(
         0: {"city": "Paris"},
         1: {"city": "Tokyo"},
     }, runtime
+
+
+async def test_contract_chat_stream_helper_indexes_tool_calls_after_text(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    async with contract_client.chat.completions.stream(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "say something, then look up cities"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup_after_text",
+                    "strict": True,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                        "additionalProperties": False,
+                    },
+                },
+            }
+        ],
+    ) as stream:
+        final = await stream.get_final_completion()
+    message = final.choices[0].message
+    assert message.content == "Checking", runtime
+    assert message.tool_calls is not None, runtime
+    assert [
+        (call.function.name, json.loads(call.function.arguments))
+        for call in message.tool_calls
+    ] == [
+        ("lookup_after_text", {"city": "Paris"}),
+        ("lookup_after_text", {"city": "Tokyo"}),
+    ], runtime
+
+
+async def test_contract_chat_legacy_function_stream_returns_first_call(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    stream = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "look up Paris and Tokyo"}],
+        functions=[
+            {
+                "name": "lookup_city",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"city": {"type": "string"}},
+                    "required": ["city"],
+                },
+            }
+        ],
+        stream=True,
+    )
+    name = ""
+    arguments = ""
+    async for chunk in stream:
+        for choice in chunk.choices:
+            call = choice.delta.function_call
+            if call is not None:
+                name += call.name or ""
+                arguments += call.arguments or ""
+    assert name == "lookup_city", runtime
+    assert json.loads(arguments) == {"city": "Paris"}, runtime
 
 
 async def test_contract_images_audio_and_unknown_proxy(
