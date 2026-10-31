@@ -253,6 +253,16 @@ async def test_live_codex_http_handles_openai_client_compatibility_matrix() -> N
                 LIVE_LONG_TEST_MODEL,
                 backend_name,
             )
+            await _assert_chat_streaming_parallel_tool_calls(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
+            await _assert_chat_stream_helper_tool_call_after_text(
+                client,
+                LIVE_LONG_TEST_MODEL,
+                backend_name,
+            )
 
             await asyncio.to_thread(
                 _assert_sync_client_smoke,
@@ -1561,6 +1571,91 @@ async def _assert_chat_streaming_tool_call(
         f"{backend_name} chat streaming tool call: "
         f"id={tool_call_id} name={tool_name} args={arguments_text}"
     )
+
+
+async def _assert_chat_streaming_parallel_tool_calls(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    stream = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "Call emit_parallel_probe in parallel in this one turn, once "
+                    "with probe_id PAR-1 and once with probe_id PAR-2. "
+                    "Do not answer directly."
+                ),
+            },
+        ],
+        tools=cast(
+            Any,
+            [
+                {
+                    "type": "function",
+                    "function": _probe_function("emit_parallel_probe"),
+                }
+            ],
+        ),
+        stream=True,
+        reasoning_effort="low",
+    )
+
+    arguments_by_index: dict[int, str] = {}
+    async for chunk in stream:
+        for choice in chunk.choices:
+            for tool_call in choice.delta.tool_calls or []:
+                if tool_call.function:
+                    arguments_by_index[tool_call.index] = arguments_by_index.get(
+                        tool_call.index, ""
+                    ) + (tool_call.function.arguments or "")
+
+    print(f"{backend_name} chat streaming parallel tools: {arguments_by_index}")
+    assert sorted(arguments_by_index) == [0, 1], (backend_name, arguments_by_index)
+    probe_ids = sorted(
+        str(_json_object(text).get("probe_id")) for text in arguments_by_index.values()
+    )
+    assert probe_ids == ["PAR-1", "PAR-2"], (backend_name, arguments_by_index)
+
+
+async def _assert_chat_stream_helper_tool_call_after_text(
+    client: AsyncOpenAI, model: str, backend_name: str
+) -> None:
+    async with client.chat.completions.stream(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    "First write the single word Checking as text, then call "
+                    "emit_text_probe with probe_id TEXT-1."
+                ),
+            },
+        ],
+        tools=cast(
+            Any,
+            [
+                {
+                    "type": "function",
+                    "function": _probe_function("emit_text_probe"),
+                }
+            ],
+        ),
+        reasoning_effort="low",
+    ) as stream:
+        final = await stream.get_final_completion()
+
+    message = final.choices[0].message
+    print(
+        f"{backend_name} chat stream helper text then tool: "
+        f"content={message.content!r} tool_calls={message.tool_calls}"
+    )
+    # Without text before the call, this would not exercise the index mapping.
+    assert "checking" in (message.content or "").lower(), (backend_name, message)
+    assert message.tool_calls, (backend_name, message)
+    assert _json_object(message.tool_calls[0].function.arguments) == {
+        "probe_id": "TEXT-1"
+    }, (backend_name, message)
 
 
 def _assert_sync_client_smoke(

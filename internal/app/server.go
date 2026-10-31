@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -564,7 +565,7 @@ func (s *server) chatCollection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	responsePayload := chatToResponse(body, s.cfg.Model)
-	legacy := body["functions"] != nil || body["function_call"] != nil
+	legacy := usesLegacyFunctions(body)
 	if boolValue(body["stream"]) {
 		s.streamChat(w, r, responsePayload, body, legacy)
 		return
@@ -602,7 +603,22 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 	state := chatStreamState{ID: newID("chatcmpl"), Created: int(time.Now().Unix()), Model: stringValue(responsePayload["model"]), ChoiceCount: chatChoiceCount(body["n"])}
 	includeUsage := boolValue(mapAny(body["stream_options"])["include_usage"])
 	var outputs []any
-	emitted := map[int]string{}
+	toolCalls := map[int]*chatStreamToolCall{}
+	// toolCall returns nil for a call the client must not see. A legacy
+	// function_call delta has no index, so a second call would merge into the
+	// first, and non-streaming responses also keep only the first call.
+	toolCall := func(event map[string]any) *chatStreamToolCall {
+		outputIndex := intValue(event["output_index"])
+		call, ok := toolCalls[outputIndex]
+		if !ok {
+			call = &chatStreamToolCall{index: len(toolCalls)}
+			toolCalls[outputIndex] = call
+		}
+		if legacy && call.index > 0 {
+			return nil
+		}
+		return call
+	}
 	emit := func(v map[string]any) { writeSSE(w, v); flusher.Flush() }
 	role := func() {
 		if !state.RoleSent {
@@ -627,33 +643,43 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 		case "response.output_item.added":
 			item := mapAny(event["item"])
 			if item != nil && item["type"] == "function_call" {
-				role()
-				idx := intValue(event["output_index"])
-				emitted[idx] = ""
-				emit(chatChunk(state, toolDelta(item, idx, "", true, legacy), nil, nil, nil))
+				if call := toolCall(event); call != nil {
+					role()
+					call.started, call.sent = true, ""
+					emit(chatChunk(state, toolDelta(item, call.index, "", legacy), nil, nil, nil))
+				}
 			}
 		case "response.function_call_arguments.delta":
-			role()
-			idx := intValue(event["output_index"])
-			delta := stringValue(event["delta"])
-			emitted[idx] += delta
-			emit(chatChunk(state, argumentsDelta(idx, delta, legacy), nil, nil, nil))
+			if call := toolCall(event); call != nil {
+				role()
+				delta := stringValue(event["delta"])
+				call.started = true
+				call.sent += delta
+				emit(chatChunk(state, argumentsDelta(call.index, delta, legacy), nil, nil, nil))
+			}
 		case "response.output_item.done":
 			item := mapAny(event["item"])
 			if item != nil {
 				outputs = append(outputs, item)
 				if item["type"] == "function_call" {
-					idx := intValue(event["output_index"])
-					args := stringValue(item["arguments"])
-					if sent, ok := emitted[idx]; !ok {
-						role()
-						emitted[idx] = args
-						emit(chatChunk(state, toolDelta(item, idx, args, true, legacy), nil, nil, nil))
-					} else if rest, found := strings.CutPrefix(args, sent); found && rest != "" {
-						// Parallel tool calls arrive with no argument deltas, so the
-						// final item carries arguments the client has not seen yet.
-						emitted[idx] = args
-						emit(chatChunk(state, argumentsDelta(idx, rest, legacy), nil, nil, nil))
+					if call := toolCall(event); call != nil {
+						args := stringValue(item["arguments"])
+						if !call.started {
+							role()
+							call.started, call.sent = true, args
+							emit(chatChunk(state, toolDelta(item, call.index, args, legacy), nil, nil, nil))
+						} else if rest, found := strings.CutPrefix(args, call.sent); found {
+							// Parallel tool calls arrive with no argument deltas, so the
+							// final item carries arguments the client has not seen yet.
+							if rest != "" {
+								call.sent = args
+								emit(chatChunk(state, argumentsDelta(call.index, rest, legacy), nil, nil, nil))
+							}
+						} else if !equivalentJSON(call.sent, args) {
+							// Sent chunks cannot be retracted. Arguments are model output,
+							// so log only their sizes.
+							log.Printf("chat.stream.tool_arguments_mismatch output_index=%d sent_bytes=%d final_bytes=%d", intValue(event["output_index"]), len(call.sent), len(args))
+						}
 					}
 				} else if item["type"] == "message" && !state.SawText {
 					if text := messageText(item); text != "" {
@@ -704,6 +730,15 @@ type chatStreamState struct {
 	RoleSent, SawText bool
 }
 
+// chatStreamToolCall tracks one function_call output item. index numbers tool
+// calls contiguously from 0 for clients, while output_index also counts message
+// and reasoning items.
+type chatStreamToolCall struct {
+	index   int
+	started bool
+	sent    string
+}
+
 func (s *chatStreamState) update(resp map[string]any) {
 	if id := stringValue(resp["id"]); id != "" {
 		if strings.HasPrefix(id, "resp_") {
@@ -745,22 +780,25 @@ func argumentsDelta(index int, args string, legacy bool) map[string]any {
 	return map[string]any{"tool_calls": []any{map[string]any{"index": index, "function": map[string]any{"arguments": args}}}}
 }
 
-func toolDelta(item map[string]any, index int, args string, identity, legacy bool) map[string]any {
+func toolDelta(item map[string]any, index int, args string, legacy bool) map[string]any {
+	fn := map[string]any{"name": stringValue(item["name"]), "arguments": args}
 	if legacy {
-		fn := map[string]any{"arguments": args}
-		if identity {
-			fn["name"] = stringValue(item["name"])
-		}
 		return map[string]any{"function_call": fn}
 	}
-	fn := map[string]any{"arguments": args}
-	call := map[string]any{"index": index, "function": fn}
-	if identity {
-		fn["name"] = stringValue(item["name"])
-		call["id"] = stringValue(valueOr(item["call_id"], valueOr(item["id"], fmt.Sprintf("call_%d", index))))
-		call["type"] = "function"
+	return map[string]any{"tool_calls": []any{map[string]any{
+		"index":    index,
+		"id":       stringValue(valueOr(item["call_id"], valueOr(item["id"], fmt.Sprintf("call_%d", index)))),
+		"type":     "function",
+		"function": fn,
+	}}}
+}
+
+func equivalentJSON(left, right string) bool {
+	var leftValue, rightValue any
+	if json.Unmarshal([]byte(left), &leftValue) != nil || json.Unmarshal([]byte(right), &rightValue) != nil {
+		return false
 	}
-	return map[string]any{"tool_calls": []any{call}}
+	return reflect.DeepEqual(leftValue, rightValue)
 }
 
 func (s *server) listChats(w http.ResponseWriter, r *http.Request) {

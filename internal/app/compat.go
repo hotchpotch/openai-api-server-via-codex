@@ -194,6 +194,11 @@ func chatToResponse(body map[string]any, model string) map[string]any {
 			result[key] = body[key]
 		}
 	}
+	if usesLegacyFunctions(body) && body["parallel_tool_calls"] == nil {
+		// A legacy function_call message holds one call, so further calls
+		// would be lost.
+		result["parallel_tool_calls"] = false
+	}
 	if body["max_completion_tokens"] != nil {
 		result["max_output_tokens"] = body["max_completion_tokens"]
 	} else if body["max_tokens"] != nil {
@@ -367,6 +372,10 @@ func responseText(response map[string]any) string {
 		}
 	}
 	return b.String()
+}
+
+func usesLegacyFunctions(body map[string]any) bool {
+	return body["functions"] != nil || body["function_call"] != nil
 }
 
 func responseToChat(response map[string]any, fallback string, legacy bool, n int) map[string]any {
