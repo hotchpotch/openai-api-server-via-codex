@@ -102,6 +102,12 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
             if f"CONTRACT_FAILED_{code}" in input_text:
                 self._failed_stream(payload, code)
                 return
+        if "CONTRACT_STREAM_CLOSED" in input_text:
+            self._failed_stream(payload, "server_error", terminal=False)
+            return
+        if "CONTRACT_CONTENT_FILTER" in input_text:
+            self._content_filter_stream(payload)
+            return
         if payload.get("metadata", {}).get("contract") == "async_history":
             self._async_history_stream(payload)
             return
@@ -367,7 +373,32 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _failed_stream(self, payload: dict[str, Any], code: str) -> None:
+    def _content_filter_stream(self, payload: dict[str, Any]) -> None:
+        self._write_events(
+            [
+                {
+                    "type": "response.output_text.delta",
+                    "output_index": 0,
+                    "delta": "Partial",
+                },
+                {
+                    "type": "response.incomplete",
+                    "response": {
+                        "id": "resp_filtered",
+                        "object": "response",
+                        "created_at": 0,
+                        "model": payload["model"],
+                        "status": "incomplete",
+                        "output": [],
+                        "incomplete_details": {"reason": "content_filter"},
+                    },
+                },
+            ]
+        )
+
+    def _failed_stream(
+        self, payload: dict[str, Any], code: str, terminal: bool = True
+    ) -> None:
         events = [
             {
                 "type": "response.created",
@@ -391,6 +422,9 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
                 },
             },
         ]
+        self._write_events(events if terminal else events[:-1])
+
+    def _write_events(self, events: list[dict[str, Any]]) -> None:
         encoded = "".join(
             "data: " + json.dumps({**event, "sequence_number": index}) + "\n\n"
             for index, event in enumerate(events)
@@ -558,6 +592,8 @@ def runtime_server(
         str(auth_json),
         "--backend-base-url",
         fake_codex_url,
+        "--max-retries",
+        "0",
         "--max-stored-items",
         "100",
         "--api-key",
@@ -1089,6 +1125,53 @@ async def test_contract_chat_raises_sdk_errors_for_failed_responses(
     assert received == "Partial", runtime
     assert failed.value.message == "contract server_error", runtime
     assert failed.value.code == "server_error", runtime
+
+
+async def test_contract_chat_raises_sdk_errors_for_closed_streams(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    from openai import APIError, InternalServerError
+
+    runtime, _ = runtime_server
+    client = contract_client.with_options(max_retries=0)
+    messages: Any = [{"role": "user", "content": "CONTRACT_STREAM_CLOSED"}]
+
+    with pytest.raises(InternalServerError) as closed:
+        await client.chat.completions.create(model="gpt-5.6-luna", messages=messages)
+    assert closed.value.status_code == 502, runtime
+
+    stream = await client.chat.completions.create(
+        model="gpt-5.6-luna", messages=messages, stream=True
+    )
+    received = ""
+    with pytest.raises(APIError) as failed:
+        async for chunk in stream:
+            for choice in chunk.choices:
+                received += choice.delta.content or ""
+    assert received == "Partial", runtime
+    assert "closed before" in failed.value.message, runtime
+
+
+async def test_contract_chat_reports_content_filter_finish_reason(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    runtime, _ = runtime_server
+    messages: Any = [{"role": "user", "content": "CONTRACT_CONTENT_FILTER"}]
+    completion = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna", messages=messages
+    )
+    assert completion.choices[0].finish_reason == "content_filter", runtime
+
+    stream = await contract_client.chat.completions.create(
+        model="gpt-5.6-luna", messages=messages, stream=True
+    )
+    reasons = [
+        choice.finish_reason
+        async for chunk in stream
+        for choice in chunk.choices
+        if choice.finish_reason
+    ]
+    assert reasons == ["content_filter"], runtime
 
 
 async def test_contract_chat_keeps_text_before_tool_calls_when_stored(

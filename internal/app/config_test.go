@@ -18,6 +18,7 @@ timeout = 12.5
 verbose = true
 max_stored_items = 25
 max_concurrent_requests = 4
+max_retries = 2
 api_key = "local-key"
 
 [codex]
@@ -38,11 +39,20 @@ drop_params = ["temperature", "top_p"]
 	if cfg.Host != "127.0.0.2" || cfg.Port != 19090 || cfg.Model != "gpt-config" {
 		t.Fatalf("server config = %#v", cfg)
 	}
-	if cfg.Timeout != 12500*time.Millisecond || !cfg.Verbose || cfg.MaxStored != 25 || cfg.Concurrency != 4 {
+	if cfg.Timeout != 12500*time.Millisecond || !cfg.Verbose || cfg.MaxStored != 25 || cfg.Concurrency != 4 || cfg.MaxRetries != 2 {
 		t.Fatalf("numeric config = %#v", cfg)
 	}
 	if cfg.BackendURL != "https://example.test/codex" || len(cfg.DropParams) != 2 {
 		t.Fatalf("Codex config = %#v", cfg)
+	}
+}
+
+func TestDefaultMaxRetries(t *testing.T) {
+	if cfg := defaultConfig(); cfg.MaxRetries != 2 {
+		t.Fatalf("default max retries = %d", cfg.MaxRetries)
+	}
+	if !strings.Contains(defaultConfigTOML(), "max_retries = 2\n") {
+		t.Fatalf("config template = %s", defaultConfigTOML())
 	}
 }
 

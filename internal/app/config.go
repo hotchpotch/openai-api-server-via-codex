@@ -21,6 +21,7 @@ const (
 	defaultClient      = "1.0.0"
 	defaultMaxStored   = 1000
 	defaultConcurrency = 10
+	defaultMaxRetries  = 2
 )
 
 type config struct {
@@ -34,12 +35,15 @@ type config struct {
 	Timeout       time.Duration
 	MaxStored     int
 	Concurrency   int
+	MaxRetries    int
 	Verbose       bool
 	DropParams    []string
 	StateDir      string
 	PIDFile       string
 	LogFile       string
 	StopTimeout   time.Duration
+
+	retryBaseDelay time.Duration
 }
 
 func defaultConfig() config {
@@ -49,6 +53,7 @@ func defaultConfig() config {
 		Host: defaultHost, Port: defaultPort, Model: defaultModel,
 		BackendURL: defaultBackendURL, ClientVersion: defaultClient, AuthJSON: auth,
 		Timeout: 300 * time.Second, MaxStored: defaultMaxStored, Concurrency: defaultConcurrency,
+		MaxRetries: defaultMaxRetries, retryBaseDelay: retryBaseDelay,
 		StateDir: defaultStateDir(), StopTimeout: 10 * time.Second,
 	}
 }
@@ -64,6 +69,7 @@ func (c *config) applyEnvironment() {
 	c.Timeout = time.Duration(envFloat("OPENAI_VIA_CODEX_TIMEOUT", c.Timeout.Seconds()) * float64(time.Second))
 	c.MaxStored = envInt("OPENAI_VIA_CODEX_MAX_STORED_ITEMS", c.MaxStored)
 	c.Concurrency = envInt("OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS", c.Concurrency)
+	c.MaxRetries = envInt("OPENAI_VIA_CODEX_MAX_RETRIES", c.MaxRetries)
 	c.Verbose = envBool("OPENAI_VIA_CODEX_VERBOSE", c.Verbose)
 	c.StateDir = envString("OPENAI_VIA_CODEX_STATE_DIR", c.StateDir)
 	c.PIDFile = envString("OPENAI_VIA_CODEX_PID_FILE", c.PIDFile)
@@ -103,9 +109,10 @@ func Run(args []string, version string) error {
 	fs.StringVar(&cfg.AuthJSON, "auth-json", cfg.AuthJSON, "Codex auth.json path")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "incoming API key")
 	timeout := cfg.Timeout.Seconds()
-	fs.Float64Var(&timeout, "timeout", timeout, "backend timeout seconds")
+	fs.Float64Var(&timeout, "timeout", timeout, "backend timeout seconds; streams apply it between events")
 	fs.IntVar(&cfg.MaxStored, "max-stored-items", cfg.MaxStored, "maximum in-memory stored items")
 	fs.IntVar(&cfg.Concurrency, "max-concurrent-requests", cfg.Concurrency, "maximum Codex requests")
+	fs.IntVar(&cfg.MaxRetries, "max-retries", cfg.MaxRetries, "retries for transient Codex failures before any output; 0 disables")
 	fs.BoolVar(&cfg.Verbose, "verbose", cfg.Verbose, "verbose logging")
 	stopTimeout := cfg.StopTimeout.Seconds()
 	if command == "daemon-run" {
@@ -123,8 +130,8 @@ func Run(args []string, version string) error {
 	if command == "daemon-run" {
 		minimumPort = 1
 	}
-	if cfg.MaxStored < 0 || cfg.Concurrency < 0 || cfg.Port < minimumPort || cfg.Port > 65535 || timeout <= 0 || stopTimeout <= 0 {
-		return errors.New("port, timeout, max-stored-items, max-concurrent-requests, or stop-timeout is invalid")
+	if cfg.MaxStored < 0 || cfg.Concurrency < 0 || cfg.MaxRetries < 0 || cfg.Port < minimumPort || cfg.Port > 65535 || timeout <= 0 || stopTimeout <= 0 {
+		return errors.New("port, timeout, max-stored-items, max-concurrent-requests, max-retries, or stop-timeout is invalid")
 	}
 	cfg.Timeout = time.Duration(timeout * float64(time.Second))
 	cfg.StopTimeout = time.Duration(stopTimeout * float64(time.Second))
@@ -198,6 +205,7 @@ timeout = 300.0
 verbose = false
 max_stored_items = %d
 max_concurrent_requests = %d
+max_retries = %d
 
 [codex]
 auth_json = "~/.codex/auth.json"
@@ -210,7 +218,7 @@ drop_params = []
 [daemon]
 state_dir = %q
 stop_timeout = 10.0
-`, defaultHost, defaultPort, defaultModel, defaultMaxStored, defaultConcurrency, defaultBackendURL, defaultClient, defaultStateDir())
+`, defaultHost, defaultPort, defaultModel, defaultMaxStored, defaultConcurrency, defaultMaxRetries, defaultBackendURL, defaultClient, defaultStateDir())
 }
 
 func defaultStateDir() string {
@@ -263,6 +271,7 @@ type configFile struct {
 		Verbose               *bool    `toml:"verbose"`
 		MaxStoredItems        *int     `toml:"max_stored_items"`
 		MaxConcurrentRequests *int     `toml:"max_concurrent_requests"`
+		MaxRetries            *int     `toml:"max_retries"`
 		APIKey                *string  `toml:"api_key"`
 	} `toml:"server"`
 	Codex struct {
@@ -302,6 +311,9 @@ func (file *configFile) apply(c *config) {
 	}
 	if file.Server.MaxConcurrentRequests != nil {
 		c.Concurrency = *file.Server.MaxConcurrentRequests
+	}
+	if file.Server.MaxRetries != nil {
+		c.MaxRetries = *file.Server.MaxRetries
 	}
 	if file.Server.APIKey != nil {
 		c.APIKey = *file.Server.APIKey

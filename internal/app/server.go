@@ -71,8 +71,8 @@ func serve(cfg config, version string) error {
 	log.Print(startupLogMessage(version, boundAddress))
 	if cfg.Verbose {
 		log.Printf(
-			"settings.resolved host=%s port=%d model=%s timeout=%s max_stored_items=%d max_concurrent_requests=%d auth_json=%s backend_base_url=%s api_key_configured=%t",
-			cfg.Host, cfg.Port, cfg.Model, cfg.Timeout, cfg.MaxStored, cfg.Concurrency,
+			"settings.resolved host=%s port=%d model=%s timeout=%s max_retries=%d max_stored_items=%d max_concurrent_requests=%d auth_json=%s backend_base_url=%s api_key_configured=%t",
+			cfg.Host, cfg.Port, cfg.Model, cfg.Timeout, cfg.MaxRetries, cfg.MaxStored, cfg.Concurrency,
 			cfg.AuthJSON, cfg.BackendURL, cfg.APIKey != "",
 		)
 	}
@@ -395,7 +395,13 @@ func (s *server) streamResponse(w http.ResponseWriter, r *http.Request, prepared
 		return nil
 	})
 	if err != nil {
-		writeSSE(w, map[string]any{"type": "error", "sequence_number": seq, "code": nil, "message": publicStreamError(err), "param": nil})
+		if seq == 0 {
+			clearSSE(w)
+			writeBackendError(w, err)
+			return
+		}
+		failure := publicErrorObject(err)
+		writeSSE(w, map[string]any{"type": "error", "sequence_number": seq, "code": failure["code"], "message": failure["message"], "param": failure["param"]})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -632,12 +638,16 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 	}
 	err := s.backend.stream(r.Context(), responsePayload, func(event map[string]any) error {
 		typ := stringValue(event["type"])
+		// Keep the role back until the attempt is known to be producing a
+		// response, so an early failure can still be a real HTTP error.
+		if !isLifecycleEvent(typ) && typ != "error" && typ != "response.failed" {
+			role()
+		}
 		switch typ {
 		case "response.created":
 			if resp := mapAny(event["response"]); resp != nil {
 				state.update(resp)
 			}
-			role()
 		case "response.output_text.delta":
 			role()
 			if delta := stringValue(event["delta"]); delta != "" {
@@ -728,6 +738,11 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 		return nil
 	})
 	if err != nil {
+		if !state.RoleSent {
+			clearSSE(w)
+			writeBackendError(w, err)
+			return
+		}
 		emit(map[string]any{"error": publicErrorObject(err)})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
@@ -988,6 +1003,10 @@ func writeError(w http.ResponseWriter, status int, message, typ string, param *s
 func writeBackendError(w http.ResponseWriter, err error) {
 	var be *backendError
 	if errors.As(err, &be) {
+		var failure *responseFailureError
+		if errors.As(err, &failure) && failure.RetryAfter != "" {
+			w.Header().Set("Retry-After", failure.RetryAfter)
+		}
 		writeJSON(w, be.Status, map[string]any{"error": publicErrorObject(err)})
 	} else {
 		writeError(w, 500, "Internal server error.", "api_error", nil, nil)
@@ -1011,6 +1030,11 @@ func publicStreamError(err error) string {
 		return be.Message
 	}
 	return "Internal server error."
+}
+func clearSSE(w http.ResponseWriter) {
+	for _, header := range []string{"Content-Type", "Cache-Control", "Connection", "X-Accel-Buffering"} {
+		w.Header().Del(header)
+	}
 }
 func setSSE(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")

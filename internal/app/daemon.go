@@ -50,8 +50,8 @@ func runDaemonCommand(command string, args []string) error {
 	if backendTimeout != nil {
 		cfg.Timeout = time.Duration(*backendTimeout * float64(time.Second))
 	}
-	if cfg.Port < 1 || cfg.Port > 65535 || stopSeconds <= 0 || cfg.Timeout <= 0 || cfg.MaxStored < 0 || cfg.Concurrency < 0 {
-		return errors.New("port, timeout, storage, concurrency, or stop-timeout is invalid")
+	if cfg.Port < 1 || cfg.Port > 65535 || stopSeconds <= 0 || cfg.Timeout <= 0 || cfg.MaxStored < 0 || cfg.Concurrency < 0 || cfg.MaxRetries < 0 {
+		return errors.New("port, timeout, storage, concurrency, retries, or stop-timeout is invalid")
 	}
 	cfg.StopTimeout = time.Duration(stopSeconds * float64(time.Second))
 	paths, err := resolveDaemonPaths(cfg, flagProvided(args, "host"), flagProvided(args, "pid-file"))
@@ -77,9 +77,10 @@ func addDaemonServerFlags(fs *flag.FlagSet, cfg *config) *float64 {
 	fs.StringVar(&cfg.AuthJSON, "auth-json", cfg.AuthJSON, "Codex auth.json path")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "incoming API key")
 	timeout := cfg.Timeout.Seconds()
-	fs.Float64Var(&timeout, "timeout", timeout, "backend timeout seconds")
+	fs.Float64Var(&timeout, "timeout", timeout, "backend timeout seconds; streams apply it between events")
 	fs.IntVar(&cfg.MaxStored, "max-stored-items", cfg.MaxStored, "maximum in-memory stored items")
 	fs.IntVar(&cfg.Concurrency, "max-concurrent-requests", cfg.Concurrency, "maximum Codex requests")
+	fs.IntVar(&cfg.MaxRetries, "max-retries", cfg.MaxRetries, "retries for transient Codex failures before any output; 0 disables")
 	return &timeout
 }
 
@@ -189,7 +190,7 @@ func startDaemon(cfg config, paths daemonPaths) error {
 }
 
 func serverCommandArgs(command string, cfg config) []string {
-	args := []string{command, "--host", cfg.Host, "--port", strconv.Itoa(cfg.Port), "--backend-base-url", cfg.BackendURL, "--client-version", cfg.ClientVersion, "--auth-json", cfg.AuthJSON, "--timeout", formatSeconds(cfg.Timeout), "--max-stored-items", strconv.Itoa(cfg.MaxStored), "--max-concurrent-requests", strconv.Itoa(cfg.Concurrency), "--default-model", cfg.Model}
+	args := []string{command, "--host", cfg.Host, "--port", strconv.Itoa(cfg.Port), "--backend-base-url", cfg.BackendURL, "--client-version", cfg.ClientVersion, "--auth-json", cfg.AuthJSON, "--timeout", formatSeconds(cfg.Timeout), "--max-stored-items", strconv.Itoa(cfg.MaxStored), "--max-concurrent-requests", strconv.Itoa(cfg.Concurrency), "--max-retries", strconv.Itoa(cfg.MaxRetries), "--default-model", cfg.Model}
 	if command == "daemon-run" {
 		args = append(args, "--stop-timeout", formatSeconds(cfg.StopTimeout))
 	}

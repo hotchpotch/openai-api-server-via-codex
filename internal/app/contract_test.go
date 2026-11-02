@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -36,6 +37,8 @@ func newContractEnvironment(t *testing.T, mutate func(*config)) *contractEnviron
 	cfg.AuthJSON = testauth.Write(t)
 	cfg.APIKey = contractAPIKey
 	cfg.Timeout = 5 * time.Second
+	cfg.MaxRetries = 0
+	cfg.retryBaseDelay = time.Millisecond
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -387,6 +390,442 @@ func TestGoHTTPContractChatReportsFailedResponses(t *testing.T) {
 	}
 }
 
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
+// scriptedAttempt is one Codex response: an HTTP error, or events then EOF.
+type scriptedAttempt struct {
+	status  int
+	headers map[string]string
+	body    string
+	events  []map[string]any
+}
+
+func newScriptedAttempts(t *testing.T, attempts []scriptedAttempt, mutate func(*config)) (*contractEnvironment, *atomic.Int32) {
+	t.Helper()
+	var count atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := attempts[min(int(count.Add(1))-1, len(attempts)-1)]
+		for key, value := range attempt.headers {
+			w.Header().Set(key, value)
+		}
+		if attempt.status != 0 {
+			w.WriteHeader(attempt.status)
+			io.WriteString(w, attempt.body)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range attempt.events {
+			encoded, _ := json.Marshal(event)
+			fmt.Fprintf(w, "data: %s\n\n", encoded)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	return newContractEnvironment(t, func(cfg *config) {
+		cfg.BackendURL = upstream.URL
+		if mutate != nil {
+			mutate(cfg)
+		}
+	}), &count
+}
+
+func TestGoHTTPContractRetriesTransientFailuresBeforeOutput(t *testing.T) {
+	created := map[string]any{"type": "response.created", "response": map[string]any{"id": "resp_retry", "status": "in_progress"}}
+	text := map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "Recovered"}
+	completed := map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_retry", "status": "completed", "output": []any{
+		map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "Recovered"}}},
+	}}}
+	failed := func(detail map[string]any) map[string]any {
+		return map[string]any{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "output": []any{}, "error": detail}}
+	}
+	success := scriptedAttempt{events: []map[string]any{created, text, completed}}
+	serverError := failed(map[string]any{"code": "server_error", "message": "broke"})
+	chat := map[string]any{"model": "gpt-5.6-luna", "messages": []any{map[string]any{"role": "user", "content": "retry"}}}
+	withRetries := func(cfg *config) { cfg.MaxRetries = 2 }
+
+	for name, first := range map[string]scriptedAttempt{
+		"response failed": {events: []map[string]any{created, serverError}},
+		"error event":     {events: []map[string]any{created, {"type": "error", "code": "server_error", "message": "broke"}}},
+		"closed early":    {events: []map[string]any{created}},
+		"http 500":        {status: 500, body: `{"error":{"message":"broke"}}`},
+		"rate limit":      {events: []map[string]any{failed(map[string]any{"code": "rate_limit_exceeded", "message": "slow"})}},
+		"overload advice": {events: []map[string]any{failed(map[string]any{"code": "server_is_overloaded", "headers": map[string]any{"retry-after": "0"}})}},
+		"http 429 advice": {status: 429, headers: map[string]string{"Retry-After": "0"}, body: `{"error":{"message":"wait"}}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			environment, count := newScriptedAttempts(t, []scriptedAttempt{first, success}, withRetries)
+			document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusOK)
+			if content := mapAny(mapAny(sliceAny(document["choices"])[0])["message"])["content"]; content != "Recovered" {
+				t.Fatalf("completion = %#v", document)
+			}
+			if count.Load() != 2 {
+				t.Fatalf("attempts = %d, want 2", count.Load())
+			}
+
+			environment, count = newScriptedAttempts(t, []scriptedAttempt{first, success}, withRetries)
+			request := cloneMap(chat)
+			request["stream"] = true
+			_, data := environment.request(t, http.MethodPost, "/v1/chat/completions", request)
+			chunks := parseSSE(t, data)
+			roles, content := 0, ""
+			for _, chunk := range chunks {
+				if chunk["error"] != nil {
+					t.Fatalf("stream reported the retried failure: %s", data)
+				}
+				for _, rawChoice := range sliceAny(chunk["choices"]) {
+					delta := mapAny(mapAny(rawChoice)["delta"])
+					if delta["role"] != nil {
+						roles++
+					}
+					content += stringValue(delta["content"])
+				}
+			}
+			if roles != 1 || content != "Recovered" || count.Load() != 2 {
+				t.Fatalf("roles = %d content = %q attempts = %d; %s", roles, content, count.Load(), data)
+			}
+
+			environment, count = newScriptedAttempts(t, []scriptedAttempt{first, success}, withRetries)
+			_, data = environment.request(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "retry", "stream": true})
+			events := parseSSE(t, data)
+			createdEvents := 0
+			for _, event := range events {
+				switch event["type"] {
+				case "response.created":
+					createdEvents++
+				case "error", "response.failed":
+					t.Fatalf("responses stream reported the retried failure: %s", data)
+				}
+			}
+			if createdEvents != 1 || events[len(events)-1]["type"] != "response.completed" {
+				t.Fatalf("responses stream = %s", data)
+			}
+		})
+	}
+
+	t.Run("non-streaming requests retry after partial output", func(t *testing.T) {
+		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{created, text, serverError}}, success}, withRetries)
+		document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusOK)
+		if content := mapAny(mapAny(sliceAny(document["choices"])[0])["message"])["content"]; content != "Recovered" || count.Load() != 2 {
+			t.Fatalf("attempts = %d; %#v", count.Load(), document)
+		}
+	})
+
+	t.Run("a terminal code after an error event is not retried", func(t *testing.T) {
+		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{
+			{"type": "error", "message": "failed"}, failed(map[string]any{"code": "context_length_exceeded", "message": "long"}),
+		}}, success}, withRetries)
+		document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusBadRequest)
+		if mapAny(document["error"])["code"] != "context_length_exceeded" || count.Load() != 1 {
+			t.Fatalf("attempts = %d; %#v", count.Load(), document)
+		}
+	})
+
+	t.Run("no retry after output", func(t *testing.T) {
+		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{created, text, serverError}}, success}, withRetries)
+		request := cloneMap(chat)
+		request["stream"] = true
+		_, data := environment.request(t, http.MethodPost, "/v1/chat/completions", request)
+		chunks := parseSSE(t, data)
+		if count.Load() != 1 || mapAny(chunks[len(chunks)-1]["error"])["code"] != "server_error" {
+			t.Fatalf("attempts = %d; %s", count.Load(), data)
+		}
+	})
+
+	for name, test := range map[string]struct {
+		attempt scriptedAttempt
+		status  int
+	}{
+		"context length":        {scriptedAttempt{events: []map[string]any{failed(map[string]any{"code": "context_length_exceeded"})}}, 400},
+		"quota":                 {scriptedAttempt{events: []map[string]any{failed(map[string]any{"code": "insufficient_quota"})}}, 429},
+		"usage type":            {scriptedAttempt{status: 429, body: `{"error":{"type":"usage_limit_reached","message":"limit"}}`}, 429},
+		"policy":                {scriptedAttempt{events: []map[string]any{failed(map[string]any{"code": "cyber_policy"})}}, 400},
+		"overload without wait": {scriptedAttempt{events: []map[string]any{failed(map[string]any{"code": "server_is_overloaded"})}}, 503},
+		"long retry advice":     {scriptedAttempt{status: 500, headers: map[string]string{"Retry-After": "120"}, body: `{"error":{"message":"later"}}`}, 500},
+		"http 400":              {scriptedAttempt{status: 400, body: `{"error":{"message":"bad"}}`}, 400},
+	} {
+		t.Run("no retry for "+name, func(t *testing.T) {
+			environment, count := newScriptedAttempts(t, []scriptedAttempt{test.attempt, success}, withRetries)
+			response, data := environment.request(t, http.MethodPost, "/v1/chat/completions", chat)
+			if response.StatusCode != test.status {
+				t.Fatalf("status = %d, want %d; %s", response.StatusCode, test.status, data)
+			}
+			if count.Load() != 1 {
+				t.Fatalf("attempts = %d, want 1", count.Load())
+			}
+		})
+	}
+
+	t.Run("retries stop at the limit", func(t *testing.T) {
+		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{serverError}}}, withRetries)
+		document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusBadGateway)
+		if mapAny(document["error"])["code"] != "server_error" || count.Load() != 3 {
+			t.Fatalf("attempts = %d; %#v", count.Load(), document)
+		}
+		environment, _ = newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{created, serverError}}}, withRetries)
+		response := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "fail"}, http.StatusOK)
+		if response["status"] != "failed" || response["id"] != "resp_failed" {
+			t.Fatalf("response = %#v", response)
+		}
+	})
+
+	t.Run("zero disables retries", func(t *testing.T) {
+		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{serverError}}, success}, nil)
+		environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusBadGateway)
+		if count.Load() != 1 {
+			t.Fatalf("attempts = %d", count.Load())
+		}
+	})
+}
+
+func TestGoHTTPContractStreamsReportEarlyFailuresAsHTTPErrors(t *testing.T) {
+	limited := scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "120"}, body: `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"slow","param":"input"}}`}
+	for name, request := range map[string]struct {
+		path string
+		body map[string]any
+	}{
+		"chat":      {"/v1/chat/completions", map[string]any{"model": "gpt-5.6-luna", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "fail"}}}},
+		"responses": {"/v1/responses", map[string]any{"model": "gpt-5.6-luna", "stream": true, "input": "fail"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			environment, _ := newScriptedAttempts(t, []scriptedAttempt{limited}, nil)
+			response, data := environment.request(t, http.MethodPost, request.path, request.body)
+			if response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") != "120" {
+				t.Fatalf("status = %d Retry-After = %q; %s", response.StatusCode, response.Header.Get("Retry-After"), data)
+			}
+			if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("Content-Type = %q", contentType)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			detail := mapAny(document["error"])
+			if detail["code"] != "rate_limit_exceeded" || detail["type"] != "rate_limit_error" || detail["param"] != "input" {
+				t.Fatalf("error = %#v", detail)
+			}
+		})
+	}
+
+	t.Run("chat failure event before output", func(t *testing.T) {
+		environment, _ := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{
+			{"type": "response.created", "response": map[string]any{"id": "resp_failed", "status": "in_progress"}},
+			{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": map[string]any{"code": "context_length_exceeded", "message": "long"}}},
+		}}}, nil)
+		response, data := environment.request(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model": "gpt-5.6-luna", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "fail"}},
+		})
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d; %s", response.StatusCode, data)
+		}
+	})
+}
+
+func TestGoHTTPContractIgnoresFailuresAfterCompletion(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		encoded, _ := json.Marshal(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_done", "status": "completed", "output": []any{}}})
+		fmt.Fprintf(w, "data: %s\n\n", encoded)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	environment := newContractEnvironment(t, func(cfg *config) {
+		cfg.BackendURL = upstream.URL
+		cfg.Timeout = 2 * time.Second
+	})
+	started := time.Now()
+	response := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "done"}, http.StatusOK)
+	if response["status"] != "completed" || time.Since(started) > time.Second {
+		t.Fatalf("response = %#v after %s", response, time.Since(started))
+	}
+}
+
+func TestBackendRetryDelayBounds(t *testing.T) {
+	b := &backend{cfg: config{MaxRetries: 100, retryBaseDelay: retryBaseDelay}}
+	transient := &backendError{http.StatusBadGateway, "broke"}
+	for _, attempt := range []int{0, 5, 40, 80, 99} {
+		delay, ok := b.retryDelay(transient, attempt)
+		if !ok || delay <= 0 || delay > maxRetryAdvice+maxRetryAdvice/5 {
+			t.Fatalf("attempt %d: delay = %s ok = %v", attempt, delay, ok)
+		}
+	}
+	if _, ok := b.retryDelay(transient, 100); ok {
+		t.Fatal("retried past the limit")
+	}
+	if _, ok := b.retryDelay(&backendError{http.StatusGatewayTimeout, "stalled"}, 0); ok {
+		t.Fatal("retried a stalled stream")
+	}
+	if _, ok := b.retryDelay(errSSELimit, 0); ok {
+		t.Fatal("retried an oversized event")
+	}
+}
+
+func TestGoHTTPContractStreamClosedBeforeCompletion(t *testing.T) {
+	text := map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "Partial"}
+	message := map[string]any{"type": "response.output_item.done", "output_index": 0, "item": map[string]any{
+		"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "output_text", "text": "Partial"}},
+	}}
+	closed := "Codex stream closed before the response completed."
+	var forwarded map[string]any
+	environment := newScriptedEnvironment(t, []map[string]any{text, message, {"type": "response.completed"}}, &forwarded)
+	chat := map[string]any{"model": "gpt-5.6-luna", "store": true, "messages": []any{map[string]any{"role": "user", "content": "cut"}}}
+
+	document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusBadGateway)
+	if mapAny(document["error"])["message"] != closed {
+		t.Fatalf("error = %#v", document)
+	}
+	if strings.Contains(string(mustJSON(t, document)), "Partial") {
+		t.Fatalf("error exposed partial output: %#v", document)
+	}
+	if stored := sliceAny(environment.json(t, http.MethodGet, "/v1/chat/completions", nil, http.StatusOK)["data"]); len(stored) != 0 {
+		t.Fatalf("truncated completion was stored: %#v", stored)
+	}
+
+	chat["stream"] = true
+	_, data := environment.request(t, http.MethodPost, "/v1/chat/completions", chat)
+	chunks := parseSSE(t, data)
+	if mapAny(chunks[len(chunks)-1]["error"])["message"] != closed {
+		t.Fatalf("chat stream = %s", data)
+	}
+	for _, chunk := range chunks {
+		for _, rawChoice := range sliceAny(chunk["choices"]) {
+			if reason := mapAny(rawChoice)["finish_reason"]; reason != nil {
+				t.Fatalf("truncated stream reported finish_reason %v", reason)
+			}
+		}
+	}
+
+	_, data = environment.request(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "cut", "stream": true})
+	events := parseSSE(t, data)
+	if last := events[len(events)-1]; last["type"] != "error" || last["message"] != closed {
+		t.Fatalf("responses stream = %s", data)
+	}
+}
+
+func TestGoHTTPContractStreamTimeoutAppliesBetweenEvents(t *testing.T) {
+	const gap = 60 * time.Millisecond
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var stall atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		write := func(event map[string]any) {
+			encoded, _ := json.Marshal(event)
+			fmt.Fprintf(w, "data: %s\n\n", encoded)
+			w.(http.Flusher).Flush()
+		}
+		for range 5 {
+			write(map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "x"})
+			time.Sleep(gap)
+		}
+		if stall.Load() {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		write(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_slow", "status": "completed", "output": []any{}}})
+	}))
+	t.Cleanup(upstream.Close)
+	environment := newContractEnvironment(t, func(cfg *config) {
+		cfg.BackendURL = upstream.URL
+		cfg.Timeout = 3 * gap
+	})
+	request := map[string]any{"model": "gpt-5.6-luna", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "slow"}}}
+
+	_, data := environment.request(t, http.MethodPost, "/v1/chat/completions", request)
+	for _, chunk := range parseSSE(t, data) {
+		if chunk["error"] != nil {
+			t.Fatalf("a stream with regular events timed out: %s", data)
+		}
+	}
+	if !strings.Contains(string(data), `"finish_reason":"stop"`) {
+		t.Fatalf("slow stream did not finish: %s", data)
+	}
+
+	stall.Store(true)
+	_, data = environment.request(t, http.MethodPost, "/v1/chat/completions", request)
+	chunks := parseSSE(t, data)
+	if mapAny(chunks[len(chunks)-1]["error"])["message"] != "Codex backend stream timed out." {
+		t.Fatalf("stalled stream = %s", data)
+	}
+}
+
+func TestGoHTTPContractChatFinishReasonForIncompleteResponses(t *testing.T) {
+	for reason, want := range map[string]string{
+		"content_filter":    "content_filter",
+		"max_output_tokens": "length",
+		"interrupted":       "length",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			var forwarded map[string]any
+			environment := newScriptedEnvironment(t, []map[string]any{{
+				"type":     "response.incomplete",
+				"response": map[string]any{"id": "resp_cut", "status": "incomplete", "output": []any{}, "incomplete_details": map[string]any{"reason": reason}},
+			}}, &forwarded)
+			document := environment.json(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+				"model": "gpt-5.6-luna", "messages": []any{map[string]any{"role": "user", "content": "cut"}},
+			}, http.StatusOK)
+			if got := mapAny(sliceAny(document["choices"])[0])["finish_reason"]; got != want {
+				t.Fatalf("finish_reason = %v, want %s", got, want)
+			}
+		})
+	}
+}
+
+func TestGoHTTPContractForwardsUpstreamErrorDetails(t *testing.T) {
+	chat := map[string]any{"model": "gpt-5.6-luna", "messages": []any{map[string]any{"role": "user", "content": "fail"}}}
+	for name, test := range map[string]struct {
+		attempt    scriptedAttempt
+		status     int
+		code       any
+		errorType  string
+		message    string
+		param      any
+		retryAfter string
+	}{
+		"redacted http":    {scriptedAttempt{status: 400, body: `{"error":{"code":"invalid_value","message":"denied Bearer abcdefghijklmnopqrstuvwxyz0123456789","param":"Bearer abcdefghijklmnopqrstuvwxyz0123456789"}}`}, 400, "invalid_value", "invalid_request_error", "denied Bearer [REDACTED]", "Bearer [REDACTED]", ""},
+		"policy over http": {scriptedAttempt{status: 400, body: `{"error":{"code":"cyber_policy"}}`}, 400, "cyber_policy", "invalid_request_error", "This request has been flagged for possible cybersecurity risk.", nil, ""},
+		"detail object":    {scriptedAttempt{status: 400, body: `{"detail":{"code":"invalid_value","message":"nested"}}`}, 400, "invalid_value", "invalid_request_error", "nested", nil, ""},
+		"http details":     {scriptedAttempt{status: 400, body: `{"error":{"message":"bad","type":"invalid_request_error","code":"invalid_value","param":"input"}}`}, 400, "invalid_value", "invalid_request_error", "bad", "input", ""},
+		"usage type":       {scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "120"}, body: `{"error":{"type":"usage_limit_reached","message":"limit"}}`}, 429, "usage_limit_reached", "usage_limit_reached", "limit", nil, "120"},
+		"detail field":     {scriptedAttempt{status: 400, body: `{"detail":"model not supported"}`}, 400, nil, "invalid_request_error", "model not supported", nil, ""},
+		"plain body":       {scriptedAttempt{status: 400, body: `nope`}, 400, nil, "invalid_request_error", "400 Bad Request", nil, ""},
+		"event advice":     {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "rate_limit_exceeded", "message": "slow", "headers": map[string]any{"Retry-After": "90"}}}}}}, 429, "rate_limit_exceeded", "rate_limit_error", "slow", nil, "90"},
+		"bad advice":       {scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "soon"}, body: `{"error":{"message":"wait"}}`}, 429, nil, "rate_limit_error", "wait", nil, ""},
+		"policy text":      {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "bio_policy", "message": " "}}}}}, 400, "bio_policy", "invalid_request_error", "This content was flagged for possible biological risk.", nil, ""},
+		"not found":        {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "model_not_found", "message": "gone"}}}}}, 404, "model_not_found", "invalid_request_error", "gone", nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			environment, _ := newScriptedAttempts(t, []scriptedAttempt{test.attempt}, nil)
+			response, data := environment.request(t, http.MethodPost, "/v1/chat/completions", chat)
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			detail := mapAny(document["error"])
+			if response.StatusCode != test.status || detail["code"] != test.code || detail["type"] != test.errorType || detail["message"] != test.message || detail["param"] != test.param {
+				t.Fatalf("status = %d; %s", response.StatusCode, data)
+			}
+			if got := response.Header.Get("Retry-After"); got != test.retryAfter {
+				t.Fatalf("Retry-After = %q, want %q", got, test.retryAfter)
+			}
+		})
+	}
+}
+
 func TestGoHTTPContractChatFailureErrorShape(t *testing.T) {
 	for name, test := range map[string]struct {
 		detail    map[string]any
@@ -401,6 +840,7 @@ func TestGoHTTPContractChatFailureErrorShape(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var forwarded map[string]any
 			environment := newScriptedEnvironment(t, []map[string]any{
+				{"type": "response.output_text.delta", "output_index": 0, "delta": "Partial"},
 				{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": test.detail}},
 			}, &forwarded)
 			request := map[string]any{"model": "gpt-5.6-luna", "messages": []any{map[string]any{"role": "user", "content": "fail"}}}
@@ -820,11 +1260,11 @@ func TestGoHTTPContractImagesAudioProxyAndErrors(t *testing.T) {
 
 func TestGoHTTPContractCollectFallbackFailureAndNormalization(t *testing.T) {
 	environment := newContractEnvironment(t, nil)
-	fallback := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{
+	truncated := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{
 		"model": "gpt-5.6-luna", "input": "FAKE_DELTA_ONLY",
-	}, http.StatusOK)
-	if fallback["status"] != "completed" || !strings.Contains(responseText(fallback), "FAKE_DELTA_ONLY") {
-		t.Fatalf("fallback response = %#v", fallback)
+	}, http.StatusBadGateway)
+	if !strings.Contains(stringValue(mapAny(truncated["error"])["message"]), "closed before") {
+		t.Fatalf("truncated response = %#v", truncated)
 	}
 	normalized := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{
 		"model": "gpt-5.6-luna", "input": "FAKE_RAW_DONE",

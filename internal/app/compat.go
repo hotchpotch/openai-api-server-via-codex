@@ -437,6 +437,9 @@ func responseToChat(response map[string]any, fallback string, legacy bool, n int
 	}
 	if response["status"] == "incomplete" {
 		finish = "length"
+		if mapAny(response["incomplete_details"])["reason"] == "content_filter" {
+			finish = "content_filter"
+		}
 	}
 	if n < 1 {
 		n = 1

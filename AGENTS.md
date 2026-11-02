@@ -182,7 +182,15 @@ python scripts/release-notes.py vX.Y.Z
   local concurrency cap.
 - Codex backend timeout defaults to 300 seconds. Keep CLI/env/config/default
   fallback paths, config templates, README examples, and tests aligned when
-  changing that value.
+  changing that value. Response streams apply it between events, not to the
+  whole stream.
+- Retry transient Codex failures only before any output reaches the client, up
+  to `max_retries` (default 2, `0` disables), exposed through CLI/env/config.
+  Hold lifecycle events until an attempt produces output, and never retry after
+  that. Treat a stream that closes without a terminal event as an error.
+- When aligning failure handling with the upstream `openai/codex` client, follow
+  it only where the result is still sound as an OpenAI API. Prefer official
+  `openai-python` behavior when the two differ.
 - README examples should use the current preferred documented model. Keep the
   examples on `gpt-6-luna` unless there is a deliberate model guidance change.
   Do not confuse README example models with the server's compatibility default;
