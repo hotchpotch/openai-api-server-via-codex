@@ -239,11 +239,17 @@ python scripts/release-notes.py vX.Y.Z
   same-repository actions with `$/`, not `./`, and pin reusable workflows from
   other repositories by full commit SHA because the lockfile does not cover
   them.
-- Dependency versions are pinned and updated through Dependabot
-  (`.github/dependabot.yml`): Go modules by `go.mod`/`go.sum`, Python dev
+- Dependency versions are pinned: Go modules by `go.mod`/`go.sum`, Python dev
   dependencies by `uv.lock` (tox uses `uv-venv-lock-runner`), and Dockerfile
   base images by `tag@sha256:` digest. Do not reintroduce floating image tags
   or unlocked tox environments.
+- Dependabot (`.github/dependabot.yml`) opens security updates only for GitHub
+  Actions, Go modules, and uv; version updates are disabled with
+  `open-pull-requests-limit: 0`. `dependabot-auto-merge.yml` enables squash
+  auto-merge on Dependabot PRs, which GitHub merges after the required checks
+  on `main` pass. Keep the required checks aligned when renaming CI jobs.
+  Dependabot has no Docker security updates, so refresh base image tags and
+  digests by hand.
 - Incoming API key authentication is optional and disabled by default. When
   `--api-key`, `OPENAI_VIA_CODEX_API_KEY`, or `[server].api_key` is configured,
   require `Authorization: Bearer <api_key>` for `/v1/...` routes only; keep

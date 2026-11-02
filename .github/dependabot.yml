@@ -1,62 +1,26 @@
 version: 2
 
+# Security updates only. `open-pull-requests-limit: 0` disables version
+# updates; security updates use a separate limit and still open PRs, which
+# dependabot-auto-merge.yml merges once the required checks pass. Dependabot
+# has no security updates for Docker, so Dockerfile base images are refreshed
+# by hand.
 updates:
   # Dependabot regenerates .github/workflows/actions.lock in the same PR.
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 3
-    groups:
-      github-actions:
-        patterns:
-          - "*"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 3
-    groups:
-      go-modules:
-        patterns:
-          - "*"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: uv
     directory: /
     schedule:
       interval: weekly
-    cooldown:
-      default-days: 3
-    groups:
-      python-dev:
-        patterns:
-          - "*"
-    ignore:
-      # openai caps websockets below 16; raise it together with openai.
-      - dependency-name: websockets
-        update-types:
-          - version-update:semver-major
-
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: weekly
-    cooldown:
-      default-days: 3
-    groups:
-      docker-base-images:
-        patterns:
-          - "*"
-    ignore:
-      # The builder's Go minor version follows go.mod, and Node.js majors are
-      # deliberate LTS moves; take only patch and digest updates here.
-      - dependency-name: golang
-        update-types:
-          - version-update:semver-major
-          - version-update:semver-minor
-      - dependency-name: node
-        update-types:
-          - version-update:semver-major
+    open-pull-requests-limit: 0
