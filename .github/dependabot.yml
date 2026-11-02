@@ -45,3 +45,13 @@ updates:
       docker-base-images:
         patterns:
           - "*"
+    ignore:
+      # The builder's Go minor version follows go.mod, and Node.js majors are
+      # deliberate LTS moves; take only patch and digest updates here.
+      - dependency-name: golang
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor
+      - dependency-name: node
+        update-types:
+          - version-update:semver-major
