@@ -36,38 +36,94 @@ func (e *backendError) Error() string { return e.Message }
 // responseFailureError is a failure Codex reported inside a 2xx event stream.
 type responseFailureError struct {
 	backendError
-	Code string
+	Type, Code string
+	Param      any
 }
 
 func (e *responseFailureError) Unwrap() error { return &e.backendError }
 
-// responseFailure builds the client error for a failure detail, which holds the
-// upstream code and message. Its message is redacted; its code is also logged
-// because a stream has already reported HTTP 200.
+// responseFailure builds the client error for a failure detail from Codex. Text
+// fields are redacted. The code is also logged because a stream has already
+// reported HTTP 200.
 func responseFailure(detail map[string]any) error {
 	message := "Codex backend response failed."
 	if text := stringValue(detail["message"]); text != "" {
 		message = redactSensitive(text)
 	}
 	code := redactSensitive(stringValue(detail["code"]))
-	status := http.StatusBadGateway
-	switch {
-	case code == "rate_limit_exceeded" || code == "insufficient_quota":
-		status = http.StatusTooManyRequests
-	case code == "context_length_exceeded" || strings.HasPrefix(code, "invalid_"):
-		status = http.StatusBadRequest
+	status := responseFailureStatus(code)
+	if explicit := intValue(detail["status"]); explicit >= 400 && explicit < 600 {
+		status = explicit
+	}
+	errorType := redactSensitive(stringValue(detail["type"]))
+	if errorType == "" {
+		switch status {
+		case http.StatusBadRequest:
+			errorType = "invalid_request_error"
+		case http.StatusUnauthorized:
+			errorType = "authentication_error"
+		case http.StatusTooManyRequests:
+			errorType = "rate_limit_error"
+		default:
+			errorType = "api_error"
+		}
+	}
+	var param any
+	if text := stringValue(detail["param"]); text != "" {
+		param = redactSensitive(text)
 	}
 	log.Printf("codex.response.failed code=%s status=%d", code, status)
-	return &responseFailureError{backendError{status, message}, code}
+	return &responseFailureError{backendError{status, message}, errorType, code, param}
+}
+
+func responseFailureStatus(code string) int {
+	switch code {
+	case "invalid_api_key":
+		return http.StatusUnauthorized
+	case "rate_limit_exceeded", "insufficient_quota", "usage_limit_reached", "usage_not_included":
+		return http.StatusTooManyRequests
+	case "server_is_overloaded", "slow_down":
+		return http.StatusServiceUnavailable
+	case "context_length_exceeded", "unsupported_parameter", "content_filter":
+		return http.StatusBadRequest
+	}
+	if strings.HasPrefix(code, "invalid_") {
+		return http.StatusBadRequest
+	}
+	return http.StatusBadGateway
+}
+
+// failureDetail reads an upstream error value, which is an object or a message.
+func failureDetail(value any) map[string]any {
+	if detail := mapAny(value); detail != nil {
+		return detail
+	}
+	if text := stringValue(value); text != "" {
+		return map[string]any{"message": text}
+	}
+	return nil
 }
 
 // errorEventDetail reads an error event, which holds its fields either directly
-// or under "error".
+// or under "error", and may give an HTTP status beside them.
 func errorEventDetail(event map[string]any) map[string]any {
-	if detail := mapAny(event["error"]); detail != nil {
-		return detail
+	detail := cloneMap(failureDetail(event["error"]))
+	if detail == nil {
+		detail = cloneMap(event)
+		delete(detail, "type")
 	}
-	return event
+	if detail["status"] == nil {
+		detail["status"] = event["status"]
+	}
+	return detail
+}
+
+// failedResponseError returns the client error for a response that failed.
+func failedResponseError(response map[string]any) error {
+	if stringValue(response["status"]) != "failed" {
+		return nil
+	}
+	return responseFailure(failureDetail(response["error"]))
 }
 
 func newBackend(cfg config) *backend {
@@ -312,6 +368,7 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 	var output []any
 	var text strings.Builder
 	var responseID string
+	var failure map[string]any
 	err := b.stream(ctx, payload, func(event map[string]any) error {
 		switch event["type"] {
 		case "response.created":
@@ -325,13 +382,17 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 				output = append(output, item)
 			}
 		case "error":
-			return responseFailure(errorEventDetail(event))
+			failure = errorEventDetail(event)
 		case "response.completed", "response.incomplete":
 			completed = cloneMap(mapAny(event["response"]))
 		case "response.failed":
 			completed = cloneMap(mapAny(event["response"]))
 			if completed == nil {
-				return &backendError{502, "Codex backend response failed."}
+				return responseFailure(failure)
+			}
+			completed["status"] = "failed"
+			if completed["error"] == nil && failure != nil {
+				completed["error"] = failure
 			}
 		}
 		return nil
@@ -344,6 +405,9 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 			completed["output"] = output
 		}
 		return completed, nil
+	}
+	if failure != nil {
+		return nil, responseFailure(failure)
 	}
 	if responseID == "" {
 		responseID = newID("resp")

@@ -24,7 +24,9 @@
 - Return an error when Codex reports a failure during a Chat Completion, instead
   of a successful completion that could carry truncated text or tool arguments.
   Streams end with an error chunk and no `finish_reason`; non-streaming requests
-  return an HTTP error with the upstream `code`. Failed completions are not
-  stored. `/v1/responses` still returns the failed response object.
+  and image generation return an HTTP error with the upstream `code`. Failed
+  completions are not stored. `/v1/responses` still returns the failed response
+  object, and now returns an HTTP error instead of an empty completed response
+  when Codex sends only an `error` event.
 - Log `chat.stream.tool_arguments_mismatch`, with sizes only, when streamed tool
   arguments differ from the final item in a way later chunks cannot correct.

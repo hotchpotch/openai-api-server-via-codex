@@ -307,16 +307,23 @@ func TestGoHTTPContractChatReportsFailedResponses(t *testing.T) {
 		code    any
 		message string
 	}{
-		"server error":     {failed(map[string]any{"code": "server_error", "message": "upstream broke"}), 502, "server_error", "upstream broke"},
-		"rate limit":       {failed(map[string]any{"code": "rate_limit_exceeded", "message": "slow down"}), 429, "rate_limit_exceeded", "slow down"},
-		"context length":   {failed(map[string]any{"code": "context_length_exceeded", "message": "too long"}), 400, "context_length_exceeded", "too long"},
-		"invalid prompt":   {failed(map[string]any{"code": "invalid_prompt", "message": "rejected"}), 400, "invalid_prompt", "rejected"},
-		"no detail":        {failed(nil), 502, nil, generic},
-		"status on done":   {map[string]any{"type": "response.done", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": map[string]any{"code": "server_error", "message": "done failed"}}}, 502, "server_error", "done failed"},
-		"flat error event": {map[string]any{"type": "error", "code": "server_error", "message": "flat"}, 502, "server_error", "flat"},
-		"nested error":     {map[string]any{"type": "error", "error": map[string]any{"code": "rate_limit_exceeded", "message": "nested"}}, 429, "rate_limit_exceeded", "nested"},
-		"bare error event": {map[string]any{"type": "error"}, 502, nil, generic},
-		"redacted message": {failed(map[string]any{"code": "server_error", "message": "denied " + secret}), 502, "server_error", "denied Bearer [REDACTED]"},
+		"server error":       {failed(map[string]any{"code": "server_error", "message": "upstream broke"}), 502, "server_error", "upstream broke"},
+		"rate limit":         {failed(map[string]any{"code": "rate_limit_exceeded", "message": "slow down"}), 429, "rate_limit_exceeded", "slow down"},
+		"context length":     {failed(map[string]any{"code": "context_length_exceeded", "message": "too long"}), 400, "context_length_exceeded", "too long"},
+		"invalid prompt":     {failed(map[string]any{"code": "invalid_prompt", "message": "rejected"}), 400, "invalid_prompt", "rejected"},
+		"no detail":          {failed(nil), 502, nil, generic},
+		"status on done":     {map[string]any{"type": "response.done", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": map[string]any{"code": "server_error", "message": "done failed"}}}, 502, "server_error", "done failed"},
+		"flat error event":   {map[string]any{"type": "error", "code": "server_error", "message": "flat"}, 502, "server_error", "flat"},
+		"nested error":       {map[string]any{"type": "error", "error": map[string]any{"code": "rate_limit_exceeded", "message": "nested"}}, 429, "rate_limit_exceeded", "nested"},
+		"bare error event":   {map[string]any{"type": "error"}, 502, nil, generic},
+		"missing status":     {map[string]any{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "error": map[string]any{"code": "server_error", "message": "no status"}}}, 502, "server_error", "no status"},
+		"unknown status":     {map[string]any{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "broken", "error": map[string]any{"code": "server_error", "message": "odd status"}}}, 502, "server_error", "odd status"},
+		"string error":       {failed("plain text"), 502, nil, "plain text"},
+		"overloaded":         {failed(map[string]any{"code": "server_is_overloaded", "message": "busy"}), 503, "server_is_overloaded", "busy"},
+		"invalid api key":    {failed(map[string]any{"code": "invalid_api_key", "message": "denied"}), 401, "invalid_api_key", "denied"},
+		"event status":       {map[string]any{"type": "error", "status": 400, "error": map[string]any{"code": "unsupported_value", "message": "bad value"}}, 400, "unsupported_value", "bad value"},
+		"string error event": {map[string]any{"type": "error", "error": "boom"}, 502, nil, "boom"},
+		"redacted message":   {failed(map[string]any{"code": "server_error", "message": "denied " + secret}), 502, "server_error", "denied Bearer [REDACTED]"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var logs bytes.Buffer
@@ -380,14 +387,95 @@ func TestGoHTTPContractChatReportsFailedResponses(t *testing.T) {
 	}
 }
 
+func TestGoHTTPContractChatFailureErrorShape(t *testing.T) {
+	for name, test := range map[string]struct {
+		detail    map[string]any
+		wantType  string
+		wantParam any
+	}{
+		"mapped type":   {map[string]any{"code": "context_length_exceeded", "message": "long"}, "invalid_request_error", nil},
+		"upstream type": {map[string]any{"code": "invalid_prompt", "message": "bad", "type": "custom_error", "param": "input"}, "custom_error", "input"},
+		"rate limit":    {map[string]any{"code": "rate_limit_exceeded", "message": "slow"}, "rate_limit_error", nil},
+		"default":       {map[string]any{"code": "server_error", "message": "broke"}, "api_error", nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var forwarded map[string]any
+			environment := newScriptedEnvironment(t, []map[string]any{
+				{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": test.detail}},
+			}, &forwarded)
+			request := map[string]any{"model": "gpt-5.6-luna", "messages": []any{map[string]any{"role": "user", "content": "fail"}}}
+			_, data := environment.request(t, http.MethodPost, "/v1/chat/completions", request)
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			request["stream"] = true
+			_, streamed := environment.request(t, http.MethodPost, "/v1/chat/completions", request)
+			chunks := parseSSE(t, streamed)
+			for _, source := range []map[string]any{document, chunks[len(chunks)-1]} {
+				detail := mapAny(source["error"])
+				if detail["type"] != test.wantType || detail["param"] != test.wantParam {
+					t.Fatalf("error = %#v, want type %q param %v", detail, test.wantType, test.wantParam)
+				}
+			}
+		})
+	}
+}
+
 func TestGoHTTPContractResponsesKeepFailedResponseObject(t *testing.T) {
+	failedEvent := map[string]any{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "output": []any{}, "error": map[string]any{"code": "server_error", "message": "upstream broke"}}}
+	errorEvent := map[string]any{"type": "error", "code": "server_error", "message": "upstream broke"}
+	for name, events := range map[string][]map[string]any{
+		"failed only":     {failedEvent},
+		"error first":     {errorEvent, failedEvent},
+		"error last":      {failedEvent, errorEvent},
+		"failed no error": {errorEvent, {"type": "response.failed", "response": map[string]any{"id": "resp_failed", "output": []any{}}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var forwarded map[string]any
+			environment := newScriptedEnvironment(t, events, &forwarded)
+			response := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "fail"}, http.StatusOK)
+			if response["status"] != "failed" || mapAny(response["error"])["code"] != "server_error" {
+				t.Fatalf("response = %#v", response)
+			}
+		})
+	}
+
+	t.Run("error without a response", func(t *testing.T) {
+		var forwarded map[string]any
+		environment := newScriptedEnvironment(t, []map[string]any{errorEvent}, &forwarded)
+		document := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "fail"}, http.StatusBadGateway)
+		if mapAny(document["error"])["code"] != "server_error" {
+			t.Fatalf("error = %#v", document)
+		}
+	})
+
+	t.Run("completed response survives a later error", func(t *testing.T) {
+		var forwarded map[string]any
+		environment := newScriptedEnvironment(t, []map[string]any{
+			{"type": "response.completed", "response": map[string]any{"id": "resp_done", "status": "completed", "output": []any{}}},
+			errorEvent,
+		}, &forwarded)
+		response := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "fail"}, http.StatusOK)
+		if response["status"] != "completed" {
+			t.Fatalf("response = %#v", response)
+		}
+	})
+}
+
+func TestGoHTTPContractImagesReportFailedResponses(t *testing.T) {
 	var forwarded map[string]any
-	environment := newScriptedEnvironment(t, []map[string]any{
-		{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "output": []any{}, "error": map[string]any{"code": "server_error", "message": "upstream broke"}}},
-	}, &forwarded)
-	response := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "fail"}, http.StatusOK)
-	if response["status"] != "failed" || mapAny(response["error"])["code"] != "server_error" {
-		t.Fatalf("response = %#v", response)
+	environment := newScriptedEnvironment(t, []map[string]any{{
+		"type": "response.failed",
+		"response": map[string]any{
+			"id": "resp_failed", "status": "failed",
+			"output": []any{map[string]any{"type": "image_generation_call", "result": "aW1hZ2U="}},
+			"error":  map[string]any{"code": "rate_limit_exceeded", "message": "slow down"},
+		},
+	}}, &forwarded)
+	document := environment.json(t, http.MethodPost, "/v1/images/generations", map[string]any{"model": "gpt-image-1", "prompt": "fail"}, http.StatusTooManyRequests)
+	if detail := mapAny(document["error"]); detail["code"] != "rate_limit_exceeded" || detail["message"] != "slow down" {
+		t.Fatalf("error = %#v", document)
 	}
 }
 
