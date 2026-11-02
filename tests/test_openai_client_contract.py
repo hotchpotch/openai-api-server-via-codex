@@ -679,26 +679,21 @@ async def test_contract_health_and_models(runtime_server: tuple[str, str]) -> No
 async def test_contract_strips_prompt_cache_breakpoint(
     runtime_server: tuple[str, str], contract_client: AsyncOpenAI
 ) -> None:
-    from openai.types.responses import ResponseInputParam
-
     runtime, _ = runtime_server
     created = await contract_client.responses.create(
         model="gpt-5.6-luna",
-        input=cast(
-            ResponseInputParam,
-            [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "cache boundary marker",
-                            "prompt_cache_breakpoint": {"mode": "explicit"},
-                        }
-                    ],
-                }
-            ],
-        ),
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "cache boundary marker",
+                        "prompt_cache_breakpoint": {"mode": "explicit"},
+                    }
+                ],
+            }
+        ],
     )
     assert "cache boundary marker" in created.output_text, runtime
 
@@ -1524,8 +1519,6 @@ def test_contract_websocket_sync_and_background_rejection(
 async def test_contract_http_async_history(
     contract_client: AsyncOpenAI, stream: bool
 ) -> None:
-    from openai.types.responses import ResponseInputParam
-
     first_items: list[dict[str, Any]] = []
     metadata = {"contract": "async_history"}
     if stream:
@@ -1570,21 +1563,18 @@ async def test_contract_http_async_history(
             model="gpt-6-astra",
             metadata=metadata,
             previous_response_id=pending.id,
-            input=cast(
-                ResponseInputParam,
-                [
-                    {
-                        "type": "function_call_output",
-                        "call_id": "call_history",
-                        "output": [{"type": "input_text", "text": "value"}],
-                    },
-                    {
-                        "type": "custom_tool_call_output",
-                        "call_id": "call_custom",
-                        "output": "custom result",
-                    },
-                ],
-            ),
+            input=[
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_history",
+                    "output": [{"type": "input_text", "text": "value"}],
+                },
+                {
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_custom",
+                    "output": "custom result",
+                },
+            ],
         )
         assert final.output_text == "FINAL_OK"
 

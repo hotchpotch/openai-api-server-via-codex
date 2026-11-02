@@ -6,7 +6,7 @@ import os
 import re
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -38,7 +38,7 @@ def spawned_server(
     backend_url: str | None = None,
     auth_json: Path | None = None,
     host: str = "127.0.0.1",
-) -> Iterator[str]:
+) -> Generator[str]:
     config = work / "config.toml"
     config.write_text("")
     args = [

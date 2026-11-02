@@ -9,7 +9,7 @@ from typing import Any, cast
 
 import pytest
 from openai import AsyncOpenAI, BadRequestError, NotFoundError, OpenAI
-from openai.types.responses import ResponseInputParam, ToolParam
+from openai.types.responses import ToolParam
 
 from tests.websocket_helpers import (
     API_KEY,
@@ -239,20 +239,17 @@ async def test_live_astra_http_async_history(astra_server: str) -> None:
                 reasoning={"effort": "low"},
                 tools=tools,
                 previous_response_id=pending.id,
-                input=cast(
-                    ResponseInputParam,
-                    [
-                        {
-                            "type": "function_call_output",
-                            "call_id": call["call_id"],
-                            "output": "HTTP_VALUE_OK",
-                        },
-                        {
-                            "role": "user",
-                            "content": "Repeat exactly the lookup result that just arrived.",
-                        },
-                    ],
-                ),
+                input=[
+                    {
+                        "type": "function_call_output",
+                        "call_id": call["call_id"],
+                        "output": "HTTP_VALUE_OK",
+                    },
+                    {
+                        "role": "user",
+                        "content": "Repeat exactly the lookup result that just arrived.",
+                    },
+                ],
             )
             print_observation(
                 "http_result_" + mode,
