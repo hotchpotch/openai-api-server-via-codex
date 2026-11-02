@@ -65,6 +65,7 @@ parallel_show_output = true
 env_list = py310, lint, type, go
 
 [testenv]
+runner = uv-venv-lock-runner
 dependency_groups = dev
 commands = pytest {posargs}
 
@@ -75,7 +76,9 @@ commands = ruff check .
 commands = ty check
 
 [testenv:go]
+runner = uv-venv-runner
 skip_install = true
+dependency_groups =
 allowlist_externals = go
 commands =
     go test ./...

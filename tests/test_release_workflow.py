@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -14,21 +15,29 @@ def test_release_workflow_publishes_wheels_and_standalone_archives() -> None:
 def test_release_workflow_uses_node24_actions() -> None:
     workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 
-    node24_actions = {
-        "actions/upload-artifact@v7",
-        "actions/download-artifact@v8",
-        "docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8",
-        "docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c",
-        "docker/login-action@dbcb813823bdd20940b903addbd779551569679f",
-        "docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302",
-        "docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+    # Minimum major versions that run on Node 24. Exact commits are pinned by
+    # .github/workflows/actions.lock and updated by Dependabot.
+    node24_minimum_majors = {
+        "actions/upload-artifact": 7,
+        "actions/download-artifact": 8,
+        "docker/setup-qemu-action": 4,
+        "docker/setup-buildx-action": 4,
+        "docker/login-action": 4,
+        "docker/metadata-action": 6,
+        "docker/build-push-action": 7,
     }
-    action_prefixes = tuple(action.split("@", 1)[0] for action in node24_actions)
-    release_actions = {
-        line.strip().removeprefix("uses: ").split(" #", 1)[0]
-        for line in workflow.splitlines()
-        if line.strip().startswith("uses: ")
-        and line.strip().removeprefix("uses: ").startswith(action_prefixes)
-    }
+    release_refs: dict[str, set[str]] = {}
+    for line in workflow.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("uses: "):
+            continue
+        action, _, ref = stripped.removeprefix("uses: ").partition("@")
+        if action in node24_minimum_majors:
+            release_refs.setdefault(action, set()).add(ref)
 
-    assert release_actions == node24_actions
+    assert release_refs.keys() == node24_minimum_majors.keys()
+    for action, refs in release_refs.items():
+        for ref in refs:
+            match = re.fullmatch(r"v(\d+)\.\d+\.\d+", ref)
+            assert match, f"{action}@{ref} should use a full semver tag"
+            assert int(match.group(1)) >= node24_minimum_majors[action], f"{action}@{ref}"

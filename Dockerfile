@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
 # Build the production server as a static Go executable.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS server-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm@sha256:d9b6a1beb9474adc2a1ce842573639b44b2a0dd49b6669f51d3821baf9ec37c9 AS server-builder
 
 WORKDIR /src
 
@@ -23,7 +23,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Login helper stage: bundles the official Codex CLI so `codex login` can run
 # in a container without Codex installed on the host. Not part of the default
 # build; used by the `codex-login` compose service (or --target login).
-FROM node:22.23.4-bookworm-slim AS login
+FROM node:22.23.4-bookworm-slim@sha256:4b150b48b4116e2a22f2c39cc27025fbf4f153e2078fd3b14d159fdb5c7279da AS login
 
 ARG CODEX_VERSION=latest
 RUN apt-get update \
@@ -41,7 +41,7 @@ CMD ["login"]
 
 # Runtime stage: only the static Go server, CA roots, and Alpine's BusyBox tools.
 # Keep this stage last so a plain `docker build` produces the server image.
-FROM alpine:3.22 AS runtime
+FROM alpine:3.22.7@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f AS runtime
 
 ARG VERSION=dev
 ARG REVISION=unknown
