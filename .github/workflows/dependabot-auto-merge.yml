@@ -1,0 +1,28 @@
+# Enables auto-merge on Dependabot PRs. GitHub merges them only after the
+# required status checks on main pass.
+
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Enable squash auto-merge
+        run: gh pr merge --auto --squash "${PR_URL}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
