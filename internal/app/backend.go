@@ -33,6 +33,43 @@ type backendError struct {
 
 func (e *backendError) Error() string { return e.Message }
 
+// responseFailureError is a failure Codex reported inside a 2xx event stream.
+type responseFailureError struct {
+	backendError
+	Code string
+}
+
+func (e *responseFailureError) Unwrap() error { return &e.backendError }
+
+// responseFailure builds the client error for a failure detail, which holds the
+// upstream code and message. Its message is redacted; its code is also logged
+// because a stream has already reported HTTP 200.
+func responseFailure(detail map[string]any) error {
+	message := "Codex backend response failed."
+	if text := stringValue(detail["message"]); text != "" {
+		message = redactSensitive(text)
+	}
+	code := redactSensitive(stringValue(detail["code"]))
+	status := http.StatusBadGateway
+	switch {
+	case code == "rate_limit_exceeded" || code == "insufficient_quota":
+		status = http.StatusTooManyRequests
+	case code == "context_length_exceeded" || strings.HasPrefix(code, "invalid_"):
+		status = http.StatusBadRequest
+	}
+	log.Printf("codex.response.failed code=%s status=%d", code, status)
+	return &responseFailureError{backendError{status, message}, code}
+}
+
+// errorEventDetail reads an error event, which holds its fields either directly
+// or under "error".
+func errorEventDetail(event map[string]any) map[string]any {
+	if detail := mapAny(event["error"]); detail != nil {
+		return detail
+	}
+	return event
+}
+
 func newBackend(cfg config) *backend {
 	client := &http.Client{Timeout: cfg.Timeout}
 	return &backend{
@@ -287,6 +324,8 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 			if item := mapAny(event["item"]); item != nil {
 				output = append(output, item)
 			}
+		case "error":
+			return responseFailure(errorEventDetail(event))
 		case "response.completed", "response.incomplete":
 			completed = cloneMap(mapAny(event["response"]))
 		case "response.failed":

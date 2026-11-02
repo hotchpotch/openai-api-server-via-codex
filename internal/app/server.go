@@ -579,6 +579,10 @@ func (s *server) chatCollection(w http.ResponseWriter, r *http.Request) {
 		writeBackendError(w, err)
 		return
 	}
+	if stringValue(response["status"]) == "failed" {
+		writeBackendError(w, responseFailure(mapAny(response["error"])))
+		return
+	}
 	response = ensureResponse(response, responsePayload)
 	completion := responseToChat(response, stringValue(responsePayload["model"]), legacy, chatChoiceCount(body["n"]))
 	if metadata := mapAny(body["metadata"]); metadata != nil {
@@ -689,8 +693,13 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 					}
 				}
 			}
+		case "error":
+			return responseFailure(errorEventDetail(event))
 		case "response.completed", "response.incomplete", "response.failed":
 			resp := mapAny(event["response"])
+			if typ == "response.failed" || stringValue(resp["status"]) == "failed" {
+				return responseFailure(mapAny(resp["error"]))
+			}
 			if resp != nil {
 				if len(sliceAny(resp["output"])) == 0 && len(outputs) > 0 {
 					resp["output"] = outputs
@@ -716,7 +725,7 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 		return nil
 	})
 	if err != nil {
-		emit(map[string]any{"error": map[string]any{"message": publicStreamError(err), "type": "api_error", "param": nil, "code": nil}})
+		emit(map[string]any{"error": map[string]any{"message": publicStreamError(err), "type": "api_error", "param": nil, "code": backendErrorCode(err)}})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -973,10 +982,17 @@ func writeError(w http.ResponseWriter, status int, message, typ string, param *s
 func writeBackendError(w http.ResponseWriter, err error) {
 	var be *backendError
 	if errors.As(err, &be) {
-		writeError(w, be.Status, be.Message, "api_error", nil, nil)
+		writeError(w, be.Status, be.Message, "api_error", nil, backendErrorCode(err))
 	} else {
 		writeError(w, 500, "Internal server error.", "api_error", nil, nil)
 	}
+}
+func backendErrorCode(err error) any {
+	var failure *responseFailureError
+	if errors.As(err, &failure) && failure.Code != "" {
+		return failure.Code
+	}
+	return nil
 }
 func publicStreamError(err error) string {
 	var be *backendError

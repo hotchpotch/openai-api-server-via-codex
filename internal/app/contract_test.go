@@ -276,6 +276,121 @@ func TestGoHTTPContractResponsesLifecycleAndStreaming(t *testing.T) {
 	environment.json(t, http.MethodGet, "/v1/responses/"+createdID, nil, http.StatusNotFound)
 }
 
+// newScriptedEnvironment answers every Codex request with the given events.
+func newScriptedEnvironment(t *testing.T, events []map[string]any, forwarded *map[string]any) *contractEnvironment {
+	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(forwarded); err != nil {
+			t.Errorf("decode forwarded request: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, event := range events {
+			encoded, _ := json.Marshal(event)
+			fmt.Fprintf(w, "data: %s\n\n", encoded)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	return newContractEnvironment(t, func(cfg *config) { cfg.BackendURL = upstream.URL })
+}
+
+func TestGoHTTPContractChatReportsFailedResponses(t *testing.T) {
+	const generic = "Codex backend response failed."
+	secret := "Bearer abcdefghijklmnopqrstuvwxyz0123456789"
+	created := map[string]any{"type": "response.created", "response": map[string]any{"id": "resp_failed", "status": "in_progress"}}
+	text := map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "Partial"}
+	failed := func(detail any) map[string]any {
+		return map[string]any{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "output": []any{}, "error": detail}}
+	}
+	for name, test := range map[string]struct {
+		event   map[string]any
+		status  int
+		code    any
+		message string
+	}{
+		"server error":     {failed(map[string]any{"code": "server_error", "message": "upstream broke"}), 502, "server_error", "upstream broke"},
+		"rate limit":       {failed(map[string]any{"code": "rate_limit_exceeded", "message": "slow down"}), 429, "rate_limit_exceeded", "slow down"},
+		"context length":   {failed(map[string]any{"code": "context_length_exceeded", "message": "too long"}), 400, "context_length_exceeded", "too long"},
+		"invalid prompt":   {failed(map[string]any{"code": "invalid_prompt", "message": "rejected"}), 400, "invalid_prompt", "rejected"},
+		"no detail":        {failed(nil), 502, nil, generic},
+		"status on done":   {map[string]any{"type": "response.done", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": map[string]any{"code": "server_error", "message": "done failed"}}}, 502, "server_error", "done failed"},
+		"flat error event": {map[string]any{"type": "error", "code": "server_error", "message": "flat"}, 502, "server_error", "flat"},
+		"nested error":     {map[string]any{"type": "error", "error": map[string]any{"code": "rate_limit_exceeded", "message": "nested"}}, 429, "rate_limit_exceeded", "nested"},
+		"bare error event": {map[string]any{"type": "error"}, 502, nil, generic},
+		"redacted message": {failed(map[string]any{"code": "server_error", "message": "denied " + secret}), 502, "server_error", "denied Bearer [REDACTED]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var logs bytes.Buffer
+			previous := log.Writer()
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(previous) })
+			var forwarded map[string]any
+			environment := newScriptedEnvironment(t, []map[string]any{created, text, test.event}, &forwarded)
+			request := func(stream bool) (*http.Response, []byte) {
+				return environment.request(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+					"model": "gpt-5.6-luna", "store": true, "stream": stream,
+					"messages": []any{map[string]any{"role": "user", "content": "fail"}},
+				})
+			}
+			assertError := func(document map[string]any) {
+				t.Helper()
+				detail := mapAny(document["error"])
+				if detail["message"] != test.message || detail["code"] != test.code {
+					t.Fatalf("error = %#v, want message %q code %v", detail, test.message, test.code)
+				}
+			}
+
+			response, data := request(false)
+			if response.StatusCode != test.status {
+				t.Fatalf("status = %d, want %d; body=%s", response.StatusCode, test.status, data)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			assertError(document)
+
+			response, data = request(true)
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("stream status = %d; body=%s", response.StatusCode, data)
+			}
+			if !bytes.HasSuffix(data, []byte("data: [DONE]\n\n")) {
+				t.Fatalf("stream did not end with DONE: %s", data)
+			}
+			chunks := parseSSE(t, data)
+			assertError(chunks[len(chunks)-1])
+			for _, chunk := range chunks {
+				for _, rawChoice := range sliceAny(chunk["choices"]) {
+					if reason := mapAny(rawChoice)["finish_reason"]; reason != nil {
+						t.Fatalf("failed stream reported finish_reason %v", reason)
+					}
+				}
+			}
+
+			listed := environment.json(t, http.MethodGet, "/v1/chat/completions", nil, http.StatusOK)
+			if stored := sliceAny(listed["data"]); len(stored) != 0 {
+				t.Fatalf("failed responses were stored: %#v", stored)
+			}
+			if strings.Contains(string(data), secret) || strings.Contains(logs.String(), secret) {
+				t.Fatalf("failure exposed a credential: %s; logs=%s", data, logs.String())
+			}
+			if !strings.Contains(logs.String(), "codex.response.failed") {
+				t.Fatalf("missing failure log: %s", logs.String())
+			}
+		})
+	}
+}
+
+func TestGoHTTPContractResponsesKeepFailedResponseObject(t *testing.T) {
+	var forwarded map[string]any
+	environment := newScriptedEnvironment(t, []map[string]any{
+		{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "output": []any{}, "error": map[string]any{"code": "server_error", "message": "upstream broke"}}},
+	}, &forwarded)
+	response := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "fail"}, http.StatusOK)
+	if response["status"] != "failed" || mapAny(response["error"])["code"] != "server_error" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestGoHTTPContractChatStreamToolCallEdgeCases(t *testing.T) {
 	functionCall := func(name, arguments string) map[string]any {
 		return map[string]any{"type": "function_call", "id": "fc_" + name, "call_id": "call_" + name, "name": name, "arguments": arguments}
@@ -302,18 +417,7 @@ func TestGoHTTPContractChatStreamToolCallEdgeCases(t *testing.T) {
 	stream := func(t *testing.T, events []map[string]any, request map[string]any) ([]map[string]any, map[string]any) {
 		t.Helper()
 		var forwarded map[string]any
-		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if err := json.NewDecoder(r.Body).Decode(&forwarded); err != nil {
-				t.Errorf("decode forwarded request: %v", err)
-			}
-			w.Header().Set("Content-Type", "text/event-stream")
-			for _, event := range events {
-				encoded, _ := json.Marshal(event)
-				fmt.Fprintf(w, "data: %s\n\n", encoded)
-			}
-		}))
-		t.Cleanup(upstream.Close)
-		environment := newContractEnvironment(t, func(cfg *config) { cfg.BackendURL = upstream.URL })
+		environment := newScriptedEnvironment(t, events, &forwarded)
 		request["model"] = "gpt-5.6-luna"
 		request["stream"] = true
 		request["messages"] = []any{map[string]any{"role": "user", "content": "edge"}}

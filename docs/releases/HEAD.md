@@ -21,5 +21,10 @@
 - Treat requests with `tools` as tool requests even when they also send
   `functions` or `function_call`, and ignore empty `functions`, so their calls
   keep ids instead of becoming a legacy `function_call`.
+- Return an error when Codex reports a failure during a Chat Completion, instead
+  of a successful completion that could carry truncated text or tool arguments.
+  Streams end with an error chunk and no `finish_reason`; non-streaming requests
+  return an HTTP error with the upstream `code`. Failed completions are not
+  stored. `/v1/responses` still returns the failed response object.
 - Log `chat.stream.tool_arguments_mismatch`, with sizes only, when streamed tool
   arguments differ from the final item in a way later chunks cannot correct.
