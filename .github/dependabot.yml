@@ -34,6 +34,11 @@ updates:
       python-dev:
         patterns:
           - "*"
+    ignore:
+      # openai caps websockets below 16; raise it together with openai.
+      - dependency-name: websockets
+        update-types:
+          - version-update:semver-major
 
   - package-ecosystem: docker
     directory: /
