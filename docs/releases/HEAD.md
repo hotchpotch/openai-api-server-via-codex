@@ -34,7 +34,7 @@
   long response that keeps producing events is no longer cut off at 300 seconds.
 - Retry transient Codex failures before any output reaches the client, up to
   `max_retries` times (`--max-retries`, `OPENAI_VIA_CODEX_MAX_RETRIES`, default
-  5, `0` disables). `response.created` now waits for the first output so a retried
+  2, `0` disables). `response.created` now waits for the first output so a retried
   attempt stays invisible.
 - Return a real HTTP error from streaming requests when Codex fails before any
   output, so `openai-python` raises its typed errors and honors `Retry-After`.

@@ -21,7 +21,7 @@ const (
 	defaultClient      = "1.0.0"
 	defaultMaxStored   = 1000
 	defaultConcurrency = 10
-	defaultMaxRetries  = 5
+	defaultMaxRetries  = 2
 )
 
 type config struct {

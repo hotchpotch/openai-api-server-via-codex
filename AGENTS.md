@@ -185,7 +185,7 @@ python scripts/release-notes.py vX.Y.Z
   changing that value. Response streams apply it between events, not to the
   whole stream.
 - Retry transient Codex failures only before any output reaches the client, up
-  to `max_retries` (default 5, `0` disables), exposed through CLI/env/config.
+  to `max_retries` (default 2, `0` disables), exposed through CLI/env/config.
   Hold lifecycle events until an attempt produces output, and never retry after
   that. Treat a stream that closes without a terminal event as an error.
 - When aligning failure handling with the upstream `openai/codex` client, follow

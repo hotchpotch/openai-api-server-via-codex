@@ -47,6 +47,15 @@ drop_params = ["temperature", "top_p"]
 	}
 }
 
+func TestDefaultMaxRetries(t *testing.T) {
+	if cfg := defaultConfig(); cfg.MaxRetries != 2 {
+		t.Fatalf("default max retries = %d", cfg.MaxRetries)
+	}
+	if !strings.Contains(defaultConfigTOML(), "max_retries = 2\n") {
+		t.Fatalf("config template = %s", defaultConfigTOML())
+	}
+}
+
 func TestConfigEnvironmentOverridesFileValues(t *testing.T) {
 	t.Setenv("OPENAI_VIA_CODEX_PORT", "20001")
 	t.Setenv("OPENAI_VIA_CODEX_DEFAULT_MODEL", "gpt-env")
