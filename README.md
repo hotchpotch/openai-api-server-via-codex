@@ -5,13 +5,15 @@
 [![GitHub Release](https://img.shields.io/github/v/release/hotchpotch/openai-api-server-via-codex?include_prereleases)](https://github.com/hotchpotch/openai-api-server-via-codex/releases)
 [![License](https://img.shields.io/github/license/hotchpotch/openai-api-server-via-codex)](LICENSE)
 
-💰 Your ChatGPT subscription includes Codex, but that backend normally only
-talks to Codex clients. This server puts an OpenAI-compatible API in front of
-it, so tools that already speak to `api.openai.com` can use it by changing one
-environment variable.
+💰 **Get an OpenAI-compatible API from your ChatGPT subscription.**
 
-Within your Codex usage limits, no real OpenAI Platform API key is required,
-and there are no additional per-token charges.
+Your ChatGPT subscription includes Codex, and the backend behind Codex works
+much like the OpenAI API. This unofficial server exposes it as an
+OpenAI-compatible API, so OpenAI SDKs and existing tools can use your ChatGPT
+subscription.
+
+Within your Codex usage limits, you don't need a Platform API key and there are
+no per-token charges.
 
 <img width="70%" src="https://raw.githubusercontent.com/hotchpotch/openai-api-server-via-codex/main/docs/assets/quick-start.png" alt="Start the Go server with uvx, then call the OpenAI-compatible Responses API" />
 
@@ -59,7 +61,8 @@ $ export OPENAI_API_KEY=dummy-not-a-real-openai-api-key
 > server with `--api-key`. Codex authentication always uses
 > `~/.codex/auth.json`.
 
-Existing OpenAI SDK code keeps working as written:
+OpenAI SDK code needs no server-specific changes. It only has to use a model
+available through your Codex account:
 
 ```python
 from openai import OpenAI
@@ -79,36 +82,6 @@ Save it as `example.py` and run it without permanently installing the SDK:
 $ uv run --with openai python example.py
 ```
 
-> [!IMPORTANT]
-> **Breaking change in v0.2.0:** the HTTP server is now implemented in Go. The
-> former Python/FastAPI server and fallback have been removed; the Python
-> package is now only a small `uvx` launcher for the bundled Go executable.
-
-> [!TIP]
-> **Why Go?** In the recorded Linux proxy benchmark, idle memory fell from about
-> 59 MiB to 8.3 MiB (an **86% reduction**) and peak memory fell from 261–304 MiB
-> to 18–20 MiB (a **93–94% reduction**). Startup fell from roughly 330 ms to
-> 10 ms. See the [benchmark and methodology](docs/performance.md); real model
-> latency is dominated by the upstream Codex service.
-
-<details>
-<summary><strong>Use Docker instead</strong></summary>
-
-The public image does not require a registry login:
-
-```console
-$ docker pull ghcr.io/hotchpotch/openai-api-server-via-codex:latest
-$ docker run --rm -p 127.0.0.1:18080:18080 \
-    -v ~/.codex:/home/app/.codex \
-    ghcr.io/hotchpotch/openai-api-server-via-codex:latest
-```
-
-The auth directory is mounted read-write so refreshed tokens can be saved. See
-the [Docker guide](docs/docker.md) for Windows, permissions, Compose, and login
-instructions.
-
-</details>
-
 <details>
 <summary><strong>PowerShell environment variables</strong></summary>
 
@@ -124,21 +97,28 @@ uv run --with openai python example.py
 
 This server is useful when you want to:
 
-- connect an OpenAI-compatible application to your authorized Codex access;
+- run scripts and local tools on your ChatGPT subscription instead of paying
+  Platform API per-token charges, within your Codex usage limits;
 - reuse code written for `openai-python`, LangChain, LiteLLM, or another client
-  that supports a custom base URL;
-- run a lightweight local proxy without a Python web-server runtime; or
-- expose one consistent local API to tools that cannot call the Codex backend
-  directly.
+  that supports a custom base URL; or
+- give tools that cannot call the Codex backend directly one consistent local
+  API.
 
 | Capability | What you get |
 | --- | --- |
 | Subscription-backed access | Use the Codex allowance included in your ChatGPT plan without separate Platform API token charges |
-| OpenAI compatibility | Responses, Chat Completions, streaming, tools, structured output, images, and audio |
-| Small Go runtime | About 8.3 MiB idle RSS and 10 ms startup in the recorded Linux proxy benchmark |
+| OpenAI compatibility | Responses, Chat Completions, streaming, tools, structured output, images, and audio transcription |
+| Small Go runtime | A single executable with low memory use and fast startup |
 | Portable distribution | Wheels and archives for Linux, macOS, and Windows on x86_64 and ARM64 |
 | Local-first defaults | Loopback binding, auth preflight, redacted logs, and optional incoming API-key protection |
 | Multiple installation paths | `uvx`, standalone archives, Docker/GHCR, `go install`, or a local source build |
+
+> [!TIP]
+> **Why Go?** In the recorded Linux proxy benchmark, idle memory fell from about
+> 59 MiB to 8.3 MiB (an **86% reduction**) and peak memory fell from 261–304 MiB
+> to 18–20 MiB (a **93–94% reduction**). Startup fell from roughly 330 ms to
+> 10 ms. See the [benchmark and methodology](docs/performance.md); real model
+> latency is dominated by the upstream Codex service.
 
 > [!NOTE]
 > Your ChatGPT plan limits still apply. Usage beyond the included Codex
@@ -235,6 +215,9 @@ $ docker run --rm -p 127.0.0.1:18080:18080 \
     ghcr.io/hotchpotch/openai-api-server-via-codex:latest
 ```
 
+The image does not require a registry login. The auth directory is mounted
+read-write so refreshed tokens can be saved.
+
 Or build from this checkout:
 
 ```console
@@ -244,7 +227,8 @@ $ curl http://127.0.0.1:18080/healthz
 ```
 
 The container runs as a non-root user. See the
-[Docker guide](docs/docker.md) for complete usage and troubleshooting.
+[Docker guide](docs/docker.md) for Windows, permissions, Compose, login, and
+troubleshooting.
 
 </details>
 
@@ -338,7 +322,7 @@ bodies. `--verbose` adds deeper redacted diagnostics.
 | `auth_file_write_failed` in Docker | Mount `/home/app/.codex` read-write and check host UID/GID permissions |
 | Repeated upstream `401` | Check the auth reason logs, refresh the Codex login, and avoid multiple servers sharing rotating credentials |
 | Address already in use | Stop the existing server or choose another port with `--port` |
-| An official OpenAI SDK requires `OPENAI_API_KEY` | Some official OpenAI SDK clients, including the Python client, require a non-empty `OPENAI_API_KEY`. Set a harmless placeholder such as `dummy-not-a-real-openai-api-key` to use the library normally with this server. |
+| An official OpenAI SDK requires `OPENAI_API_KEY` | Set the placeholder shown in [Quick start](#quick-start) |
 
 > [!TIP]
 > Start with `--verbose` when diagnosing configuration, request routing, or
@@ -440,8 +424,7 @@ with open("ramen.png", "wb") as file:
     file.write(base64.b64decode(image.data[0].b64_json))
 ```
 
-Image generation returns `data[].b64_json`. URL results, image editing, and
-streamed partial images are not implemented.
+Image generation returns `data[].b64_json`.
 
 </details>
 
@@ -487,6 +470,7 @@ response = client.responses.create(
 - JSON mode and structured outputs
 - URL and data-URL image input
 - hosted image generation translated through a Codex Responses tool
+- audio transcription forwarded to Codex
 - optional incoming API-key authentication
 - bounded request concurrency and in-memory stores
 
@@ -523,13 +507,25 @@ when it is absent from the upstream catalog returned by `/v1/models`.
 | `GET` | `/v1/chat/completions/{completion_id}/messages` |
 
 WebSocket responses stay on the upstream connection and are not registered with
-the local HTTP retrieve/cancel helpers. Codex currently rejects Background mode
-and named WebSocket streams (`stream_id`); these features are not emulated.
+the local HTTP retrieve/cancel helpers.
 
 Unknown `/v1/...` requests use a best-effort fallback proxy. The server
 forwards the method, path, query, safe OpenAI-style headers, and body with its
 own Codex credentials. Upstream support determines whether an unknown endpoint
 returns `2xx`, `400`, `403`, or `404`.
+
+</details>
+
+<details>
+<summary><strong>Not supported</strong></summary>
+
+- Embeddings have no implemented endpoint. Requests reach only the fallback
+  proxy, so do not rely on them.
+- Image generation does not provide URL results, image editing, or streamed
+  partial images.
+- Background mode (`background=true`) is rejected, and Codex rejects named
+  WebSocket streams (`stream_id`). Neither is emulated; see the
+  [WebSocket guide](docs/websocket-mode.md).
 
 </details>
 
