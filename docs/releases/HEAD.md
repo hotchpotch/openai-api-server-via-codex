@@ -36,6 +36,10 @@
   `max_retries` times (`--max-retries`, `OPENAI_VIA_CODEX_MAX_RETRIES`, default
   5, `0` disables). `response.created` now waits for the first output so a retried
   attempt stays invisible.
+- Return a real HTTP error from streaming requests when Codex fails before any
+  output, so `openai-python` raises its typed errors and honors `Retry-After`.
+- Stop reading a Codex stream at its terminal event, so a later connection failure
+  cannot discard a completed response.
 - Return `finish_reason: content_filter` for responses stopped by a content
   filter, and forward `Retry-After`, `code`, `type`, and `param` from Codex errors.
 - Log `chat.stream.tool_arguments_mismatch`, with sizes only, when streamed tool

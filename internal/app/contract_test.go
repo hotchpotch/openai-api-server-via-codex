@@ -390,6 +390,15 @@ func TestGoHTTPContractChatReportsFailedResponses(t *testing.T) {
 	}
 }
 
+func mustJSON(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
+}
+
 // scriptedAttempt is one Codex response: an HTTP error, or events then EOF.
 type scriptedAttempt struct {
 	status  int
@@ -499,6 +508,24 @@ func TestGoHTTPContractRetriesTransientFailuresBeforeOutput(t *testing.T) {
 		})
 	}
 
+	t.Run("non-streaming requests retry after partial output", func(t *testing.T) {
+		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{created, text, serverError}}, success}, withRetries)
+		document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusOK)
+		if content := mapAny(mapAny(sliceAny(document["choices"])[0])["message"])["content"]; content != "Recovered" || count.Load() != 2 {
+			t.Fatalf("attempts = %d; %#v", count.Load(), document)
+		}
+	})
+
+	t.Run("a terminal code after an error event is not retried", func(t *testing.T) {
+		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{
+			{"type": "error", "message": "failed"}, failed(map[string]any{"code": "context_length_exceeded", "message": "long"}),
+		}}, success}, withRetries)
+		document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusBadRequest)
+		if mapAny(document["error"])["code"] != "context_length_exceeded" || count.Load() != 1 {
+			t.Fatalf("attempts = %d; %#v", count.Load(), document)
+		}
+	})
+
 	t.Run("no retry after output", func(t *testing.T) {
 		environment, count := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{created, text, serverError}}, success}, withRetries)
 		request := cloneMap(chat)
@@ -556,6 +583,94 @@ func TestGoHTTPContractRetriesTransientFailuresBeforeOutput(t *testing.T) {
 	})
 }
 
+func TestGoHTTPContractStreamsReportEarlyFailuresAsHTTPErrors(t *testing.T) {
+	limited := scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "120"}, body: `{"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"slow","param":"input"}}`}
+	for name, request := range map[string]struct {
+		path string
+		body map[string]any
+	}{
+		"chat":      {"/v1/chat/completions", map[string]any{"model": "gpt-5.6-luna", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "fail"}}}},
+		"responses": {"/v1/responses", map[string]any{"model": "gpt-5.6-luna", "stream": true, "input": "fail"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			environment, _ := newScriptedAttempts(t, []scriptedAttempt{limited}, nil)
+			response, data := environment.request(t, http.MethodPost, request.path, request.body)
+			if response.StatusCode != http.StatusTooManyRequests || response.Header.Get("Retry-After") != "120" {
+				t.Fatalf("status = %d Retry-After = %q; %s", response.StatusCode, response.Header.Get("Retry-After"), data)
+			}
+			if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
+				t.Fatalf("Content-Type = %q", contentType)
+			}
+			var document map[string]any
+			if err := json.Unmarshal(data, &document); err != nil {
+				t.Fatal(err)
+			}
+			detail := mapAny(document["error"])
+			if detail["code"] != "rate_limit_exceeded" || detail["type"] != "rate_limit_error" || detail["param"] != "input" {
+				t.Fatalf("error = %#v", detail)
+			}
+		})
+	}
+
+	t.Run("chat failure event before output", func(t *testing.T) {
+		environment, _ := newScriptedAttempts(t, []scriptedAttempt{{events: []map[string]any{
+			{"type": "response.created", "response": map[string]any{"id": "resp_failed", "status": "in_progress"}},
+			{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": map[string]any{"code": "context_length_exceeded", "message": "long"}}},
+		}}}, nil)
+		response, data := environment.request(t, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model": "gpt-5.6-luna", "stream": true, "messages": []any{map[string]any{"role": "user", "content": "fail"}},
+		})
+		if response.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d; %s", response.StatusCode, data)
+		}
+	})
+}
+
+func TestGoHTTPContractIgnoresFailuresAfterCompletion(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		encoded, _ := json.Marshal(map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_done", "status": "completed", "output": []any{}}})
+		fmt.Fprintf(w, "data: %s\n\n", encoded)
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	environment := newContractEnvironment(t, func(cfg *config) {
+		cfg.BackendURL = upstream.URL
+		cfg.Timeout = 2 * time.Second
+	})
+	started := time.Now()
+	response := environment.json(t, http.MethodPost, "/v1/responses", map[string]any{"model": "gpt-5.6-luna", "input": "done"}, http.StatusOK)
+	if response["status"] != "completed" || time.Since(started) > time.Second {
+		t.Fatalf("response = %#v after %s", response, time.Since(started))
+	}
+}
+
+func TestBackendRetryDelayBounds(t *testing.T) {
+	b := &backend{cfg: config{MaxRetries: 100, retryBaseDelay: retryBaseDelay}}
+	transient := &backendError{http.StatusBadGateway, "broke"}
+	for _, attempt := range []int{0, 5, 40, 80, 99} {
+		delay, ok := b.retryDelay(transient, attempt)
+		if !ok || delay <= 0 || delay > maxRetryAdvice+maxRetryAdvice/5 {
+			t.Fatalf("attempt %d: delay = %s ok = %v", attempt, delay, ok)
+		}
+	}
+	if _, ok := b.retryDelay(transient, 100); ok {
+		t.Fatal("retried past the limit")
+	}
+	if _, ok := b.retryDelay(&backendError{http.StatusGatewayTimeout, "stalled"}, 0); ok {
+		t.Fatal("retried a stalled stream")
+	}
+	if _, ok := b.retryDelay(errSSELimit, 0); ok {
+		t.Fatal("retried an oversized event")
+	}
+}
+
 func TestGoHTTPContractStreamClosedBeforeCompletion(t *testing.T) {
 	text := map[string]any{"type": "response.output_text.delta", "output_index": 0, "delta": "Partial"}
 	message := map[string]any{"type": "response.output_item.done", "output_index": 0, "item": map[string]any{
@@ -569,6 +684,9 @@ func TestGoHTTPContractStreamClosedBeforeCompletion(t *testing.T) {
 	document := environment.json(t, http.MethodPost, "/v1/chat/completions", chat, http.StatusBadGateway)
 	if mapAny(document["error"])["message"] != closed {
 		t.Fatalf("error = %#v", document)
+	}
+	if strings.Contains(string(mustJSON(t, document)), "Partial") {
+		t.Fatalf("error exposed partial output: %#v", document)
 	}
 	if stored := sliceAny(environment.json(t, http.MethodGet, "/v1/chat/completions", nil, http.StatusOK)["data"]); len(stored) != 0 {
 		t.Fatalf("truncated completion was stored: %#v", stored)
@@ -678,14 +796,17 @@ func TestGoHTTPContractForwardsUpstreamErrorDetails(t *testing.T) {
 		param      any
 		retryAfter string
 	}{
-		"http details": {scriptedAttempt{status: 400, body: `{"error":{"message":"bad","type":"invalid_request_error","code":"invalid_value","param":"input"}}`}, 400, "invalid_value", "invalid_request_error", "bad", "input", ""},
-		"usage type":   {scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "120"}, body: `{"error":{"type":"usage_limit_reached","message":"limit"}}`}, 429, "usage_limit_reached", "usage_limit_reached", "limit", nil, "120"},
-		"detail field": {scriptedAttempt{status: 400, body: `{"detail":"model not supported"}`}, 400, nil, "invalid_request_error", "model not supported", nil, ""},
-		"plain body":   {scriptedAttempt{status: 400, body: `nope`}, 400, nil, "invalid_request_error", "400 Bad Request", nil, ""},
-		"event advice": {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "rate_limit_exceeded", "message": "slow", "headers": map[string]any{"Retry-After": "90"}}}}}}, 429, "rate_limit_exceeded", "rate_limit_error", "slow", nil, "90"},
-		"bad advice":   {scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "soon"}, body: `{"error":{"message":"wait"}}`}, 429, nil, "rate_limit_error", "wait", nil, ""},
-		"policy text":  {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "bio_policy", "message": " "}}}}}, 400, "bio_policy", "invalid_request_error", "This content was flagged for possible biological risk.", nil, ""},
-		"not found":    {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "model_not_found", "message": "gone"}}}}}, 404, "model_not_found", "invalid_request_error", "gone", nil, ""},
+		"redacted http":    {scriptedAttempt{status: 400, body: `{"error":{"code":"invalid_value","message":"denied Bearer abcdefghijklmnopqrstuvwxyz0123456789","param":"Bearer abcdefghijklmnopqrstuvwxyz0123456789"}}`}, 400, "invalid_value", "invalid_request_error", "denied Bearer [REDACTED]", "Bearer [REDACTED]", ""},
+		"policy over http": {scriptedAttempt{status: 400, body: `{"error":{"code":"cyber_policy"}}`}, 400, "cyber_policy", "invalid_request_error", "This request has been flagged for possible cybersecurity risk.", nil, ""},
+		"detail object":    {scriptedAttempt{status: 400, body: `{"detail":{"code":"invalid_value","message":"nested"}}`}, 400, "invalid_value", "invalid_request_error", "nested", nil, ""},
+		"http details":     {scriptedAttempt{status: 400, body: `{"error":{"message":"bad","type":"invalid_request_error","code":"invalid_value","param":"input"}}`}, 400, "invalid_value", "invalid_request_error", "bad", "input", ""},
+		"usage type":       {scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "120"}, body: `{"error":{"type":"usage_limit_reached","message":"limit"}}`}, 429, "usage_limit_reached", "usage_limit_reached", "limit", nil, "120"},
+		"detail field":     {scriptedAttempt{status: 400, body: `{"detail":"model not supported"}`}, 400, nil, "invalid_request_error", "model not supported", nil, ""},
+		"plain body":       {scriptedAttempt{status: 400, body: `nope`}, 400, nil, "invalid_request_error", "400 Bad Request", nil, ""},
+		"event advice":     {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "rate_limit_exceeded", "message": "slow", "headers": map[string]any{"Retry-After": "90"}}}}}}, 429, "rate_limit_exceeded", "rate_limit_error", "slow", nil, "90"},
+		"bad advice":       {scriptedAttempt{status: 429, headers: map[string]string{"Retry-After": "soon"}, body: `{"error":{"message":"wait"}}`}, 429, nil, "rate_limit_error", "wait", nil, ""},
+		"policy text":      {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "bio_policy", "message": " "}}}}}, 400, "bio_policy", "invalid_request_error", "This content was flagged for possible biological risk.", nil, ""},
+		"not found":        {scriptedAttempt{events: []map[string]any{{"type": "response.failed", "response": map[string]any{"status": "failed", "error": map[string]any{"code": "model_not_found", "message": "gone"}}}}}, 404, "model_not_found", "invalid_request_error", "gone", nil, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			environment, _ := newScriptedAttempts(t, []scriptedAttempt{test.attempt}, nil)
@@ -719,6 +840,7 @@ func TestGoHTTPContractChatFailureErrorShape(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var forwarded map[string]any
 			environment := newScriptedEnvironment(t, []map[string]any{
+				{"type": "response.output_text.delta", "output_index": 0, "delta": "Partial"},
 				{"type": "response.failed", "response": map[string]any{"id": "resp_failed", "status": "failed", "error": test.detail}},
 			}, &forwarded)
 			request := map[string]any{"model": "gpt-5.6-luna", "messages": []any{map[string]any{"role": "user", "content": "fail"}}}

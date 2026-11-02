@@ -60,10 +60,20 @@ type responseFailureError struct {
 
 func (e *responseFailureError) Unwrap() error { return &e.backendError }
 
-// responseFailure builds the client error for a failure detail from Codex. Text
-// fields are redacted. The code is also logged because a stream has already
-// reported HTTP 200.
+// responseFailure builds and logs the client error for a failure detail. The code
+// is logged because a stream may have already reported HTTP 200.
 func responseFailure(detail map[string]any) error {
+	err := newResponseFailure(detail)
+	var failure *responseFailureError
+	if errors.As(err, &failure) {
+		log.Printf("codex.response.failed code=%s status=%d", failure.Code, failure.Status)
+	}
+	return err
+}
+
+// newResponseFailure builds the client error for a failure detail from Codex.
+// Text fields are redacted.
+func newResponseFailure(detail map[string]any) error {
 	code := redactSensitive(stringValue(detail["code"]))
 	upstreamType := redactSensitive(stringValue(detail["type"]))
 	if code == "" && responseFailureStatus(upstreamType) == http.StatusTooManyRequests {
@@ -98,7 +108,6 @@ func responseFailure(detail map[string]any) error {
 	if text := stringValue(detail["param"]); text != "" {
 		param = redactSensitive(text)
 	}
-	log.Printf("codex.response.failed code=%s status=%d", code, status)
 	return &responseFailureError{backendError{status, message}, errorType, code, retryAfterAdvice(detail), param}
 }
 
@@ -312,10 +321,17 @@ func normalizeCodexPayload(prepared map[string]any, dropParams []string) map[str
 // has reached fn. Lifecycle events wait until the attempt produces output, so a
 // client never sees events from an abandoned attempt.
 func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {
+	return b.streamWithRetries(ctx, payload, false, fn)
+}
+
+// streamWithRetries holds every event until the terminal one when holdOutput is
+// set, for a caller that shows the client nothing until the response is complete.
+func (b *backend) streamWithRetries(ctx context.Context, payload map[string]any, holdOutput bool, fn func(map[string]any) error) error {
 	for attempt := 0; ; attempt++ {
 		var held []map[string]any
-		var retryable error
-		committed := false
+		var retryable, pending error
+		// The final attempt has nothing to hide, so it streams without delay.
+		committed := attempt >= b.cfg.MaxRetries
 		commit := func() error {
 			committed = true
 			for _, event := range held {
@@ -329,16 +345,23 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 			if committed {
 				return fn(event)
 			}
-			switch stringValue(event["type"]) {
-			case "response.created", "response.in_progress", "response.metadata", "codex.response.metadata":
+			typ := stringValue(event["type"])
+			switch {
+			case typ == "error":
+				// A response.failed that follows has the authoritative code.
+				pending = eventFailure(event)
 				held = append(held, event)
 				return nil
-			case "error", "response.failed":
+			case typ == "response.failed":
 				failure := eventFailure(event)
 				if _, ok := b.retryDelay(failure, attempt); ok {
 					retryable = failure
 					return errRetryStream
 				}
+			case typ == "response.completed" || typ == "response.incomplete":
+			case holdOutput || isLifecycleEvent(typ):
+				held = append(held, event)
+				return nil
 			}
 			if err := commit(); err != nil {
 				return err
@@ -349,17 +372,20 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 			return err
 		}
 		failure := err
-		if errors.Is(err, errRetryStream) {
+		switch {
+		case errors.Is(err, errRetryStream):
 			failure = retryable
+		case err == nil:
+			failure = pending
 		}
 		delay, ok := b.retryDelay(failure, attempt)
 		if !ok || ctx.Err() != nil {
 			if commitErr := commit(); commitErr != nil {
 				return commitErr
 			}
-			return err
+			return failure
 		}
-		log.Printf("codex.stream.retry attempt=%d max_retries=%d delay_ms=%d", attempt+1, b.cfg.MaxRetries, delay.Milliseconds())
+		log.Printf("codex.stream.retry attempt=%d max_retries=%d delay_ms=%d code=%s", attempt+1, b.cfg.MaxRetries, delay.Milliseconds(), failureCode(failure))
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -368,15 +394,32 @@ func (b *backend) stream(ctx context.Context, payload map[string]any, fn func(ma
 	}
 }
 
+func isLifecycleEvent(eventType string) bool {
+	switch eventType {
+	case "response.created", "response.queued", "response.in_progress", "response.metadata", "codex.response.metadata":
+		return true
+	}
+	return false
+}
+
+func failureCode(err error) string {
+	var failure *responseFailureError
+	if errors.As(err, &failure) {
+		return failure.Code
+	}
+	return ""
+}
+
 func eventFailure(event map[string]any) error {
 	if stringValue(event["type"]) == "error" {
-		return responseFailure(errorEventDetail(event))
+		return newResponseFailure(errorEventDetail(event))
 	}
-	return responseFailure(failureDetail(mapAny(event["response"])["error"]))
+	return newResponseFailure(failureDetail(mapAny(event["response"])["error"]))
 }
 
 // retryDelay returns the wait before retrying after err, if err is transient and
-// retries remain. Only a backend-reported failure can be transient.
+// retries remain. Only a backend-reported failure can be transient. A stalled
+// backend is not retried, because each attempt would wait out the whole timeout.
 func (b *backend) retryDelay(err error, attempt int) (time.Duration, bool) {
 	var failure *backendError
 	if attempt >= b.cfg.MaxRetries || !errors.As(err, &failure) {
@@ -394,7 +437,7 @@ func (b *backend) retryDelay(err error, attempt int) (time.Duration, bool) {
 	case code == "server_is_overloaded" || code == "policy_capacity_unavailable":
 		retry = advice != ""
 	default:
-		retry = failure.Status >= 500
+		retry = failure.Status >= 500 && failure.Status != http.StatusGatewayTimeout
 	}
 	if !retry {
 		return 0, false
@@ -403,8 +446,8 @@ func (b *backend) retryDelay(err error, attempt int) (time.Duration, bool) {
 		delay, _ := parseRetryAfter(advice)
 		return delay, delay <= maxRetryAdvice
 	}
-	jitter := 0.9 + rand.Float64()*0.2
-	return time.Duration(float64(b.cfg.retryBaseDelay<<attempt) * jitter), true
+	delay := min(b.cfg.retryBaseDelay<<min(attempt, 8), maxRetryAdvice)
+	return time.Duration(float64(delay) * (0.9 + rand.Float64()*0.2)), true
 }
 
 func (b *backend) streamOnce(ctx context.Context, payload map[string]any, fn func(map[string]any) error) error {
@@ -447,7 +490,7 @@ func (b *backend) streamOnce(ctx context.Context, payload map[string]any, fn fun
 	reader := bufio.NewReaderSize(resp.Body, 64*1024)
 	var data strings.Builder
 	events := 0
-	terminal := false
+	terminal, finished := false, false
 	flush := func() error {
 		if data.Len() == 0 {
 			return nil
@@ -464,10 +507,14 @@ func (b *backend) streamOnce(ctx context.Context, payload map[string]any, fn fun
 		normalizeBackendEvent(event)
 		events++
 		switch event["type"] {
-		case "error", "response.failed":
+		case "error":
 			terminal = true
+		case "response.failed":
+			terminal, finished = true, true
 		case "response.completed", "response.incomplete":
-			terminal = terminal || mapAny(event["response"]) != nil
+			if mapAny(event["response"]) != nil {
+				terminal, finished = true, true
+			}
 		}
 		// A slow client must not count as an idle backend.
 		idle.Stop()
@@ -478,6 +525,9 @@ func (b *backend) streamOnce(ctx context.Context, payload map[string]any, fn fun
 		line, readErr := readSSELine(reader, maxSSEEventBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			b.debugf("codex.stream.error message=%s", redactSensitive(readErr.Error()))
+			if terminal {
+				return nil
+			}
 			if err := idleError(); err != nil {
 				return err
 			}
@@ -490,7 +540,7 @@ func (b *backend) streamOnce(ctx context.Context, payload map[string]any, fn fun
 			if err := flush(); err != nil {
 				return err
 			}
-			if errors.Is(readErr, io.EOF) {
+			if finished || errors.Is(readErr, io.EOF) {
 				break
 			}
 			continue
@@ -566,7 +616,7 @@ func (b *backend) collect(ctx context.Context, payload map[string]any) (map[stri
 	var completed map[string]any
 	var output []any
 	var failure map[string]any
-	err := b.stream(ctx, payload, func(event map[string]any) error {
+	err := b.streamWithRetries(ctx, payload, true, func(event map[string]any) error {
 		switch event["type"] {
 		case "response.output_item.done":
 			if item := mapAny(event["item"]); item != nil {
@@ -741,13 +791,15 @@ func decodeBackendError(resp *http.Response) error {
 	var doc map[string]any
 	detail := map[string]any{}
 	if json.Unmarshal(data, &doc) == nil {
-		if upstream := failureDetail(doc["error"]); upstream != nil {
+		upstream := failureDetail(doc["error"])
+		if upstream == nil {
+			upstream = failureDetail(doc["detail"])
+		}
+		if upstream != nil {
 			detail = cloneMap(upstream)
-		} else if text := stringValue(doc["detail"]); text != "" {
-			detail["message"] = text
 		}
 	}
-	if stringValue(detail["message"]) == "" {
+	if stringValue(detail["message"]) == "" && failureFallbackMessages[stringValue(detail["code"])] == "" {
 		detail["message"] = resp.Status
 	}
 	detail["status"] = resp.StatusCode

@@ -591,7 +591,7 @@ stop_timeout = 10.0
 | `server.max_stored_items` | `1000` | Bound local stores; `0` disables storage |
 | `server.max_concurrent_requests` | `10` | Bound HTTP requests/streams and open WebSocket connections; full capacity returns 503 with `Retry-After`; `0` disables the cap |
 | `server.max_retries` | `5` | Retries for transient Codex failures before any output reaches the client; `0` disables |
-| `server.timeout` | `300.0` | Codex backend timeout in seconds; streaming requests apply it between events |
+| `server.timeout` | `300.0` | Codex backend timeout in seconds; responses apply it between stream events |
 | `server.verbose` | `false` | Enable redacted application diagnostics |
 | `codex.auth_json` | `~/.codex/auth.json` | Codex OAuth file |
 | `compat.drop_params` | `[]` | Top-level request fields removed before forwarding |
