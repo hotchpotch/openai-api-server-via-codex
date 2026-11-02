@@ -71,8 +71,8 @@ func serve(cfg config, version string) error {
 	log.Print(startupLogMessage(version, boundAddress))
 	if cfg.Verbose {
 		log.Printf(
-			"settings.resolved host=%s port=%d model=%s timeout=%s max_stored_items=%d max_concurrent_requests=%d auth_json=%s backend_base_url=%s api_key_configured=%t",
-			cfg.Host, cfg.Port, cfg.Model, cfg.Timeout, cfg.MaxStored, cfg.Concurrency,
+			"settings.resolved host=%s port=%d model=%s timeout=%s max_retries=%d max_stored_items=%d max_concurrent_requests=%d auth_json=%s backend_base_url=%s api_key_configured=%t",
+			cfg.Host, cfg.Port, cfg.Model, cfg.Timeout, cfg.MaxRetries, cfg.MaxStored, cfg.Concurrency,
 			cfg.AuthJSON, cfg.BackendURL, cfg.APIKey != "",
 		)
 	}
@@ -988,6 +988,10 @@ func writeError(w http.ResponseWriter, status int, message, typ string, param *s
 func writeBackendError(w http.ResponseWriter, err error) {
 	var be *backendError
 	if errors.As(err, &be) {
+		var failure *responseFailureError
+		if errors.As(err, &failure) && failure.RetryAfter != "" {
+			w.Header().Set("Retry-After", failure.RetryAfter)
+		}
 		writeJSON(w, be.Status, map[string]any{"error": publicErrorObject(err)})
 	} else {
 		writeError(w, 500, "Internal server error.", "api_error", nil, nil)

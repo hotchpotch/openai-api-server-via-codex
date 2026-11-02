@@ -566,6 +566,7 @@ timeout = 300.0
 verbose = false
 max_stored_items = 1000
 max_concurrent_requests = 10
+max_retries = 5
 # api_key = "change-me"
 
 [codex]
@@ -589,7 +590,8 @@ stop_timeout = 10.0
 | `server.api_key` | unset | Protect incoming `/v1/...` requests |
 | `server.max_stored_items` | `1000` | Bound local stores; `0` disables storage |
 | `server.max_concurrent_requests` | `10` | Bound HTTP requests/streams and open WebSocket connections; full capacity returns 503 with `Retry-After`; `0` disables the cap |
-| `server.timeout` | `300.0` | Codex backend timeout in seconds |
+| `server.max_retries` | `5` | Retries for transient Codex failures before any output reaches the client; `0` disables |
+| `server.timeout` | `300.0` | Codex backend timeout in seconds; streaming requests apply it between events |
 | `server.verbose` | `false` | Enable redacted application diagnostics |
 | `codex.auth_json` | `~/.codex/auth.json` | Codex OAuth file |
 | `compat.drop_params` | `[]` | Top-level request fields removed before forwarding |

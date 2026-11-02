@@ -183,7 +183,8 @@ block of `docker-compose.yml`, for example:
 - `OPENAI_VIA_CODEX_DEFAULT_MODEL` — override the default model used when a
   request omits one (`gpt-5.6-luna`).
 - `OPENAI_VIA_CODEX_TIMEOUT`, `OPENAI_VIA_CODEX_MAX_STORED_ITEMS`,
-  `OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS` — backend timeout and bounds.
+  `OPENAI_VIA_CODEX_MAX_CONCURRENT_REQUESTS`, `OPENAI_VIA_CODEX_MAX_RETRIES` —
+  backend timeout, bounds, and retries.
 
 Every API request emits a redacted completion line visible through
 `docker compose logs`; routine healthcheck probes stay quiet. Verbose mode adds

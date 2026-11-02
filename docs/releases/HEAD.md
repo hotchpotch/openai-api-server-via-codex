@@ -28,5 +28,15 @@
   completions are not stored. `/v1/responses` still returns the failed response
   object, and now returns an HTTP error instead of an empty completed response
   when Codex sends only an `error` event.
+- Treat a Codex stream that closes without a terminal event as an error instead
+  of a successful response built from partial output.
+- Apply `timeout` between stream events instead of to the whole stream, so a
+  long response that keeps producing events is no longer cut off at 300 seconds.
+- Retry transient Codex failures before any output reaches the client, up to
+  `max_retries` times (`--max-retries`, `OPENAI_VIA_CODEX_MAX_RETRIES`, default
+  5, `0` disables). `response.created` now waits for the first output so a retried
+  attempt stays invisible.
+- Return `finish_reason: content_filter` for responses stopped by a content
+  filter, and forward `Retry-After`, `code`, `type`, and `param` from Codex errors.
 - Log `chat.stream.tool_arguments_mismatch`, with sizes only, when streamed tool
   arguments differ from the final item in a way later chunks cannot correct.
