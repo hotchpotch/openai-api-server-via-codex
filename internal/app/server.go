@@ -579,6 +579,10 @@ func (s *server) chatCollection(w http.ResponseWriter, r *http.Request) {
 		writeBackendError(w, err)
 		return
 	}
+	if err := failedResponseError(response); err != nil {
+		writeBackendError(w, err)
+		return
+	}
 	response = ensureResponse(response, responsePayload)
 	completion := responseToChat(response, stringValue(responsePayload["model"]), legacy, chatChoiceCount(body["n"]))
 	if metadata := mapAny(body["metadata"]); metadata != nil {
@@ -689,8 +693,16 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 					}
 				}
 			}
+		case "error":
+			return responseFailure(errorEventDetail(event))
 		case "response.completed", "response.incomplete", "response.failed":
 			resp := mapAny(event["response"])
+			if typ == "response.failed" {
+				return responseFailure(failureDetail(resp["error"]))
+			}
+			if err := failedResponseError(resp); err != nil {
+				return err
+			}
 			if resp != nil {
 				if len(sliceAny(resp["output"])) == 0 && len(outputs) > 0 {
 					resp["output"] = outputs
@@ -716,7 +728,7 @@ func (s *server) streamChat(w http.ResponseWriter, r *http.Request, responsePayl
 		return nil
 	})
 	if err != nil {
-		emit(map[string]any{"error": map[string]any{"message": publicStreamError(err), "type": "api_error", "param": nil, "code": nil}})
+		emit(map[string]any{"error": publicErrorObject(err)})
 	}
 	io.WriteString(w, "data: [DONE]\n\n")
 	flusher.Flush()
@@ -890,6 +902,9 @@ func (s *server) images(w http.ResponseWriter, r *http.Request) {
 	for i := 0; i < count; i++ {
 		payload := imageResponsePayload(body, s.cfg.Model)
 		resp, err := s.backend.collect(r.Context(), payload)
+		if err == nil {
+			err = failedResponseError(resp)
+		}
 		if err != nil {
 			writeBackendError(w, err)
 			return
@@ -973,10 +988,22 @@ func writeError(w http.ResponseWriter, status int, message, typ string, param *s
 func writeBackendError(w http.ResponseWriter, err error) {
 	var be *backendError
 	if errors.As(err, &be) {
-		writeError(w, be.Status, be.Message, "api_error", nil, nil)
+		writeJSON(w, be.Status, map[string]any{"error": publicErrorObject(err)})
 	} else {
 		writeError(w, 500, "Internal server error.", "api_error", nil, nil)
 	}
+}
+func publicErrorObject(err error) map[string]any {
+	result := map[string]any{"message": publicStreamError(err), "type": "api_error", "param": nil, "code": nil}
+	var failure *responseFailureError
+	if errors.As(err, &failure) {
+		result["type"] = failure.Type
+		result["param"] = failure.Param
+		if failure.Code != "" {
+			result["code"] = failure.Code
+		}
+	}
+	return result
 }
 func publicStreamError(err error) string {
 	var be *backendError

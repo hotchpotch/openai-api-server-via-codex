@@ -97,6 +97,11 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
 
     def _responses_stream(self, payload: dict[str, Any]) -> None:
         type(self).last_payload = payload
+        input_text = json.dumps(payload.get("input"))
+        for code in ("server_error", "rate_limit_exceeded"):
+            if f"CONTRACT_FAILED_{code}" in input_text:
+                self._failed_stream(payload, code)
+                return
         if payload.get("metadata", {}).get("contract") == "async_history":
             self._async_history_stream(payload)
             return
@@ -352,6 +357,40 @@ class _FakeCodexHandler(BaseHTTPRequestHandler):
             for index, item in enumerate(items)
         )
         events.append({"type": "response.completed", "response": response})
+        encoded = "".join(
+            "data: " + json.dumps({**event, "sequence_number": index}) + "\n\n"
+            for index, event in enumerate(events)
+        ).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _failed_stream(self, payload: dict[str, Any], code: str) -> None:
+        events = [
+            {
+                "type": "response.created",
+                "response": {"id": "resp_failed", "status": "in_progress"},
+            },
+            {
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "delta": "Partial",
+            },
+            {
+                "type": "response.failed",
+                "response": {
+                    "id": "resp_failed",
+                    "object": "response",
+                    "created_at": 0,
+                    "model": payload["model"],
+                    "status": "failed",
+                    "output": [],
+                    "error": {"code": code, "message": f"contract {code}"},
+                },
+            },
+        ]
         encoded = "".join(
             "data: " + json.dumps({**event, "sequence_number": index}) + "\n\n"
             for index, event in enumerate(events)
@@ -1008,6 +1047,48 @@ async def test_contract_chat_tools_ignore_empty_legacy_functions(
     assert choice.message.tool_calls is not None, runtime
     assert len(choice.message.tool_calls) == 2, runtime
     assert _FakeCodexHandler.last_payload["parallel_tool_calls"] is True, runtime
+
+
+async def test_contract_chat_raises_sdk_errors_for_failed_responses(
+    runtime_server: tuple[str, str], contract_client: AsyncOpenAI
+) -> None:
+    from openai import APIError, InternalServerError, RateLimitError
+
+    runtime, _ = runtime_server
+    client = contract_client.with_options(max_retries=0)
+
+    with pytest.raises(RateLimitError) as limited:
+        await client.chat.completions.create(
+            model="gpt-5.6-luna",
+            messages=[
+                {"role": "user", "content": "CONTRACT_FAILED_rate_limit_exceeded"}
+            ],
+        )
+    assert limited.value.code == "rate_limit_exceeded", runtime
+
+    with pytest.raises(InternalServerError) as broken:
+        await client.chat.completions.create(
+            model="gpt-5.6-luna",
+            messages=[{"role": "user", "content": "CONTRACT_FAILED_server_error"}],
+            store=True,
+        )
+    assert broken.value.status_code == 502, runtime
+    assert broken.value.code == "server_error", runtime
+
+    stream = await client.chat.completions.create(
+        model="gpt-5.6-luna",
+        messages=[{"role": "user", "content": "CONTRACT_FAILED_server_error"}],
+        stream=True,
+    )
+    received = ""
+    with pytest.raises(APIError) as failed:
+        async for chunk in stream:
+            for choice in chunk.choices:
+                received += choice.delta.content or ""
+                assert choice.finish_reason is None, runtime
+    assert received == "Partial", runtime
+    assert failed.value.message == "contract server_error", runtime
+    assert failed.value.code == "server_error", runtime
 
 
 async def test_contract_chat_keeps_text_before_tool_calls_when_stored(
