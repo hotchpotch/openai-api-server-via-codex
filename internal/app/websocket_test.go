@@ -57,6 +57,25 @@ func dialTestWebSocket(t *testing.T, target string) *websocket.Conn {
 	return conn
 }
 
+// Dial returns once the 101 response arrives, before the server tracks the
+// relay; shutdown tests must not start until it does.
+func waitTrackedWebSockets(t *testing.T, s *server, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		s.wsMu.Lock()
+		got := len(s.wsCancels)
+		s.wsMu.Unlock()
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tracked websockets = %d, want %d", got, want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestWebSocketTransparentEventsAndLifecycle(t *testing.T) {
 	captured := make(chan map[string]any, 4)
 	s, target := websocketTestServer(t, func(w http.ResponseWriter, r *http.Request) {
@@ -407,6 +426,7 @@ func TestWebSocketKeepAliveAndGracefulShutdown(t *testing.T) {
 		_, _, _ = conn.Read(context.Background())
 	}, nil)
 	conn := dialTestWebSocket(t, target)
+	waitTrackedWebSockets(t, s, 1)
 	done := make(chan error, 1)
 	upstream, _, err := s.backend.(websocketBackend).dialWebSocket(context.Background(), nil, "")
 	if err != nil {
@@ -485,6 +505,7 @@ func TestShutdownDeadlineIncludesUnresponsiveWebSocket(t *testing.T) {
 			defer front.Close()
 			// Deliberately never read: this client cannot answer the close handshake.
 			_ = dialTestWebSocket(t, front.URL+"/v1/responses")
+			waitTrackedWebSockets(t, s, 1)
 			if stalledHTTP {
 				go func() {
 					resp, err := http.Get(front.URL + "/slow")
