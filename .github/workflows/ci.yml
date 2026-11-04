@@ -156,3 +156,5 @@ jobs:
           uv run twine check --strict "${RUNNER_TEMP}"/wheel-test/*.whl
           wheel="$(ls "${RUNNER_TEMP}"/wheel-test/*manylinux_2_17_x86_64.whl)"
           uv run --with "${wheel}" --no-project openai-api-server-via-codex --version
+          # The launcher still supports Python 3.10 although development uses 3.11+.
+          uv run --python 3.10 --with "${wheel}" --no-project openai-api-server-via-codex --version

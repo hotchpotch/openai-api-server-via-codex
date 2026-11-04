@@ -53,11 +53,7 @@ jobs:
           import os
           import pathlib
           import re
-          import sys
-          if sys.version_info >= (3, 11):
-              import tomllib
-          else:
-              import tomli as tomllib
+          import tomllib
 
           root = pathlib.Path(".")
           pyproject_version = tomllib.loads(root.joinpath("pyproject.toml").read_text())["project"]["version"]

@@ -663,7 +663,7 @@ contract, and release tooling.
 Requirements:
 
 - Go 1.27.3 or newer
-- Python 3.10 or newer
+- Python 3.11 or newer for development (the published launcher supports 3.10)
 - `uv`
 
 Run the complete deterministic validation suite:

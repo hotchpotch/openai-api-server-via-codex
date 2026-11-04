@@ -20,8 +20,11 @@ client API rather than only raw HTTP payloads.
 ## Environment
 
 - Use Go 1.27.3 or newer for the server, CLI, and Go tests.
-- Use Python 3.10 or newer only for the `uvx` launcher, OpenAI SDK consumer
-  tests, and packaging/release tooling.
+- Python is used only for the `uvx` launcher, OpenAI SDK consumer tests, and
+  packaging/release tooling. The published launcher supports Python 3.10 or
+  newer (`requires-python`); development, tox, and release tooling use Python
+  3.11 or newer (`.python-version`, `[tool.uv] environments`). CI smoke-tests
+  the built launcher on Python 3.10, so keep launcher code 3.10-compatible.
 - Use `uv` for Python development dependencies and validation commands.
 - The default foreground server binds to `127.0.0.1:18080`.
 - Do not commit local virtualenv, cache, tox, pytest, or editor artifacts.
